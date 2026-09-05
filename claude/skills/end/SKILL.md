@@ -17,7 +17,7 @@ description: Уборка рабочего окружения — свежий d
 df -h /
 du -sh /root/.npm /root/.cache/uv /root/.cache/pip 2>/dev/null
 du -sh .git */.venv 2>/dev/null
-DOCKER_HOST=tcp://localhost:2375 docker system df
+docker system df                 # к тому демону, что настроен у инстанса
 du -sh /root/.claude/projects/*/ | sort -h | tail -5
 ```
 
@@ -58,10 +58,21 @@ find . -path '*/.venv' -prune -o \
 find . -path '*/.venv' -prune -o -name '*.pyc' -delete
 ```
 
-Docker (свой dind, ломать безопасно):
+Docker — **сначала проверить, чей демон**. Скилл общий, а инстансы разные: у
+песочницы свой dind, у ассистента — хостовой сокет, где те же команды снесут
+образы и тома работающих сервисов.
 
 ```bash
-export DOCKER_HOST=tcp://localhost:2375
+echo "${DOCKER_HOST:-<хостовой сокет>}"
+```
+
+Пусто или сокет — это **не** песочница: `prune` не запускать, сказать
+пользователю и остановиться на этом пункте. Мусор хостового демона убирают
+отдельно и осознанно, а не заодно с уборкой рабочего дерева.
+
+`tcp://localhost:2375` — свой dind, ломать безопасно:
+
+```bash
 docker ps -a                       # посмотреть, что удаляем
 docker system prune -af --volumes
 ```
