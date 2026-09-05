@@ -1,0 +1,62 @@
+name: claude-bot
+
+# Здесь только личный ассистент. Проектные песочницы — в projects/<name>/ со своим
+# compose и своим .env; в корневой docker-compose.yml лаборатории они включены
+# отдельными строками include.
+#
+# ./.env — ключи одного инстанса (TG_BOT_TOKEN, TG_ALLOWED_USER_ID, USER_DATA),
+# поэтому env_file безопасен: чужих токенов в файле нет.
+#
+# ${USER_DATA} — только серверное значение: .env ездит между машинами целиком
+# (bw-sync), так что вторых значений тут быть не может. Локальные пути — в
+# docker-compose.local.yml (gitignore), там volumes идут с !override и переменные
+# не используют вовсе.
+
+services:
+  # Личный ассистент: полный доступ к хосту, управляет его сервисами.
+  aleksei-claude-assistant:
+    build: .
+    image: claude-bot:latest
+    container_name: aleksei-claude-assistant
+    init: true                                                          # жнёт детей claude после /cancel
+    working_dir: /projects
+    restart: unless-stopped
+    env_file: .env
+    # umask 002 вместо дефолтного 022: файлы, которые бот создаёт в /projects/localhome
+    # (общий с хостом рабочий каталог), получают g+w, иначе человек на хосте не может их
+    # перезаписать — root:root 644. core.sharedRepository лечит только .git, дерево — нет.
+    command: ["sh", "-c", "umask 002 && exec python -m app"]
+    environment:
+      TZ: Europe/Lisbon
+      # Под root `--permission-mode bypassPermissions` падает тем же чеком, что и
+      # --dangerously-skip-permissions (проверено на 2.1.220). Root нужен ради docker.sock,
+      # понижать пользователя нельзя — снимаем чек единственным доступным способом.
+      IS_SANDBOX: 1
+      # /projects/localhome — тот же .git, что у человека на хосте, а бот тут root:
+      # его коммиты оставляли объекты root:root 444, после чего git под хостовым юзером падал с
+      # "insufficient permission for adding an object". Понизить юзера нельзя (см. IS_SANDBOX
+      # выше), поэтому пишем группой: group_add даёт gid хостового юзера, а
+      # core.sharedRepository=group — g+w на новых объектах. Обе стороны пишут в одни файлы.
+      GIT_CONFIG_COUNT: 1
+      GIT_CONFIG_KEY_0: core.sharedRepository
+      GIT_CONFIG_VALUE_0: group
+    group_add:
+      - "${HOST_GID:-1000}"                                             # общая с хостом группа на .git рабочего каталога
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock                       # root на хосте, см. модель безопасности
+      - ${USER_DATA}/claude:/root/.claude                               # rw — креды, сессии, плагины
+      - ${USER_DATA}/claude.json:/root/.claude.json                     # rw — MCP-серверы; лежит ВНЕ .claude/
+      - ${USER_DATA}/ssh:/root/.ssh:ro                                  # git remote для клонов
+      - ${USER_DATA}/gitconfig:/root/.gitconfig:ro                      # user.name/email для коммитов
+      # /projects — единственное, что видит бот в списке и кнопках. Новый проект =
+      # новая строка сюда, либо git clone внутрь ${USER_DATA}/projects.
+      - ${USER_DATA}/projects:/projects
+      - ${HOST_REPO}:/projects/localhome                              # рабочий каталог, общий с человеком на хосте
+      # Second Brain: /wiki/<проект>/MAP.md — вне git проектов, личные заметки.
+      - ${USER_DATA}/wiki:/wiki
+      - ./data/aleksei-assistant:/data                                  # bot.db, audit.log
+      - ./claude/skills:/root/.claude/skills                            # rw: claude сам правит и заводит скиллы
+      # Два источника, склейка в entrypoint: среда своя у каждого инстанса,
+      # правила ответа общие. См. блок /opt/claude-md в entrypoint.sh.
+      - ./CLAUDE.assistant.md:/opt/claude-md/env.md:ro
+      - ./CLAUDE.common.md:/opt/claude-md/common.md:ro

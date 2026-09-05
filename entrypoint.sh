@@ -1,0 +1,88 @@
+#!/bin/sh
+# Поднимает sshd (если есть host-ключи) и передаёт управление боту.
+# Два процесса в одном контейнере — осознанно: человек из IDE и бот должны видеть
+# одно рабочее дерево, один docker-демон и одну папку сессий claude. Разделять их по
+# контейнерам значит терять именно это. Детей жнёт `init: true` из compose.
+set -e
+
+# ssh-сессия не наследует environment контейнера: sshd форкает шелл с чистым
+# окружением. Пробрасываем двумя путями, потому что ни один не покрывает всё:
+#   profile.d — только login-шеллы (терминал в IDE);
+#   SetEnv    — любая сессия, включая `ssh host cmd` (так IDE гоняет сборки и тесты).
+# Оба генерируются в рантайме: значения известны только тут, в образ их не вписать.
+# Кавычки вокруг значения — в путях бывают пробелы.
+: > /etc/ssh/sshd_config.d/20-env.conf
+: > /etc/profile.d/container-env.sh
+for v in DOCKER_HOST TZ IS_SANDBOX; do
+    eval "val=\$$v"
+    [ -n "$val" ] || continue
+    echo "export $v=\"$val\"" >> /etc/profile.d/container-env.sh
+    # SetEnv не умеет кавычек и пробелов в значении — эти переменные их не содержат.
+    echo "SetEnv $v=$val" >> /etc/ssh/sshd_config.d/20-env.conf
+done
+
+# gitconfig — из .env, а не отдельным файлом в user_data: у рабочего проекта своя почта,
+# и она такой же параметр инстанса, как токен бота. Файлом это значит помнить про ещё один
+# шаг при заведении песочницы, а забытый шаг вылезает только на первом коммите.
+# Существующий конфиг не трогаем: в нём могли появиться алиасы, добавленные руками.
+if [ -n "$GIT_USER_EMAIL" ] && [ ! -f /root/.gitconfig ]; then
+    git config --global user.name "${GIT_USER_NAME:-$GIT_USER_EMAIL}"
+    git config --global user.email "$GIT_USER_EMAIL"
+    # Дерево принадлежит хостовому uid, а git в контейнере — root: без этого
+    # "detected dubious ownership" на любой команде в /projects.
+    git config --global safe.directory '*'
+fi
+
+# umask 002 — из-за rw-маунтов скиллов: процесс идёт от root, а папки в репозитории на
+# хосте принадлежат человеку (uid 1000) и помечены setgid, т.е. группу новые файлы
+# наследуют правильную. Не хватало только group-write: с дефолтным 022 бот создавал
+# `-rw-r--r-- root:<группа>`, и человек на хосте не мог ни отредактировать, ни удалить
+# такой скилл без sudo (проверено — `rm` падал с Permission denied).
+umask 002
+
+# Скиллы: claude-code читает только /root/.claude/skills, а источников два — общие и
+# проектные. Маунт папки поверх папки скрыл бы одну из них, поэтому оба источника
+# монтируются в /opt/skills/* (rw — claude правит скиллы сам), а сюда линкуются
+# по одному скиллу. Порядок важен: project идёт вторым и
+# перебивает одноимённый общий скилл. Нет /opt/skills — значит скиллы смонтированы прямо
+# (базовый бот), ничего не делаем.
+if [ -d /opt/skills ]; then
+    mkdir -p /root/.claude/skills
+    # Чистим только симлинки: реальные папки мог положить человек руками.
+    find /root/.claude/skills -maxdepth 1 -type l -delete
+    for src in /opt/skills/shared /opt/skills/project; do
+        [ -d "$src" ] || continue
+        for skill in "$src"/*/; do
+            [ -d "$skill" ] || continue
+            ln -sfn "${skill%/}" "/root/.claude/skills/$(basename "$skill")"
+        done
+    done
+fi
+
+# CLAUDE.md: claude-code читает один /root/.claude/CLAUDE.md, а источников два —
+# общие правила ответа (одинаковы для всех инстансов) и описание среды (у ассистента
+# docker.sock и хост, у песочницы свой dind). Маунт файла поверх файла скрыл бы один,
+# поэтому оба монтируются в /opt/claude-md/* и склеиваются здесь. Порядок: сначала
+# среда, потом правила ответа — напоминание про стиль должно быть последним, это
+# рекомендация Anthropic для длинных промптов. Нет /opt/claude-md — файл смонтирован
+# прямо, ничего не делаем.
+if [ -d /opt/claude-md ]; then
+    mkdir -p /root/.claude
+    : > /root/.claude/CLAUDE.md
+    for part in /opt/claude-md/env.md /opt/claude-md/common.md; do
+        [ -f "$part" ] || continue
+        cat "$part" >> /root/.claude/CLAUDE.md
+        printf '\n' >> /root/.claude/CLAUDE.md
+    done
+fi
+
+# Host-ключи приезжают маунтом (переживают пересоздание контейнера). Нет маунта —
+# sshd не поднимаем: молча работать без входа лучше, чем сгенерировать ключи,
+# которые сменятся при следующем старте и напугают IDE.
+if [ -r /etc/ssh/keys/ssh_host_ed25519_key ]; then
+    /usr/sbin/sshd -e
+else
+    echo "entrypoint: /etc/ssh/keys не смонтирован — sshd не запущен" >&2
+fi
+
+exec "$@"
