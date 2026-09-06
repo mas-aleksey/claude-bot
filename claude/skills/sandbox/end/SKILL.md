@@ -114,6 +114,7 @@ docker ps -a --filter volume=<volume>    # пусто — ничей, можно
 ```bash
 npm cache clean --force        # /root/.npm легко набирает 1 ГБ
 pip cache purge
+uv cache prune
 git gc --prune=now             # packs, если count-objects показал много
 env -u UV_NO_CACHE uv cache prune --cache-dir /root/.cache/uv
 ```
