@@ -53,6 +53,14 @@ RUN mkdir -p /run/sshd
 COPY sshd_config /etc/ssh/sshd_config.d/10-container.conf
 COPY entrypoint.sh /entrypoint.sh
 
+# Стиль ответа — часть продукта, а не конфигурация инстанса: он одинаков у всех и
+# правится вместе с образом. Отсюда COPY, а не маунт из каждого compose.
+# Читается через `--settings /opt/claude/settings.json` в runner.py: подмена секции
+# системного промпта, тогда как CLAUDE.md инстанса остаётся контекстом окружения.
+# Каталог /opt/claude, а не /root/.claude — тот перекрыт маунтом ${USER_DATA}/root.
+COPY claude/settings.json /opt/claude/settings.json
+COPY claude/output-styles /opt/claude/output-styles
+
 WORKDIR /src
 
 RUN --mount=type=cache,target=/root/.cache/uv \

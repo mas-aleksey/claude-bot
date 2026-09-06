@@ -68,22 +68,20 @@ if [ -d /opt/skills ]; then
     done
 fi
 
-# CLAUDE.md: claude-code reads a single /root/.claude/CLAUDE.md, while there are two
-# sources — the shared answer rules (identical for every instance) and the environment
-# description (the assistant has docker.sock and the host, a sandbox its own dind).
-# Mounting a file over a file would hide one, so both are mounted at /opt/claude-md/* and
-# concatenated here. Order: environment first, answer rules second — the style reminder
-# belongs last, which is Anthropic's recommendation for long prompts. No /opt/claude-md —
-# the file is mounted directly, nothing to do.
-if [ -d /opt/claude-md ]; then
-    mkdir -p /root/.claude
-    : > /root/.claude/CLAUDE.md
-    for part in /opt/claude-md/env.md /opt/claude-md/common.md; do
-        [ -f "$part" ] || continue
-        cat "$part" >> /root/.claude/CLAUDE.md
-        printf '\n' >> /root/.claude/CLAUDE.md
-    done
-fi
+# The answer style lives in an output style, not in CLAUDE.md: it belongs in the system
+# prompt, while CLAUDE.md is context. runner.py passes --settings /opt/claude/settings.json,
+# which selects it by name — and the name is resolved against /root/.claude/output-styles,
+# so the directory baked into the image is linked in. A symlink per file, not a mount of the
+# directory: /root/.claude is a mount from the host and holds credentials and sessions.
+#
+# That leaves CLAUDE.md with a single source — the instance's own environment description,
+# mounted straight at /root/.claude/CLAUDE.md. Nothing to assemble, and Claude editing the
+# file from inside keeps the edit: no startup step overwrites it any more.
+mkdir -p /root/.claude/output-styles
+for style in /opt/claude/output-styles/*.md; do
+    [ -f "$style" ] || continue
+    ln -sf "$style" "/root/.claude/output-styles/$(basename "$style")"
+done
 
 # Host keys arrive by mount (so they survive a container recreate). No mount — sshd is not
 # started: quietly working without logins beats generating keys that change on the next

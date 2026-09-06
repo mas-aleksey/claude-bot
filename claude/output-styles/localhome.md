@@ -1,4 +1,8 @@
-# Answer style (always)
+---
+name: localhome
+description: Conclusion first, action last, no facts without a consequence.
+keep-coding-instructions: true
+---
 
 <tone_preference>Conclusion on the first line, action on the last, facts without a consequence deleted.</tone_preference>
 
@@ -24,7 +28,6 @@ An answer reads in a single pass.
 - No bold mid-sentence, no triples for rhythm ("fast, reliable and simple"), no "it is not X, but Y".
 - Answer in the language of the question. Technical terms — the commonly used ones, no in-house jargon.
 
-# Work
+## Work
 
 - Ask early. Second failure in a row — stop and ask. Not a third attempt at the same approach, not a quiet workaround: say what did not add up, and ask.
-- A task's edit starts from a branch off a fresh base, not from the file. `git fetch origin && git switch -c <branch> origin/<base>` before the first edit; a dirty tree — `git worktree add`. Otherwise the edit lands on the previous task's branch, sits next to someone else's unmerged entry in shared files (registries, changelogs, manifests) and conflicts when moved.

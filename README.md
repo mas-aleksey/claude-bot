@@ -33,7 +33,7 @@ host's containers are invisible from inside, so builds and tests in a work
 repository cannot reach the services running next door.
 
 This repository ships neither: it builds the image and carries the pieces both
-variants mount — the shared skills, `CLAUDE.common.md`, and `CLAUDE.sandbox.md`.
+variants mount — the shared skills, the answer style, and `CLAUDE.sandbox.md`.
 An instance is a compose file of its own, with its own `.env`, its own volumes and
 its own environment prompt, kept wherever you keep that machine's configuration.
 
@@ -43,15 +43,27 @@ editor continues in Telegram and back.
 
 ## Prompts and skills
 
-Claude Code reads one `CLAUDE.md` and one skills directory. This image assembles
-both from two sources so that instance-specific and shared parts stay separate:
+Two different things are often conflated here, and this image keeps them apart.
+
+**Answer style is a system prompt concern.** It ships in the image as an output style
+and is selected by `--settings`, so it reaches the model as an instruction rather than
+as reference material:
 
 ```
-/opt/claude-md/env.md      environment: assistant vs sandbox
-/opt/claude-md/common.md   answer style, shared by every instance
-        ↓ concatenated by entrypoint.sh
-/root/.claude/CLAUDE.md
+claude/output-styles/localhome.md   the style itself
+claude/settings.json                {"outputStyle": "localhome"}
+        ↓ COPY, then --settings /opt/claude/settings.json
+system prompt
+```
 
+**`CLAUDE.md` is context.** It describes the environment the instance runs in — the
+assistant has a docker socket and the host, a sandbox its own dind — so each instance
+mounts its own file straight at `/root/.claude/CLAUDE.md`. Nothing is assembled at
+startup, which also means Claude editing that file from inside keeps the edit.
+
+Skills come from two sources and are merged by symlink:
+
+```
 /opt/skills/10-base        claude/skills/ from this repo
 /opt/skills/20-project     the instance's own skills, if any
         ↓ symlinked one by one

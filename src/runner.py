@@ -12,7 +12,12 @@ from collections.abc import AsyncIterator
 
 from render import strip_ansi
 
-BASE = ["claude", "--permission-mode", "bypassPermissions"]
+# --settings: путь, а не содержимое — файл лежит в образе и читается claude на каждом
+# запуске. Он выбирает output style, то есть правит СИСТЕМНЫЙ промпт; CLAUDE.md инстанса
+# остаётся описанием окружения. Правка стиля требует пересборки образа, но это ровно тот
+# темп, в котором он меняется.
+SETTINGS = "/opt/claude/settings.json"
+BASE = ["claude", "--permission-mode", "bypassPermissions", "--settings", SETTINGS]
 CREDS = "/root/.claude/.credentials.json"
 CONFIG = "/root/.claude.json"
 # Домен OAuth уже переезжал (claude.ai → claude.com), поэтому ловим по пути /oauth/,

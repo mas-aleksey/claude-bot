@@ -15,6 +15,11 @@ A restart wipes everything outside the volumes: `apt install` and edits under
 `/usr/local` will not survive one. Anything permanent belongs in the `Dockerfile` of
 the claude-bot image.
 
+
+## Work
+
+- A task's edit starts from a branch off a fresh base, not from the file. `git fetch origin && git switch -c <branch> origin/<base>` before the first edit; a dirty tree — `git worktree add`. Otherwise the edit lands on the previous task's branch, sits next to someone else's unmerged entry in shared files (registries, changelogs, manifests) and conflicts when moved.
+
 ## Skills
 
 Writing to `/root/.claude/skills` is pointless — `entrypoint` fills it with symlinks.

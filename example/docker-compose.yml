@@ -58,9 +58,9 @@ services:
       # git as an ordinary commit.
       - ${CLAUDE_BOT}/claude/skills:/opt/skills/10-base
       - ./skills:/opt/skills/20-project
-      # CLAUDE.md: the sandbox environment plus the shared answer rules, concatenated by entrypoint
-      - ${CLAUDE_BOT}/CLAUDE.sandbox.md:/opt/claude-md/env.md:ro
-      - ${CLAUDE_BOT}/CLAUDE.common.md:/opt/claude-md/common.md:ro
+      # CLAUDE.md — the sandbox environment, nothing else. The answer style is an output
+      # style baked into the image and selected by --settings, so it is not mounted here.
+      - ${CLAUDE_BOT}/CLAUDE.sandbox.md:/root/.claude/CLAUDE.md:ro
     restart: unless-stopped
 
   example-dind:
