@@ -32,9 +32,10 @@ repository, whatever you mount. It manages the machine it lives on.
 host's containers are invisible from inside, so builds and tests in a work
 repository cannot reach the services running next door.
 
-This repository ships the assistant. Sandboxes are per-project by nature (own
-compose, own `.env`, own skills) and live wherever you keep that project's
-configuration; `CLAUDE.sandbox.md` here is the environment prompt they mount.
+This repository ships neither: it builds the image and carries the pieces both
+variants mount — the shared skills, `CLAUDE.common.md`, and `CLAUDE.sandbox.md`.
+An instance is a compose file of its own, with its own `.env`, its own volumes and
+its own environment prompt, kept wherever you keep that machine's configuration.
 
 The image also carries an sshd, so an IDE can attach over Remote Development and
 share the bot's working tree and session directory — a conversation started in the
@@ -51,27 +52,52 @@ both from two sources so that instance-specific and shared parts stay separate:
         ↓ concatenated by entrypoint.sh
 /root/.claude/CLAUDE.md
 
-/opt/skills/shared         claude/skills/ from this repo
-/opt/skills/project        the project's own skills, if any
+/opt/skills/10-shared      claude/skills/shared from this repo
+/opt/skills/20-<type>      claude/skills/sandbox, or the instance's own
+/opt/skills/30-project     the project's own skills, if any
         ↓ symlinked one by one
-/root/.claude/skills       project entries win over shared ones
+/root/.claude/skills       higher prefixes win over lower ones
 ```
 
 Both skill sources are mounted read-write on purpose: Claude edits and creates
 skills itself, and those edits land in the repository on the host, ready to be
 committed like any other change.
 
-The bundled skills — `refine`, `mr`, `fresh`, `end` — are written to be
-project-agnostic, so they are a reasonable starting point rather than a personal
-configuration.
+The bundled skills — `fresh` for every instance, `refine` and `end` for sandboxes —
+are written to be project-agnostic, so they are a reasonable starting point rather
+than a personal configuration.
 
 ## Running it
 
 Requires Docker and a bot token from [@BotFather](https://t.me/BotFather).
 
+Build the image first — every instance runs on top of it:
+
 ```bash
-cp .env.example .env      # fill in the token, your Telegram user id and the paths
-docker compose up -d --build
+docker compose --profile build build
+```
+
+Then write a compose file for your instance. The minimum is the image, an `.env`
+copied from `.env.example`, and the mounts that give the bot its workspace:
+
+```yaml
+services:
+  my-bot:
+    image: claude-bot:latest
+    container_name: my-bot
+    init: true                    # reaps claude's children after /cancel
+    working_dir: /projects
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ${USER_DATA}/claude:/root/.claude          # credentials, sessions, plugins
+      - ${USER_DATA}/claude.json:/root/.claude.json
+      - ${USER_DATA}/ssh:/root/.ssh                # git remotes
+      - ${USER_DATA}/projects:/projects
+      - ./data:/data                               # bot.db, audit.log
+      - <this repo>/claude/skills/shared:/opt/skills/10-shared
+      - <this repo>/CLAUDE.common.md:/opt/claude-md/common.md:ro
+      - ./CLAUDE.md:/opt/claude-md/env.md:ro       # your environment prompt
 ```
 
 `USER_DATA` points at a host directory holding the credentials and workspace:
@@ -79,16 +105,18 @@ Claude's config and sessions, an ssh key for git remotes, a gitconfig, the proje
 themselves. It lives outside this repository deliberately — the service can be
 rebuilt from scratch without touching any of it.
 
-`HOST_REPO` is the repository the bot shares with you on the host. Both sides write
-to the same `.git`, which is why the container joins the host user's group and sets
-`core.sharedRepository=group`; without that, the bot's commits leave objects the
-human cannot overwrite.
+An assistant additionally mounts `/var/run/docker.sock` and the repository it shares
+with you on the host. When both sides write to the same `.git`, the container has to
+join the host user's group and set `core.sharedRepository=group`; without that, the
+bot's commits leave objects the human cannot overwrite. A sandbox instead runs a
+`docker:dind` sidecar and shares its network namespace, so `DOCKER_HOST` points at
+the sandbox daemon and the host's containers stay invisible.
 
 ## Security model
 
-The bot runs as root and mounts the docker socket, so **inside the assistant
+An assistant instance runs as root and mounts the docker socket, so **inside that
 container it can do anything the host's Docker can** — stop services, prune images,
-read any bind-mounted path. That is the point of the assistant, and it is why
+read any bind-mounted path. That is the point of an assistant, and it is why
 `TG_ALLOWED_USER_ID` is checked on every update.
 
 Sandboxes are the opposite: no host socket, a separate daemon, and only the volumes
