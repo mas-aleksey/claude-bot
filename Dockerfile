@@ -8,7 +8,6 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_PROJECT_ENVIRONMENT=/usr/local \
     UV_PYTHON=/usr/local/bin/python \
-    UV_FROZEN=1 \
     UV_NO_CACHE=1
 
 # node — рантайм для claude-code; docker-ce-cli + compose-plugin — host-операции через
@@ -67,6 +66,10 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # памяти, контейнер падает на следующем рестарте. Поэтому сбрасываем здесь, а не в
 # каждой песочнице: новая наследует безопасное значение. Пустое = дефолт uv, `./.venv`
 # рядом с репозиторием. Подробности — docs/bot.md, раздел «Песочница проекта».
+#
+# UV_FROZEN в ENV выше тоже нет — сборка бота задаёт `--frozen` флагом, а унаследованная
+# переменная запрещала бы `uv lock` в рабочих репозиториях песочницы («Unable to find
+# lockfile»), в том числе при заведении нового проекта.
 ENV UV_PROJECT_ENVIRONMENT=
 
 ENTRYPOINT ["/entrypoint.sh"]
