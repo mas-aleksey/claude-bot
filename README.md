@@ -76,28 +76,18 @@ Build the image first — every instance runs on top of it:
 docker compose --profile build build
 ```
 
-Then write a compose file for your instance. The minimum is the image, an `.env`
-copied from `.env.example`, and the mounts that give the bot its workspace:
+Then take [`example/`](example/) — a working sandbox with the project-specific bits
+removed. Copy it, rename, fill in the `.env`:
 
-```yaml
-services:
-  my-bot:
-    image: claude-bot:latest
-    container_name: my-bot
-    init: true                    # reaps claude's children after /cancel
-    working_dir: /projects
-    restart: unless-stopped
-    env_file: .env
-    volumes:
-      - ${USER_DATA}/claude:/root/.claude          # credentials, sessions, plugins
-      - ${USER_DATA}/claude.json:/root/.claude.json
-      - ${USER_DATA}/ssh:/root/.ssh                # git remotes
-      - ${USER_DATA}/projects:/projects
-      - ./data:/data                               # bot.db, audit.log
-      - <this repo>/claude/skills:/opt/skills/10-base
-      - <this repo>/CLAUDE.common.md:/opt/claude-md/common.md:ro
-      - ./CLAUDE.md:/opt/claude-md/env.md:ro       # your environment prompt
+```bash
+cp -r example ../my-project && cd ../my-project
+sed -i 's/example/my-project/g' docker-compose.yml
+cp .env.example .env
+docker compose up -d --build
 ```
+
+Its `docker-compose.yml` carries the reasoning behind every mount in comments, which
+is the part worth reading before changing anything.
 
 `USER_DATA` points at a host directory holding the credentials and workspace:
 Claude's config and sessions, an ssh key for git remotes, a gitconfig, the projects

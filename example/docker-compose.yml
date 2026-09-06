@@ -1,0 +1,84 @@
+name: claude-example
+
+# A project sandbox: the bot plus its own docker daemon (DinD). The host's daemon is
+# invisible from inside, so builds and tests of a work repository cannot touch anything
+# running next door.
+#
+# An sshd lives in the bot container too: attach from PyCharm / VSCode Remote and you get
+# the same working tree, the same daemon and the same claude session folder the bot uses.
+# A session started in the IDE continues in Telegram and back.
+#
+# Copy this directory per project. Variables live in ./.env — USER_DATA and CLAUDE_BOT are
+# absolute paths on purpose, so the file can be moved without rewriting them.
+#
+# Service names carry the project prefix. If you pull several of these into one root
+# compose with `include`, everything merges into a single project and the `name:` above is
+# ignored — a bare `bot`/`dind` would collide with the next sandbox. Copying this under a
+# new project means changing the prefix.
+
+services:
+  example-bot:
+    build: .
+    image: claude-example:latest
+    container_name: claude-example
+    depends_on: [example-dind]
+    # A shared network namespace with dind: ports published by sandbox containers show up
+    # on the bot's localhost, while 2375 never reaches the compose network. The price: the
+    # bot has no name of its own in DNS (nothing ever connects to it), and restarting dind
+    # tears down the netns — the bot has to be restarted after it. The sshd port is
+    # published on dind rather than here, because the bot has no network stack of its own.
+    network_mode: "service:example-dind"
+    init: true                                  # reaps claude's children after /cancel, and the sshd fork
+    working_dir: /projects
+    env_file: .env
+    environment:
+      DOCKER_HOST: tcp://localhost:2375         # instead of docker.sock; the netns is shared with dind
+    volumes:
+      # All of /root, not individual files: besides .claude and .claude.json this holds the
+      # IDE backends (JetBrains ~1 GB, vscode-server ~150 MB) — without persistence they
+      # download again after every recreate. The directory is named root, not home: it is
+      # exactly /root, and looking at it from the host you want to see the same name.
+      - ${USER_DATA}/root:/root
+      # .ssh separately from ${USER_DATA}/root, but rw: ssh does not update known_hosts in
+      # place, it goes through mkstemp in the same folder — with :ro every git command would
+      # spit `hostfile_replace_entries: Read-only file system`, and a new remote could not be
+      # added from inside. The key sits at 0400, but that is only a "do not touch" label: the
+      # process runs as root and `echo > id_rsa` walks straight past the mode. The real
+      # protection here is a copy of the key on the host, not the file's permissions.
+      - ${USER_DATA}/ssh:/root/.ssh             # key for git remotes + authorized_keys for logins
+      - ${USER_DATA}/sshd:/etc/ssh/keys:ro      # host keys: the fingerprint survives a recreate
+      - ${USER_DATA}/projects:/projects         # work repositories; same path as in dind
+      - ${USER_DATA}/wiki:/wiki                 # this sandbox's own notes
+      - ${USER_DATA}/data:/data                 # bot.db, audit.log — state next to the credentials
+      # Skills: claude-code reads only /root/.claude/skills, and there are two sources here —
+      # claude-bot's base set and this project's. Both are mounted in, and entrypoint links
+      # them one by one (mounting a folder over a folder would hide all but the last). The
+      # numeric prefix sets priority: 20-project overrides 10-base.
+      # rw, not ro: claude edits and creates skills itself from inside — this is a working
+      # tool, not a config. Edits land straight in the repository on the host, and go into
+      # git as an ordinary commit.
+      - ${CLAUDE_BOT}/claude/skills:/opt/skills/10-base
+      - ./skills:/opt/skills/20-project
+      # CLAUDE.md: the sandbox environment plus the shared answer rules, concatenated by entrypoint
+      - ${CLAUDE_BOT}/CLAUDE.sandbox.md:/opt/claude-md/env.md:ro
+      - ${CLAUDE_BOT}/CLAUDE.common.md:/opt/claude-md/common.md:ro
+    restart: unless-stopped
+
+  example-dind:
+    image: docker:28-dind
+    container_name: claude-example-dind
+    privileged: true                            # unavoidable for DinD
+    environment:
+      DOCKER_TLS_CERTDIR: ""                    # TLS off — 2375 never leaves the netns
+    command: ["--host=tcp://0.0.0.0:2375"]
+    # sshd listens inside the bot container, but the netns is shared — the port has to be
+    # published here. 127.0.0.1: reachable from outside only via `ssh -J user@<server>`,
+    # never exposed on the LAN. One port per sandbox, so bump it for the next one.
+    ports:
+      - "127.0.0.1:2222:22"
+    volumes:
+      - ${USER_DATA}/dind:/var/lib/docker       # the sandbox's images, separate from the host's
+      # The same path as in the bot — otherwise `docker run -v /projects/x:/app` mounts
+      # nothing: paths in -v are resolved by the daemon, not by the client.
+      - ${USER_DATA}/projects:/projects
+    restart: unless-stopped
