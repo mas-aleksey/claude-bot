@@ -48,7 +48,6 @@ services:
       - ${USER_DATA}/ssh:/root/.ssh             # key for git remotes + authorized_keys for logins
       - ${USER_DATA}/sshd:/etc/ssh/keys:ro      # host keys: the fingerprint survives a recreate
       - ${USER_DATA}/projects:/projects         # work repositories; same path as in dind
-      - ${USER_DATA}/wiki:/wiki                 # this sandbox's own notes
       - ${USER_DATA}/data:/data                 # bot.db, audit.log — state next to the credentials
       # Skills: claude-code reads only /root/.claude/skills, and there are two sources here —
       # claude-bot's base set and this project's. Both are mounted in, and entrypoint links
