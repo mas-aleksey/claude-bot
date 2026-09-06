@@ -1,5 +1,5 @@
 ---
-name: localhome
+name: conclusion-first
 description: Conclusion first, action last, no facts without a consequence.
 keep-coding-instructions: true
 ---

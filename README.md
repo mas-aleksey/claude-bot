@@ -50,8 +50,8 @@ and is selected by `--settings`, so it reaches the model as an instruction rathe
 as reference material:
 
 ```
-claude/output-styles/localhome.md   the style itself
-claude/settings.json                {"outputStyle": "localhome"}
+claude/output-styles/conclusion-first.md   the style itself
+claude/settings.json                      {"outputStyle": "conclusion-first"}
         ↓ COPY, then --settings /opt/claude/settings.json
 system prompt
 ```
