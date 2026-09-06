@@ -55,7 +55,11 @@ services:
       # Second Brain: /wiki/<проект>/MAP.md — вне git проектов, личные заметки.
       - ${USER_DATA}/wiki:/wiki
       - ./data/aleksei-assistant:/data                                  # bot.db, audit.log
-      - ./claude/skills:/root/.claude/skills                            # rw: claude сам правит и заводит скиллы
+      # Скиллы: два источника — общие и свои для ассистента. Оба в /opt/skills,
+      # склейка симлинками в entrypoint; префиксы задают приоритет (см. там же).
+      # rw: claude сам правит и заводит скиллы.
+      - ./claude/skills/shared:/opt/skills/10-shared
+      - ./claude/skills/assistant:/opt/skills/20-assistant
       # Два источника, склейка в entrypoint: среда своя у каждого инстанса,
       # правила ответа общие. См. блок /opt/claude-md в entrypoint.sh.
       - ./CLAUDE.assistant.md:/opt/claude-md/env.md:ro
