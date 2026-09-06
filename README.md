@@ -111,6 +111,38 @@ bot's commits leave objects the human cannot overwrite. A sandbox instead runs a
 `docker:dind` sidecar and shares its network namespace, so `DOCKER_HOST` points at
 the sandbox daemon and the host's containers stay invisible.
 
+### Sizing an instance
+
+The image ships python 3.14 + uv, node 22 + npm, git, docker CLI, psql, jq and vim.
+Anything a project needs beyond that goes into a `Dockerfile` of its own, layered
+`FROM claude-bot:latest`. Answer these while writing the compose file above, not after
+the first command fails inside the container:
+
+| Question | Where the answer lands |
+| --- | --- |
+| Runtime and version — python 3.13? node 20? go? | `Dockerfile`: `uv python install <ver>` plus `ENV UV_PYTHON=<ver>` — the version, never a path: a standalone build's path carries the patch level and goes stale on the next update |
+| Package manager — uv, poetry, pnpm, yarn | `Dockerfile`: `corepack enable pnpm` for node (corepack ships with node and honours `packageManager` in the repository), `pip install poetry` for poetry |
+| Build tools and CLIs — make, gh, glab, graphviz, terraform | `Dockerfile`, an `apt-get install` layer or a downloaded binary |
+| Does it need a Docker daemon — image builds, testcontainers, compose in tests | Yes: a `docker:dind` sidecar, `network_mode: service:<name>-dind`, `DOCKER_HOST=tcp://localhost:2375`, and the sshd port published on the sidecar. No: none of that — a single service, ports on the bot itself |
+| Databases and services the tests need | If they come up as containers, the row above is a yes |
+| Project-specific skills — deploy, code review, log queries | `skills/`, mounted as `/opt/skills/20-project` |
+
+Two rules cover the whole table.
+
+**Install at build time, not at runtime.** The container is recreated on every
+image change; an `apt-get` run from inside it disappears with the old one.
+
+**Move tool caches out of `/root` with `ENV`.** A sandbox mounts the host's data
+directory over `/root`, which hides that path in the image layer completely. A cache
+warmed during the build is then invisible at runtime, and the first command in each
+new container goes back to the network — which means it fails when the network is
+gone. `COREPACK_HOME=/opt/corepack` and `UV_PYTHON_INSTALL_DIR=/opt/uv-python` are
+the two that bite in practice.
+
+Without a daemon the instance is markedly simpler: no privileged sidecar, no shared
+network namespace, no restart ordering between the two containers. When in doubt keep
+it — an idle dind costs a container and nothing else.
+
 ## Security model
 
 An assistant instance runs as root and mounts the docker socket, so **inside that
