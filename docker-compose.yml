@@ -1,14 +1,14 @@
 name: claude-bot
 
-# Здесь только сборка базового образа. Инстансы — ассистент и песочницы проектов —
-# живут своими compose-файлами: у каждого свой .env, свои тома и своё окружение.
-# Пример инстанса — в README, раздел «Running it».
+# This file only builds the base image. Instances — the assistant and project sandboxes —
+# live in compose files of their own: each with its own .env, volumes and environment.
+# An example instance is in the README, section "Running it".
 #
-# Сервис не запускается (`profiles`), его задача — дать `docker compose build`
-# образ claude-bot:latest, поверх которого инстансы ставят свои слои.
+# The service never starts (`profiles`); its job is to give `docker compose build` the
+# claude-bot:latest image that instances then stack their own layers on.
 
 services:
   claude-bot-base:
     build: .
     image: claude-bot:latest
-    profiles: ["build"]                 # не поднимается вместе с остальными, только собирается
+    profiles: ["build"]                 # never comes up with the rest, only builds

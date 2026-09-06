@@ -1,19 +1,20 @@
-# sshd для входа в контейнер из IDE. Кладётся в /etc/ssh/sshd_config.d/, дефолтный
-# конфиг образа не заменяет — только доопределяет.
+# sshd for attaching to the container from an IDE. Dropped into /etc/ssh/sshd_config.d/;
+# it does not replace the image's default config, only extends it.
 
-# Host-ключи из маунта, а не сгенерированные в образе: иначе каждое пересоздание
-# контейнера меняет fingerprint и IDE встречает "REMOTE HOST IDENTIFICATION HAS CHANGED".
+# Host keys come from a mount rather than being generated into the image: otherwise every
+# container recreate changes the fingerprint and the IDE meets
+# "REMOTE HOST IDENTIFICATION HAS CHANGED".
 HostKey /etc/ssh/keys/ssh_host_ed25519_key
 HostKey /etc/ssh/keys/ssh_host_rsa_key
 
-# Пароля у root нет вообще — только ключ из authorized_keys.
+# root has no password at all — only a key from authorized_keys.
 PermitRootLogin prohibit-password
 PasswordAuthentication no
 
-# /root/.ssh примонтирован с хоста, где он принадлежит человеку, а не root внутри
-# контейнера — StrictModes на этом отказывает в логине ("bad ownership or modes").
-# Ослабление безопасное: попасть внутрь можно только по ключу, порт слушает 127.0.0.1.
+# /root/.ssh is mounted from the host, where it belongs to the human rather than to root
+# inside the container — StrictModes refuses the login over that ("bad ownership or modes").
+# Relaxing it is safe: the only way in is a key, and the port listens on 127.0.0.1.
 StrictModes no
 
-# IDE держит десятки каналов в одной сессии (терминалы, LSP, порт-форварды).
+# An IDE keeps dozens of channels in one session (terminals, LSP, port forwards).
 MaxSessions 50

@@ -10,18 +10,19 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON=/usr/local/bin/python \
     UV_NO_CACHE=1
 
-# node — рантайм для claude-code; docker-ce-cli + compose-plugin — host-операции через
-# docker.sock (в песочницах проектов — через свой dind).
-# Грабля для инстансов с ХОСТОВЫМ демоном (ассистент): относительные пути в compose
-# (`./config.yaml`) резолвит демон, т.е. хост, а рабочая копия репо смонтирована здесь по
-# другому пути — докер молча создаст пустой каталог вместо конфига. Значит запускать надо
-# из каталога с хостовым путём (см. CLAUDE.md), а не из /projects/localhome.
-# В песочницах проектов этого нет: /projects смонтирован в бота и в dind одинаково.
-# git/openssh-client — работа с репозиториями проектов.
-# openssh-server — вход в контейнер из IDE (PyCharm/VSCode Remote): у бота и человека
-# один контейнер, значит одно рабочее дерево и одна папка сессий claude.
-# jq/postgresql-client — инструменты, за которыми claude лезет чаще всего.
-# vim — правки по ssh из контейнера; в slim-образе нет даже vi.
+# node is the runtime for claude-code; docker-ce-cli + compose-plugin cover host
+# operations through docker.sock (in project sandboxes — through their own dind).
+# Trap for instances on the HOST daemon (the assistant): relative paths in a compose
+# file (`./config.yaml`) are resolved by the daemon, i.e. by the host, while the working
+# copy of the repo is mounted here under a different path — docker will silently create
+# an empty directory instead of the config. So run compose from the directory with the
+# host path (see CLAUDE.md), not from /projects/localhome.
+# Project sandboxes do not have this: /projects is mounted identically in the bot and dind.
+# git/openssh-client — working with project repositories.
+# openssh-server — attaching to the container from an IDE (PyCharm/VSCode Remote): the bot
+# and the human share one container, hence one working tree and one claude session folder.
+# jq/postgresql-client — the tools claude reaches for most often.
+# vim — edits over ssh from inside the container; the slim image has not even vi.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git openssh-client openssh-server \
         jq postgresql-client vim \
@@ -39,15 +40,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get purge -y gnupg && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
-# Отдельным слоем и с ARG: автообновление cli живёт в /usr/lib/node_modules, тома там
-# нет — значит обновляется только ребилдом. Смена версии инвалидирует лишь этот слой,
-# apt-слой выше переиспользуется:
+# A separate layer, and behind an ARG: the cli's self-update lives in /usr/lib/node_modules,
+# there is no volume there — so it only ever updates on a rebuild. Changing the version
+# invalidates this layer alone, the apt layer above is reused:
 #   docker compose build --build-arg CLAUDE_CODE_VERSION=2.1.240 <service>
 ARG CLAUDE_CODE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
 
-# /run/sshd — иначе sshd падает с "Missing privilege separation directory".
-# sshd_config.d/ подхватывается дефолтным конфигом образа через Include.
+# /run/sshd — without it sshd dies with "Missing privilege separation directory".
+# sshd_config.d/ is picked up by the image's default config through Include.
 RUN mkdir -p /run/sshd
 COPY sshd_config /etc/ssh/sshd_config.d/10-container.conf
 COPY entrypoint.sh /entrypoint.sh
@@ -58,30 +59,32 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=.,target=/src \
     uv sync --no-editable --no-dev --frozen
 
-# UV_PROJECT_ENVIRONMENT нужен = /usr/local только для строки выше: зависимости бота
-# ставятся в системный python, своего venv у него нет. Дальше переменная опасна — в
-# рантайме `uv sync` в рабочем репозитории (песочницы, /projects) пишет туда же, и пакет
-# проекта перекрывает модуль бота: пакет `app/` поверх `app.py` ломает `python -m app`
-# с `No module named app.__main__`. Вылезает не сразу — загруженный модуль держится в
-# памяти, контейнер падает на следующем рестарте. Поэтому сбрасываем здесь, а не в
-# каждой песочнице: новая наследует безопасное значение. Пустое = дефолт uv, `./.venv`
-# рядом с репозиторием. Подробности — docs/bot.md, раздел «Песочница проекта».
+# UV_PROJECT_ENVIRONMENT has to be /usr/local for the line above and nothing else: the
+# bot's dependencies go into the system python, it has no venv of its own. Past that point
+# the variable is dangerous — at runtime `uv sync` in a working repository (sandboxes,
+# /projects) writes to the same place, and the project's package shadows the bot's module:
+# a package `app/` on top of `app.py` breaks `python -m app` with
+# `No module named app.__main__`. It does not surface at once — the loaded module stays in
+# memory and the container dies on the next restart. So it is reset here rather than in
+# every sandbox: a new one inherits the safe value. Empty = uv's default, `./.venv` next
+# to the repository. Details — docs/bot.md, section "Песочница проекта".
 #
-# UV_FROZEN в ENV выше тоже нет — сборка бота задаёт `--frozen` флагом, а унаследованная
-# переменная запрещала бы `uv lock` в рабочих репозиториях песочницы («Unable to find
-# lockfile»), в том числе при заведении нового проекта.
+# UV_FROZEN is likewise absent from the ENV above — the bot's build passes `--frozen` as a
+# flag, whereas an inherited variable would forbid `uv lock` in a sandbox's working
+# repositories ("Unable to find lockfile"), including when setting up a new project.
 #
-# UV_NO_CACHE выключаем здесь по той же логике: в сборке он к месту (кэш не оседает в
-# слое образа, для него выше своя `--mount=type=cache`), а в рантайме заставлял бы каждый
-# `uv sync` в песочнице качать пакеты заново. В песочницах дефолтный `/root/.cache/uv`
-# попадает внутрь маунта `${USER_DATA}/root:/root` и переживает пересоздание контейнера;
-# у ассистента маунтом накрыты отдельные файлы, так что его кэш живёт в rw-слое и
-# теряется при пересоздании — на работу это не влияет, просто скачается заново.
+# UV_NO_CACHE is switched off here by the same logic: during the build it is right (the
+# cache does not settle into an image layer, it has its own `--mount=type=cache` above),
+# while at runtime it would make every `uv sync` in a sandbox download packages again. In
+# sandboxes the default `/root/.cache/uv` falls inside the `${USER_DATA}/root:/root` mount
+# and survives a container recreate; the assistant has individual files covered by mounts,
+# so its cache lives in the rw layer and is lost on recreate — harmless, it just downloads
+# again.
 #
-# Значение `0`, а не пустое: UV_NO_CACHE булев, и `''` он считает невалидным
-# (`invalid value '' for '--no-cache'`) — сборка песочницы падала на первом же `uv`.
-# Убрать переменную из окружения через ENV нельзя, поэтому именно `0`. У строкового
-# UV_PROJECT_ENVIRONMENT ровно наоборот: пустое значение и есть «взять дефолт».
+# The value is `0`, not empty: UV_NO_CACHE is boolean and treats `''` as invalid
+# (`invalid value '' for '--no-cache'`) — a sandbox build died on the very first `uv`.
+# ENV cannot remove a variable from the environment, hence exactly `0`. For the string
+# UV_PROJECT_ENVIRONMENT it is the other way round: empty is precisely "take the default".
 ENV UV_PROJECT_ENVIRONMENT= \
     UV_NO_CACHE=0
 

@@ -1,62 +1,63 @@
 #!/bin/sh
-# Поднимает sshd (если есть host-ключи) и передаёт управление боту.
-# Два процесса в одном контейнере — осознанно: человек из IDE и бот должны видеть
-# одно рабочее дерево, один docker-демон и одну папку сессий claude. Разделять их по
-# контейнерам значит терять именно это. Детей жнёт `init: true` из compose.
+# Starts sshd (if host keys are present) and hands over to the bot.
+# Two processes in one container, on purpose: the human in the IDE and the bot must see
+# one working tree, one docker daemon and one claude session folder. Splitting them into
+# separate containers loses exactly that. Children are reaped by `init: true` in compose.
 set -e
 
-# ssh-сессия не наследует environment контейнера: sshd форкает шелл с чистым
-# окружением. Пробрасываем двумя путями, потому что ни один не покрывает всё:
-#   profile.d — только login-шеллы (терминал в IDE);
-#   SetEnv    — любая сессия, включая `ssh host cmd` (так IDE гоняет сборки и тесты).
-# Оба генерируются в рантайме: значения известны только тут, в образ их не вписать.
-# Кавычки вокруг значения — в путях бывают пробелы.
+# An ssh session does not inherit the container's environment: sshd forks a shell with a
+# clean one. It is passed through two ways, because neither covers everything:
+#   profile.d — login shells only (the IDE's terminal);
+#   SetEnv    — any session, including `ssh host cmd` (how the IDE runs builds and tests).
+# Both are generated at runtime: the values are only known here, they cannot be baked into
+# the image. Quotes around the value — paths sometimes contain spaces.
 : > /etc/ssh/sshd_config.d/20-env.conf
 : > /etc/profile.d/container-env.sh
 for v in DOCKER_HOST TZ IS_SANDBOX; do
     eval "val=\$$v"
     [ -n "$val" ] || continue
     echo "export $v=\"$val\"" >> /etc/profile.d/container-env.sh
-    # SetEnv не умеет кавычек и пробелов в значении — эти переменные их не содержат.
+    # SetEnv handles neither quotes nor spaces in a value — these variables contain neither.
     echo "SetEnv $v=$val" >> /etc/ssh/sshd_config.d/20-env.conf
 done
 
-# gitconfig — из .env, а не отдельным файлом в user_data: у рабочего проекта своя почта,
-# и она такой же параметр инстанса, как токен бота. Файлом это значит помнить про ещё один
-# шаг при заведении песочницы, а забытый шаг вылезает только на первом коммите.
-# Существующий конфиг не трогаем: в нём могли появиться алиасы, добавленные руками.
+# gitconfig comes from .env rather than a separate file in user_data: a work project has
+# its own email address, and that is as much an instance parameter as the bot's token. As a
+# file it would mean remembering one more step when setting up a sandbox, and a forgotten
+# step only surfaces on the first commit.
+# An existing config is left alone: it may have picked up aliases added by hand.
 if [ -n "$GIT_USER_EMAIL" ] && [ ! -f /root/.gitconfig ]; then
     git config --global user.name "${GIT_USER_NAME:-$GIT_USER_EMAIL}"
     git config --global user.email "$GIT_USER_EMAIL"
-    # Дерево принадлежит хостовому uid, а git в контейнере — root: без этого
-    # "detected dubious ownership" на любой команде в /projects.
+    # The tree belongs to the host uid while git in the container runs as root: without
+    # this, "detected dubious ownership" on any command in /projects.
     git config --global safe.directory '*'
 fi
 
-# umask 002 — из-за rw-маунтов скиллов: процесс идёт от root, а папки в репозитории на
-# хосте принадлежат человеку (uid 1000) и помечены setgid, т.е. группу новые файлы
-# наследуют правильную. Не хватало только group-write: с дефолтным 022 бот создавал
-# `-rw-r--r-- root:<группа>`, и человек на хосте не мог ни отредактировать, ни удалить
-# такой скилл без sudo (проверено — `rm` падал с Permission denied).
+# umask 002 — because of the rw skill mounts: the process runs as root, while the folders
+# in the repository on the host belong to the human (uid 1000) and are marked setgid, so
+# new files inherit the right group. Only group-write was missing: with the default 022 the
+# bot created `-rw-r--r-- root:<group>`, and the human on the host could neither edit nor
+# delete such a skill without sudo (verified — `rm` failed with Permission denied).
 umask 002
 
-# Скиллы: claude-code читает только /root/.claude/skills, а источников несколько —
-# базовый набор этого репозитория и свои у инстанса (проектные, личные). Маунт папки
-# поверх папки скрыл бы все, кроме последней, поэтому источники монтируются в
-# /opt/skills/* (rw — claude правит скиллы сам), а сюда линкуются по одному скиллу.
+# Skills: claude-code reads only /root/.claude/skills, while there are several sources —
+# this repository's base set and the instance's own (project, personal). Mounting a folder
+# over a folder would hide all but the last, so the sources are mounted at /opt/skills/*
+# (rw — claude edits skills itself) and linked in here one skill at a time.
 #
-# Порядок — алфавитный по имени каталога, и каждый следующий перебивает одноимённый
-# скилл предыдущего. Поэтому точки монтирования пронумерованы (10-base, 20-project):
-# слабейший источник первым, свой последним. Без цифр порядок дало бы само слово,
-# и набор из репозитория мог оказаться сильнее — ровно наоборот.
+# The order is alphabetical by directory name, and each next source overrides a skill of
+# the same name from the previous one. Hence the numbered mount points (10-base,
+# 20-project): weakest source first, the instance's own last. Without the numbers the word
+# itself would decide the order, and the repository's set could win — exactly backwards.
 #
-# Источники не перечислены списком специально: добавить ещё один = добавить том, без
-# правки этого файла.
+# The sources are deliberately not listed here: adding one more means adding a volume, with
+# no edit to this file.
 #
-# Нет /opt/skills — значит скиллы смонтированы прямо, ничего не делаем.
+# No /opt/skills — the skills are mounted directly, nothing to do.
 if [ -d /opt/skills ]; then
     mkdir -p /root/.claude/skills
-    # Чистим только симлинки: реальные папки мог положить человек руками.
+    # Only symlinks are cleared: a real folder may have been put there by hand.
     find /root/.claude/skills -maxdepth 1 -type l -delete
     for src in /opt/skills/*/; do
         [ -d "$src" ] || continue
@@ -67,13 +68,13 @@ if [ -d /opt/skills ]; then
     done
 fi
 
-# CLAUDE.md: claude-code читает один /root/.claude/CLAUDE.md, а источников два —
-# общие правила ответа (одинаковы для всех инстансов) и описание среды (у ассистента
-# docker.sock и хост, у песочницы свой dind). Маунт файла поверх файла скрыл бы один,
-# поэтому оба монтируются в /opt/claude-md/* и склеиваются здесь. Порядок: сначала
-# среда, потом правила ответа — напоминание про стиль должно быть последним, это
-# рекомендация Anthropic для длинных промптов. Нет /opt/claude-md — файл смонтирован
-# прямо, ничего не делаем.
+# CLAUDE.md: claude-code reads a single /root/.claude/CLAUDE.md, while there are two
+# sources — the shared answer rules (identical for every instance) and the environment
+# description (the assistant has docker.sock and the host, a sandbox its own dind).
+# Mounting a file over a file would hide one, so both are mounted at /opt/claude-md/* and
+# concatenated here. Order: environment first, answer rules second — the style reminder
+# belongs last, which is Anthropic's recommendation for long prompts. No /opt/claude-md —
+# the file is mounted directly, nothing to do.
 if [ -d /opt/claude-md ]; then
     mkdir -p /root/.claude
     : > /root/.claude/CLAUDE.md
@@ -84,13 +85,13 @@ if [ -d /opt/claude-md ]; then
     done
 fi
 
-# Host-ключи приезжают маунтом (переживают пересоздание контейнера). Нет маунта —
-# sshd не поднимаем: молча работать без входа лучше, чем сгенерировать ключи,
-# которые сменятся при следующем старте и напугают IDE.
+# Host keys arrive by mount (so they survive a container recreate). No mount — sshd is not
+# started: quietly working without logins beats generating keys that change on the next
+# start and alarm the IDE.
 if [ -r /etc/ssh/keys/ssh_host_ed25519_key ]; then
     /usr/sbin/sshd -e
 else
-    echo "entrypoint: /etc/ssh/keys не смонтирован — sshd не запущен" >&2
+    echo "entrypoint: /etc/ssh/keys is not mounted — sshd not started" >&2
 fi
 
 exec "$@"
