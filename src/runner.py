@@ -26,21 +26,60 @@ def busy() -> bool:
     return _current is not None and _current.returncode is None
 
 
-def trust(cwd: str) -> None:
-    """Без `hasTrustDialogAccepted` claude в новой директории игнорит settings.json
-    и просит принять диалог интерактивно — в headless это тупик. Диалог тут не нужен:
-    в /projects попадает только то, что смонтировал владелец бота."""
+def _patch_config(mutate) -> None:
+    """Прочитать /root/.claude.json, дать `mutate` его поправить, записать если менялось.
+
+    Файл ведёт сам claude-cli и кладёт туда много своего, поэтому только точечная
+    правка: читаем целиком, меняем нужный ключ, пишем обратно.
+    """
     try:
         with open(CONFIG) as f:
             cfg = json.load(f)
     except (OSError, ValueError):
         cfg = {}
-    proj = cfg.setdefault("projects", {}).setdefault(cwd, {})
-    if proj.get("hasTrustDialogAccepted"):
-        return
-    proj["hasTrustDialogAccepted"] = True
-    with open(CONFIG, "w") as f:
-        json.dump(cfg, f, indent=2)
+    if mutate(cfg):
+        with open(CONFIG, "w") as f:
+            json.dump(cfg, f, indent=2)
+
+
+def trust(cwd: str) -> None:
+    """Без `hasTrustDialogAccepted` claude в новой директории игнорит settings.json
+    и просит принять диалог интерактивно — в headless это тупик. Диалог тут не нужен:
+    в /projects попадает только то, что смонтировал владелец бота."""
+
+    def mutate(cfg: dict) -> bool:
+        proj = cfg.setdefault("projects", {}).setdefault(cwd, {})
+        if proj.get("hasTrustDialogAccepted"):
+            return False
+        proj["hasTrustDialogAccepted"] = True
+        return True
+
+    _patch_config(mutate)
+
+
+def skip_onboarding() -> None:
+    """Погасить приветственный TUI, который claude показывает на свежем конфиге.
+
+    Боту он не мешает — headless `-p` его не рисует и флаг не пишет. Мешает человеку:
+    в контейнере живёт sshd, и вход из IDE упирается в «Welcome to Claude Code»
+    с выбором темы, а следом в вопрос о доверии к /root — оба на пустом ${USER_DATA}.
+    Зовётся после логина: раньше конфига может не быть, а на этом шаге claude его
+    уже создал. Значения не перетираем — тему и доверие человек мог выбрать сам.
+    """
+
+    def mutate(cfg: dict) -> bool:
+        changed = False
+        if not cfg.get("hasCompletedOnboarding"):
+            cfg["hasCompletedOnboarding"] = True
+            changed = True
+        # ssh-сессия стартует в /root, а не в проекте — свой trust нужен и ему.
+        root = cfg.setdefault("projects", {}).setdefault("/root", {})
+        if not root.get("hasTrustDialogAccepted"):
+            root["hasTrustDialogAccepted"] = True
+            changed = True
+        return changed
+
+    _patch_config(mutate)
 
 
 async def run(
@@ -160,6 +199,7 @@ class Login:
             await asyncio.sleep(1)
             if os.path.exists(CREDS):
                 self.close()
+                skip_onboarding()
                 return True, "авторизован"
             if self.proc and self.proc.poll() is not None:
                 break
