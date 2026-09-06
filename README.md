@@ -52,9 +52,8 @@ both from two sources so that instance-specific and shared parts stay separate:
         ↓ concatenated by entrypoint.sh
 /root/.claude/CLAUDE.md
 
-/opt/skills/10-shared      claude/skills/shared from this repo
-/opt/skills/20-<type>      claude/skills/sandbox, or the instance's own
-/opt/skills/30-project     the project's own skills, if any
+/opt/skills/10-base        claude/skills/ from this repo
+/opt/skills/30-project     the instance's own skills, if any
         ↓ symlinked one by one
 /root/.claude/skills       higher prefixes win over lower ones
 ```
@@ -63,9 +62,9 @@ Both skill sources are mounted read-write on purpose: Claude edits and creates
 skills itself, and those edits land in the repository on the host, ready to be
 committed like any other change.
 
-The bundled skills — `fresh` for every instance, `refine` and `end` for sandboxes —
-are written to be project-agnostic, so they are a reasonable starting point rather
-than a personal configuration.
+The bundled skills — `refine`, `end` and `fresh` — target the sandbox workflow of
+working through a project repository, and are written to be project-agnostic, so
+they are a reasonable starting point rather than a personal configuration.
 
 ## Running it
 
@@ -95,7 +94,7 @@ services:
       - ${USER_DATA}/ssh:/root/.ssh                # git remotes
       - ${USER_DATA}/projects:/projects
       - ./data:/data                               # bot.db, audit.log
-      - <this repo>/claude/skills/shared:/opt/skills/10-shared
+      - <this repo>/claude/skills:/opt/skills/10-base
       - <this repo>/CLAUDE.common.md:/opt/claude-md/common.md:ro
       - ./CLAUDE.md:/opt/claude-md/env.md:ro       # your environment prompt
 ```
