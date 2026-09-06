@@ -60,7 +60,7 @@ services:
       - ./skills:/opt/skills/20-project
       # CLAUDE.md — the sandbox environment, nothing else. The answer style is an output
       # style baked into the image and selected by --settings, so it is not mounted here.
-      - ${CLAUDE_BOT}/CLAUDE.sandbox.md:/root/.claude/CLAUDE.md:ro
+      - ${CLAUDE_BOT}/claude/CLAUDE.sandbox.md:/root/.claude/CLAUDE.md:ro
     restart: unless-stopped
 
   example-dind:

@@ -33,7 +33,8 @@ host's containers are invisible from inside, so builds and tests in a work
 repository cannot reach the services running next door.
 
 This repository ships neither: it builds the image and carries the pieces both
-variants mount — the shared skills, the answer style, and `CLAUDE.sandbox.md`.
+variants mount — everything under `claude/`: the shared skills, the answer style
+and the sandbox environment prompt.
 An instance is a compose file of its own, with its own `.env`, its own volumes and
 its own environment prompt, kept wherever you keep that machine's configuration.
 
