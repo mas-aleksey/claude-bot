@@ -1,35 +1,37 @@
-# Среда исполнения
+# Environment
 
-Ты работаешь **внутри docker-контейнера** — песочницы одного проекта, не на машине
-пользователя. Видно только смонтированное: репозитории в `/projects`, состояние бота
-в `/data`. Нужен ещё проект — просить том, а не искать по файловой системе.
+You run **inside a docker container** — a sandbox for a single project, not on the
+user's machine. Only what is mounted exists: repositories in `/projects`, the bot's
+state in `/data`. Another project means asking for a volume, not searching the
+filesystem for it.
 
-Пользователя рядом нет: `vim`, `less`, `git rebase -i` и промпты на подтверждение
-повиснут. Только неинтерактивное, с явными флагами.
+Nobody is at the keyboard: `vim`, `less`, `git rebase -i` and confirmation prompts
+will hang. Non-interactive only, with explicit flags.
 
-Ты root, а файлы на хосте принадлежат пользователю. Создавая файл в `/projects`,
-равняйся `chown` на соседние — иначе пользователь не сможет его править.
+You are root, but the files on the host belong to the user. When you create one in
+`/projects`, match `chown` to its neighbours — otherwise the user cannot edit it.
 
-Рестарт стирает всё вне томов: `apt install` и правки в `/usr/local` не переживут
-его, нужное постоянно — в `Dockerfile` образа claude-bot.
+A restart wipes everything outside the volumes: `apt install` and edits under
+`/usr/local` will not survive one. Anything permanent belongs in the `Dockerfile` of
+the claude-bot image.
 
-## Скиллы
+## Skills
 
-Писать в `/root/.claude/skills` бесполезно — симлинки в нём создаёт `entrypoint`.
-Источники: `/opt/skills/30-project/<name>/SKILL.md` — скилл этого проекта,
-`/opt/skills/10-base/<name>/SKILL.md` — полезный любой песочнице. Сомневаешься —
-`30-project`, он перебивает одноимённый из `10-base`.
+Writing to `/root/.claude/skills` is pointless — `entrypoint` fills it with symlinks.
+There are two sources: `/opt/skills/30-project/<name>/SKILL.md` for a skill specific
+to this project, `/opt/skills/10-base/<name>/SKILL.md` for one useful to any sandbox.
+In doubt, pick `30-project` — it overrides a skill of the same name from `10-base`.
 
-`10-base` публикуется на GitHub: внутренним адресам, ключам задач и IP там не место.
-Коммитить скиллы отсюда нечем — `.git` в маунт не входит. Правка сразу лежит в
-рабочем дереве на хосте, коммит делает человек.
+`10-base` is published on GitHub, so internal addresses, issue keys and IPs do not
+belong there. You cannot commit a skill from here — `.git` is not part of the mount.
+The edit lands in the working tree on the host, and the human commits it.
 
-## Докер — свой демон, ломать безопасно
+## Docker — your own daemon, safe to break
 
-`DOCKER_HOST=tcp://localhost:2375` — демон свой (dind), до сервисов домашнего сервера
-отсюда не дотянуться. Namespace общий с dind, так что порты твоих контейнеров видны
-на `localhost` как обычно.
+`DOCKER_HOST=tcp://localhost:2375` is your own daemon (dind); the home server's
+services are out of reach from here. The network namespace is shared with dind, so
+ports of the containers you start show up on `localhost` as usual.
 
-**Грабля bind-mount:** пути в `docker run -v` резолвит демон, не ты. `-v /tmp/x:/x`
-смонтирует `/tmp/x` **демона**. Совпадают пути только в `/projects` — он смонтирован
-в dind по тому же пути специально для этого.
+**Bind-mount trap:** paths in `docker run -v` are resolved by the daemon, not by you.
+`-v /tmp/x:/x` mounts the **daemon's** `/tmp/x`. The only path that matches on both
+sides is `/projects` — mounted into dind under the same path exactly for this.
