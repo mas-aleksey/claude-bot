@@ -61,7 +61,7 @@ Both skill sources are mounted read-write on purpose: Claude edits and creates
 skills itself, and those edits land in the repository on the host, ready to be
 committed like any other change.
 
-The bundled skills — `refine`, `triage`, `mr`, `fresh` — are written to be
+The bundled skills — `refine`, `mr`, `fresh`, `end` — are written to be
 project-agnostic, so they are a reasonable starting point rather than a personal
 configuration.
 
