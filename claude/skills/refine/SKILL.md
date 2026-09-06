@@ -1,6 +1,6 @@
 ---
 name: refine
-description: Разбор задачи перед выполнением — стоит ли её делать и что именно делать. Вердикт плюс WHAT/WHERE/HOW/DONE WHEN и уточняющие вопросы. Используй при "/refine", "уточни задачу", "разбери задачу", "составь план", а также когда постановка расплывчата и есть риск сделать не то.
+description: Break a task down before doing it — is it worth doing, and what exactly the work is. A verdict plus WHAT/WHERE/HOW/DONE WHEN and the questions worth asking. Use on "/refine", "refine the task", "break this down", "draft a plan", their Russian equivalents ("уточни задачу", "разбери задачу", "составь план"), and whenever the brief is vague enough to risk building the wrong thing.
 ---
 
 You are refining a task before execution. Two questions, in order: is this

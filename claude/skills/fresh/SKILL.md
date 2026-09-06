@@ -1,6 +1,6 @@
 ---
 name: fresh
-description: Сброс контекста при застревании — забыть предыдущие попытки и посмотреть на код/ошибку с нуля. Используй при "/fresh", "свежий взгляд", "мы застряли", "начни заново", а также когда несколько попыток фикса не сработали.
+description: Context reset when stuck — drop the previous attempts and look at the code or error from scratch. Use on "/fresh", "fresh eyes", "we are stuck", "start over", their Russian equivalents ("свежий взгляд", "мы застряли", "начни заново"), and whenever several attempts at a fix have not worked.
 ---
 
 Stop what you're doing.
