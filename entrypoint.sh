@@ -77,7 +77,14 @@ fi
 # That leaves CLAUDE.md with a single source — the instance's own environment description,
 # mounted straight at /root/.claude/CLAUDE.md. Nothing to assemble, and Claude editing the
 # file from inside keeps the edit: no startup step overwrites it any more.
+# Sweep before linking: /root/.claude is a mount from the host and survives a container
+# recreate, so a link to a renamed or deleted style would hang around forever. Only links
+# into the image's own directory are removed — styles the user added stay untouched.
 mkdir -p /root/.claude/output-styles
+for link in /root/.claude/output-styles/*.md; do
+    [ -L "$link" ] || continue
+    case "$(readlink "$link")" in /opt/claude/output-styles/*) rm -f "$link" ;; esac
+done
 for style in /opt/claude/output-styles/*.md; do
     [ -f "$style" ] || continue
     ln -sf "$style" "/root/.claude/output-styles/$(basename "$style")"
