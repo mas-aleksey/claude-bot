@@ -1,33 +1,33 @@
 ---
 name: end
-description: Уборка рабочего окружения — свежий dev, мёртвые ветки и worktree, кеши сборки, docker, кеши пакетных менеджеров. Используй при "/end", "почисти", "убери мусор", "освободи место", "переключись на dev и почисти", а также когда кончается место на диске.
+description: Clean up the working environment — a fresh base branch, dead branches and worktrees, build caches, docker, package-manager caches. Use on "/end", "clean up", "clear the junk", "free up space", "switch to dev and clean up", their Russian equivalents ("почисти", "убери мусор", "освободи место"), and whenever the disk is filling up.
 allowed-tools: Bash, Read, AskUserQuestion
 ---
 
-# end — уборка окружения
+# end — environment cleanup
 
-Три уровня. Первый безопасен всегда, второй — по умолчанию, третий — только
-по явной просьбе или когда реально кончается место.
+Three levels. The first is always safe, the second is the default, the third only
+on an explicit request or when space is genuinely running out.
 
-**Правило:** сначала измерить, потом удалять. Отчёт — таблицей «что / сколько
-освободили». Ничего не удалять молча из того, что нельзя пересоздать командой.
+**Rule:** measure first, delete second. Report as a table of "what / how much was
+freed". Never delete anything silently that a command cannot recreate.
 
-`<base>` — базовая ветка проекта: обычно `dev`; нет такой ветки — дефолтная
-(`git symbolic-ref refs/remotes/origin/HEAD`) или то, что задано в `CLAUDE.md`.
-Не подставляй `dev` не глядя: в репозитории с `main` переключение уведёт
-работу не туда.
+`<base>` is the project's base branch: usually `dev`; no such branch — the default
+one (`git symbolic-ref refs/remotes/origin/HEAD`) or whatever `CLAUDE.md` names.
+Do not substitute `dev` without looking: in a repository on `main`, switching takes
+the work somewhere else.
 
-## 0. Измерить
+## 0. Measure
 
 ```bash
 /root/.claude/skills/end/scripts/measure.sh
 ```
 
-Запомни `STATE=<число>` из вывода — это свободные килобайты до уборки. В конце
-`measure.sh <это число>` посчитает, сколько освободилось. Без первого
-замера отчёт писать не из чего: дельту взять негде.
+Remember `STATE=<number>` from the output — free kilobytes before the cleanup. At
+the end, `measure.sh <that number>` works out how much was freed. Without the first
+measurement there is nothing to report: the delta has nowhere to come from.
 
-## 1. Git — свежая база (безопасно)
+## 1. Git — a fresh base (safe)
 
 ```bash
 git worktree prune
@@ -35,29 +35,29 @@ git fetch origin --prune
 git switch <base> && git pull --ff-only origin <base>
 ```
 
-Дерево грязное — **не** переключаться, сказать пользователю и остановиться.
+Dirty tree — do **not** switch, tell the user and stop.
 
-Мёртвые ветки, у которых upstream удалён:
+Dead branches whose upstream is gone:
 
 ```bash
 /root/.claude/skills/end/scripts/prune-branches.sh
 ```
 
-Скрипт удаляет только `-d` и печатает отдельным списком те, что не удалились.
-По ним **спроси**, не делай `-D` сам: squash-merge оставляет ветку
-«не влитой», хотя её содержимое уже в базе, но так же выглядит и ветка с
-потерянными коммитами.
+The script only ever runs `-d`, and prints the ones it could not delete as a
+separate list. **Ask** about those, never reach for `-D` yourself: a squash-merge
+leaves a branch looking "unmerged" although its content is already in the base —
+and a branch with lost commits looks exactly the same.
 
-Проверить и показать, не удаляя:
+Check and show without deleting:
 
 ```bash
-git stash list          # старые заначки часто висят на удалённых ветках
-git count-objects -v    # packs > 10 или prune-packable > 0 → git gc
+git stash list          # old stashes often hang off deleted branches
+git count-objects -v    # packs > 10 or prune-packable > 0 → git gc
 ```
 
-## 2. Мусор сборки (по умолчанию)
+## 2. Build junk (default)
 
-Кеши Python в репозитории — исключать `.venv`, иначе снесёшь установленный пакет:
+Python caches in the repository — exclude `.venv`, or you wipe an installed package:
 
 ```bash
 find . -path '*/.venv' -prune -o \
@@ -66,87 +66,87 @@ find . -path '*/.venv' -prune -o \
 find . -path '*/.venv' -prune -o -name '*.pyc' -print0 | xargs -0 rm -f
 ```
 
-Docker — сначала проверить, чей демон. Скилл общий, инстансы разные:
+Docker — check whose daemon it is first. The skill is shared, the instances are not:
 
 ```bash
-echo "${DOCKER_HOST:-хостовой сокет}"
+echo "${DOCKER_HOST:-host socket}"
 ```
 
-Пусто или сокет — это **не** песочница: ничего не удалять, сказать
-пользователю и перейти к следующему пункту.
+Empty or a socket means this is **not** a sandbox: delete nothing, tell the user and
+move on to the next item.
 
-`tcp://localhost:2375` — свой dind, можно чистить:
+`tcp://localhost:2375` is your own dind, safe to clean:
 
 ```bash
-docker container prune -f          # остановленные контейнеры
-docker image prune -f              # висячие образы
-docker builder prune -f            # кеш сборки
+docker container prune -f          # stopped containers
+docker image prune -f              # dangling images
+docker builder prune -f            # build cache
 ```
 
-Живые контейнеры **не гасить**. Место освобождает не остановка, а `prune`,
-который здесь уже прошёл; погашенный стенд пользователя придётся поднимать
-заново. Нужно освободить и то, что занято живыми — это уровень 3 и только по
-явной просьбе:
+Do **not** stop running containers. Space is freed by `prune`, which has already run
+here, not by stopping them — and a stack you shut down is one the user has to bring
+back up. Freeing what running containers hold is level 3, and only on an explicit
+request:
 
 ```bash
 docker ps -q | xargs -r docker stop && docker container prune -f
 ```
 
-Образы под тегом и тома не трогать: в томе стенда база с миграциями и
-данными прогона, поднять заново дороже сэкономленного. Удалять адресно и по
-явной просьбе, проверив, что никто не держит — имя тома владельца не
-доказывает:
+Leave tagged images and volumes alone: a stack's volume holds a database with
+migrations and the run's data, and recreating it costs more than the space saved.
+Delete them one by one, on an explicit request, having checked that nobody holds
+them — a volume's name does not prove who owns it:
 
 ```bash
-docker ps -a --filter volume=<volume>    # пусто — ничей, можно
+docker ps -a --filter volume=<volume>    # empty — nobody's, safe to remove
 ```
 
-Отказ хука-гарда на удаление — защита, а не поломка: выдать пользователю
-готовые команды и остановиться.
+A guard hook refusing a deletion is protection, not breakage: hand the user the
+ready commands and stop.
 
-Что **не** трогать: `.venv`, `.env`, `.run-env`, `*.egg-info` (на него
-ссылается editable-установка), `node_modules` без просьбы переустановить.
+What **not** to touch: `.venv`, `.env`, `.run-env`, `*.egg-info` (an editable
+install points at it), `node_modules` unless asked to reinstall.
 
-## 3. Кеши и накопленное в /root (растут молча, гигабайтами)
+## 3. Caches and what piles up in /root (grows silently, in gigabytes)
 
-`/root` — том, кеши переживают рестарт контейнера и не чистятся сами.
+`/root` is a volume: caches survive a container restart and never clean themselves.
 
 ```bash
-npm cache clean --force        # /root/.npm легко набирает 1 ГБ
+npm cache clean --force        # /root/.npm easily reaches 1 GB
 pip cache purge
 uv cache prune
-git gc --prune=now             # packs, если count-objects показал много
+git gc --prune=now             # packs, if count-objects showed a lot
 env -u UV_NO_CACHE uv cache prune --cache-dir /root/.cache/uv
 ```
 
-Грабля uv: в окружении стоит `UV_NO_CACHE=1`, поэтому голый `uv cache prune`
-чистит временный каталог в `/tmp` и врёт «no unused entries», а настоящий кеш
-в `/root/.cache/uv` не трогает. Нужны оба флага.
+uv gotcha: the environment sets `UV_NO_CACHE=1`, so a bare `uv cache prune` cleans a
+temporary directory under `/tmp` and lies with "no unused entries", leaving the real
+cache in `/root/.cache/uv` untouched. Both flags are required.
 
-Остаток кеша uv после prune — это `archive-v0` и `git-v0`, распакованные
-колёса и git-зависимости под живыми venv. Сносить целиком только если место
-кончается: цена — переустановка окружения с нуля.
+What remains of the uv cache after a prune is `archive-v0` and `git-v0` — unpacked
+wheels and git dependencies backing live venvs. Wipe those only if space is running
+out: the price is reinstalling the environment from scratch.
 
-Транскрипты сессий, `/root/.claude/projects/<проект>/` — сотни мегабайт.
-Это история переписки и `tool-results`. Удалять **только** по явной просьбе и
-только старше двух недель:
+Session transcripts, `/root/.claude/projects/<project>/` — hundreds of megabytes.
+They are the conversation history and `tool-results`. Delete **only** on an explicit
+request, and only older than two weeks:
 
 ```bash
 find /root/.claude/projects -name '*.jsonl' -mtime +14 -delete
 find /root/.claude/projects -path '*/tool-results/*' -mtime +14 -delete
 ```
 
-В том же каталоге лежит `<проект>/memory/` — долговременная память. Маски
-выше её не задевают, расширять их до `*.md` или чистить каталогом нельзя:
-восстановить нечем.
+The same directory holds `<project>/memory/` — long-term memory. The masks above do
+not touch it, and must never be widened to `*.md` or pointed at the directory:
+there is no way to restore it.
 
-## Отчёт
+## Report
 
 ```bash
-/root/.claude/skills/end/scripts/measure.sh <STATE из шага 0>
+/root/.claude/skills/end/scripts/measure.sh <STATE from step 0>
 ```
 
-Таблица: что почищено, сколько освободилось (число — из строки «освобождено»).
-Отдельным списком — что оставил и почему. Найденные по дороге аномалии (мусор
-в индексе git, чужие worktree, осиротевший stash, невлитые мёртвые ветки) —
-отдельным пунктом, с предложением, а не молча.
+A table: what was cleaned, how much was freed (the number comes from the "freed"
+line). As a separate list — what was left and why. Anomalies found along the way
+(junk in the git index, someone else's worktree, an orphaned stash, unmerged dead
+branches) go in their own item, as a suggestion rather than silently.

@@ -1,8 +1,8 @@
 #!/bin/sh
-# Удаляет локальные ветки, у которых upstream удалён (': gone]').
-# Только -d. Невлитые не удаляет, а печатает списком — по ним решает пользователь.
-# Причина: squash-merge оставляет ветку «не влитой», хотя содержимое уже в базе,
-# и -D тут безвозвратно потеряет коммиты, которые в базу не попали.
+# Deletes local branches whose upstream is gone (': gone]').
+# Only -d. Unmerged ones are printed as a list instead — the user decides on those.
+# Reason: a squash-merge leaves a branch "unmerged" although its content is already
+# in the base, and -D would irreversibly lose commits that never reached it.
 set -u
 
 deleted=''
@@ -10,7 +10,7 @@ kept=''
 
 for b in $(git branch -vv | grep ': gone\]' | sed 's/^[*+] //' | awk '{print $1}'); do
     if [ "$b" = "$(git branch --show-current)" ]; then
-        kept="$kept  $b (текущая ветка)\n"
+        kept="$kept  $b (current branch)\n"
     elif err=$(git branch -d "$b" 2>&1); then
         deleted="$deleted  $b\n"
     else
@@ -18,7 +18,7 @@ for b in $(git branch -vv | grep ': gone\]' | sed 's/^[*+] //' | awk '{print $1}
     fi
 done
 
-[ -n "$deleted" ] && { echo "удалены:"; printf "$deleted"; }
-[ -n "$kept" ] && { echo "ОСТАВЛЕНЫ — нужно решение пользователя:"; printf "$kept"; }
-[ -z "$deleted$kept" ] && echo "мёртвых веток нет"
+[ -n "$deleted" ] && { echo "deleted:"; printf "$deleted"; }
+[ -n "$kept" ] && { echo "KEPT — needs the user's decision:"; printf "$kept"; }
+[ -z "$deleted$kept" ] && echo "no dead branches"
 exit 0

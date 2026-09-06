@@ -1,31 +1,31 @@
 #!/bin/sh
-# Замер места. Без аргумента — печатает картину и строку STATE=<байты свободно>.
-# С аргументом (прошлый STATE) — добавляет строку «освобождено».
-# Дельта по свободному месту на /, а не по сумме du: параллельная запись в том
-# же ФС её исказит, зато это единственное число, которое видит пользователь.
+# Disk measurement. With no argument — prints the picture and a STATE=<free bytes> line.
+# With an argument (the previous STATE) — adds a "freed" line.
+# The delta is free space on /, not a sum of du: a concurrent write to the same
+# filesystem skews it, but it is the only number the user actually sees.
 set -u
 
 avail_kb() { df -Pk / | awk 'NR==2 {print $4}'; }
 
 now=$(avail_kb)
 
-echo "== диск"
+echo "== disk"
 df -h /
 echo
-echo "== кеши в /root"
+echo "== caches in /root"
 du -sh /root/.npm /root/.cache/uv /root/.cache/pip 2>/dev/null
 echo
-echo "== репозиторий"
+echo "== repository"
 du -sh .git 2>/dev/null
 du -sh ./*/.venv 2>/dev/null
 echo
-echo "== транскрипты сессий (топ-5)"
+echo "== session transcripts (top 5)"
 du -sh /root/.claude/projects/*/ 2>/dev/null | sort -h | tail -5
 
 if [ $# -ge 1 ]; then
     freed=$(( (now - $1) / 1024 ))
     echo
-    echo "освобождено: ${freed} МБ"
+    echo "freed: ${freed} MB"
 fi
 
 echo
