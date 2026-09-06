@@ -53,7 +53,7 @@ both from two sources so that instance-specific and shared parts stay separate:
 /root/.claude/CLAUDE.md
 
 /opt/skills/10-base        claude/skills/ from this repo
-/opt/skills/30-project     the instance's own skills, if any
+/opt/skills/20-project     the instance's own skills, if any
         ↓ symlinked one by one
 /root/.claude/skills       higher prefixes win over lower ones
 ```

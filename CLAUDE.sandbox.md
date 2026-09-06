@@ -18,9 +18,9 @@ the claude-bot image.
 ## Skills
 
 Writing to `/root/.claude/skills` is pointless — `entrypoint` fills it with symlinks.
-There are two sources: `/opt/skills/30-project/<name>/SKILL.md` for a skill specific
+There are two sources: `/opt/skills/20-project/<name>/SKILL.md` for a skill specific
 to this project, `/opt/skills/10-base/<name>/SKILL.md` for one useful to any sandbox.
-In doubt, pick `30-project` — it overrides a skill of the same name from `10-base`.
+In doubt, pick `20-project` — it overrides a skill of the same name from `10-base`.
 
 `10-base` is published on GitHub, so internal addresses, issue keys and IPs do not
 belong there. You cannot commit a skill from here — `.git` is not part of the mount.
