@@ -59,5 +59,15 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=.,target=/src \
     uv sync --no-editable --no-dev --frozen
 
+# UV_PROJECT_ENVIRONMENT нужен = /usr/local только для строки выше: зависимости бота
+# ставятся в системный python, своего venv у него нет. Дальше переменная опасна — в
+# рантайме `uv sync` в рабочем репозитории (песочницы, /projects) пишет туда же, и пакет
+# проекта перекрывает модуль бота: пакет `app/` поверх `app.py` ломает `python -m app`
+# с `No module named app.__main__`. Вылезает не сразу — загруженный модуль держится в
+# памяти, контейнер падает на следующем рестарте. Поэтому сбрасываем здесь, а не в
+# каждой песочнице: новая наследует безопасное значение. Пустое = дефолт uv, `./.venv`
+# рядом с репозиторием. Подробности — docs/bot.md, раздел «Песочница проекта».
+ENV UV_PROJECT_ENVIRONMENT=
+
 ENTRYPOINT ["/entrypoint.sh"]
 CMD ["python", "-m", "app"]
