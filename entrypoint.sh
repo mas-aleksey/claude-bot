@@ -9,17 +9,28 @@ set -e
 # clean one. It is passed through two ways, because neither covers everything:
 #   profile.d — login shells only (the IDE's terminal);
 #   SetEnv    — any session, including `ssh host cmd` (how the IDE runs builds and tests).
+# PATH is in the list for a second reason on top of that: Debian's /etc/profile assigns it
+# unconditionally and exports it, so a login shell discards the image's ENV PATH even when
+# it does arrive. profile.d is sourced after that assignment and wins. Without both channels
+# an instance whose image prepends an interpreter to PATH gives the human one version while
+# the bot gets another, on one working tree. A no-op where the image adds nothing.
 # Both are generated at runtime: the values are only known here, they cannot be baked into
 # the image. Quotes around the value — paths sometimes contain spaces.
 : > /etc/ssh/sshd_config.d/20-env.conf
 : > /etc/profile.d/container-env.sh
-for v in DOCKER_HOST TZ IS_SANDBOX; do
+# One SetEnv line with every pair, not one line per variable: sshd takes the FIRST
+# occurrence of a keyword and ignores the rest, so a line per variable silently passed only
+# the first one (`sshd -T | grep setenv` showed just DOCKER_HOST — TZ and IS_SANDBOX never
+# reached an `ssh host cmd` session). profile.d has no such rule; it is a shell script.
+# SetEnv handles neither quotes nor spaces in a value — these variables contain neither.
+set_env=
+for v in DOCKER_HOST TZ IS_SANDBOX PATH; do
     eval "val=\$$v"
     [ -n "$val" ] || continue
     echo "export $v=\"$val\"" >> /etc/profile.d/container-env.sh
-    # SetEnv handles neither quotes nor spaces in a value — these variables contain neither.
-    echo "SetEnv $v=$val" >> /etc/ssh/sshd_config.d/20-env.conf
+    set_env="$set_env $v=$val"
 done
+[ -n "$set_env" ] && echo "SetEnv$set_env" >> /etc/ssh/sshd_config.d/20-env.conf
 
 # gitconfig comes from .env rather than a separate file in user_data: a work project has
 # its own email address, and that is as much an instance parameter as the bot's token. As a
