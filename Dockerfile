@@ -10,14 +10,11 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     UV_PYTHON=/usr/local/bin/python \
     UV_NO_CACHE=1
 
-# node is the runtime for claude-code; docker-ce-cli + compose-plugin cover host
-# operations through docker.sock (in project sandboxes — through their own dind).
-# Trap for instances on the HOST daemon (the assistant): relative paths in a compose
-# file (`./config.yaml`) are resolved by the daemon, i.e. by the host, while the working
-# copy of the repo is mounted here under a different path — docker will silently create
-# an empty directory instead of the config. So run compose from the directory with the
-# host path (see CLAUDE.md), not from /projects/localhome.
-# Project sandboxes do not have this: /projects is mounted identically in the bot and dind.
+# node is the runtime for claude-code; docker-ce-cli + compose-plugin talk to the
+# sandbox's own dind. /projects is mounted identically in the bot and in dind, so a
+# relative path in a compose file resolves to the same place on both sides — the daemon
+# resolves it, not the client, and a mismatch would have docker silently create an empty
+# directory instead of mounting the file.
 # git/openssh-client — working with project repositories.
 # openssh-server — attaching to the container from an IDE (PyCharm/VSCode Remote): the bot
 # and the human share one container, hence one working tree and one claude session folder.
@@ -53,11 +50,12 @@ RUN mkdir -p /run/sshd
 COPY sshd_config /etc/ssh/sshd_config.d/10-container.conf
 COPY entrypoint.sh /entrypoint.sh
 
-# Стиль ответа — часть продукта, а не конфигурация инстанса: он одинаков у всех и
-# правится вместе с образом. Отсюда COPY, а не маунт из каждого compose.
-# Читается через `--settings /opt/claude/settings.json` в runner.py: подмена секции
-# системного промпта, тогда как CLAUDE.md инстанса остаётся контекстом окружения.
-# Каталог /opt/claude, а не /root/.claude — тот перекрыт маунтом ${USER_DATA}/root.
+# The answer style is part of the product, not per-instance configuration: it is the same
+# everywhere and changes with the image. Hence COPY, rather than a mount in every compose
+# file. runner.py passes `--settings /opt/claude/settings.json`, which replaces a section
+# of the system prompt, while the instance's CLAUDE.md stays environment context.
+# /opt/claude rather than /root/.claude — the latter is covered by the ${USER_DATA}/root
+# mount, which would hide anything the image puts there.
 COPY claude/settings.json /opt/claude/settings.json
 COPY claude/output-styles /opt/claude/output-styles
 
@@ -75,7 +73,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # `No module named app.__main__`. It does not surface at once — the loaded module stays in
 # memory and the container dies on the next restart. So it is reset here rather than in
 # every sandbox: a new one inherits the safe value. Empty = uv's default, `./.venv` next
-# to the repository. Details — docs/bot.md, section "Песочница проекта".
+# to the repository.
 #
 # UV_FROZEN is likewise absent from the ENV above — the bot's build passes `--frozen` as a
 # flag, whereas an inherited variable would forbid `uv lock` in a sandbox's working
@@ -85,9 +83,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 # cache does not settle into an image layer, it has its own `--mount=type=cache` above),
 # while at runtime it would make every `uv sync` in a sandbox download packages again. In
 # sandboxes the default `/root/.cache/uv` falls inside the `${USER_DATA}/root:/root` mount
-# and survives a container recreate; the assistant has individual files covered by mounts,
-# so its cache lives in the rw layer and is lost on recreate — harmless, it just downloads
-# again.
+# and survives a container recreate.
 #
 # The value is `0`, not empty: UV_NO_CACHE is boolean and treats `''` as invalid
 # (`invalid value '' for '--no-cache'`) — a sandbox build died on the very first `uv`.

@@ -1,8 +1,8 @@
 # claude-bot
 
-Claude Code in a Telegram chat. Run it on a home server, message it from a phone,
-and it works in your repositories — same sessions, same skills, same context you
-would get in a terminal.
+Claude Code in a Telegram chat, one container per project. Run it on a home server,
+message it from a phone, and it works in that project's repositories — same sessions,
+same skills, same context you would get in a terminal.
 
 Long-polling, so no public URL and no webhook. Access is an allowlist of Telegram
 user ids — everyone else is ignored.
@@ -23,20 +23,17 @@ user ids — everyone else is ignored.
 Claude's markdown answers are rendered as Telegram HTML — tables included, which
 is most of what makes a phone-sized answer readable.
 
-## Two ways to run it
+## One container per project
 
-**Assistant** — full access to the host it runs on: the docker socket, the shared
-repository, whatever you mount. It manages the machine it lives on.
+Each instance gets its own Docker-in-Docker daemon, so the host's containers are
+invisible from inside: builds and tests in a work repository cannot reach the services
+running next door. Mount only that project's repositories and nothing else is in reach.
 
-**Sandbox** — one container per project, with its own Docker-in-Docker daemon. The
-host's containers are invisible from inside, so builds and tests in a work
-repository cannot reach the services running next door.
-
-This repository ships neither: it builds the image and carries the pieces both
-variants mount — everything under `claude/`: the shared skills, the answer style
-and the sandbox environment prompt.
-An instance is a compose file of its own, with its own `.env`, its own volumes and
-its own environment prompt, kept wherever you keep that machine's configuration.
+This repository ships no running instance. It builds the image and carries everything
+an instance mounts, all under `claude/` — the shared skills, the answer style and the
+environment prompt. An instance is a compose file of its own with its own `.env` and
+volumes, kept wherever you keep that machine's configuration; [`example/`](example/)
+is a working one to copy.
 
 The image also carries an sshd, so an IDE can attach over Remote Development and
 share the bot's working tree and session directory — a conversation started in the
@@ -57,10 +54,10 @@ claude/settings.json                      {"outputStyle": "conclusion-first"}
 system prompt
 ```
 
-**`CLAUDE.md` is context.** It describes the environment the instance runs in — the
-assistant has a docker socket and the host, a sandbox its own dind — so each instance
-mounts its own file straight at `/root/.claude/CLAUDE.md`. Nothing is assembled at
-startup, which also means Claude editing that file from inside keeps the edit.
+**`CLAUDE.md` is context.** It describes the environment the instance runs in — its
+own dind, what is mounted, what is not in reach — and is mounted straight at
+`/root/.claude/CLAUDE.md`. Nothing is assembled at startup, which also means Claude
+editing that file from inside keeps the edit.
 
 Skills come from two sources and are merged by symlink:
 
@@ -107,12 +104,11 @@ Claude's config and sessions, an ssh key for git remotes, a gitconfig, the proje
 themselves. It lives outside this repository deliberately — the service can be
 rebuilt from scratch without touching any of it.
 
-An assistant additionally mounts `/var/run/docker.sock` and the repository it shares
-with you on the host. When both sides write to the same `.git`, the container has to
-join the host user's group and set `core.sharedRepository=group`; without that, the
-bot's commits leave objects the human cannot overwrite. A sandbox instead runs a
-`docker:dind` sidecar and shares its network namespace, so `DOCKER_HOST` points at
-the sandbox daemon and the host's containers stay invisible.
+The `docker:dind` sidecar shares its network namespace with the bot, so
+`DOCKER_HOST=tcp://localhost:2375` reaches the sandbox daemon while the host's
+containers stay invisible. Ports published by containers you start show up on
+`localhost` as usual, and the sshd port is published on the sidecar — the bot has no
+network stack of its own.
 
 ### Sizing an instance
 
@@ -126,7 +122,7 @@ the first command fails inside the container:
 | Runtime and version — python 3.13? node 20? go? | `Dockerfile`: `uv python install <ver>` plus `ENV UV_PYTHON=<ver>` — the version, never a path: a standalone build's path carries the patch level and goes stale on the next update |
 | Package manager — uv, poetry, pnpm, yarn | `Dockerfile`: `corepack enable pnpm` for node (corepack ships with node and honours `packageManager` in the repository), `pip install poetry` for poetry |
 | Build tools and CLIs — make, gh, glab, graphviz, terraform | `Dockerfile`, an `apt-get install` layer or a downloaded binary |
-| Does it need a Docker daemon — image builds, testcontainers, compose in tests | Yes: a `docker:dind` sidecar, `network_mode: service:<name>-dind`, `DOCKER_HOST=tcp://localhost:2375`, and the sshd port published on the sidecar. No: none of that — a single service, ports on the bot itself |
+| Does it need a Docker daemon — image builds, testcontainers, compose in tests | `example/` comes with one. If the project never touches Docker, drop the `<name>-dind` service, `depends_on`, `network_mode` and `DOCKER_HOST`, and move `ports` onto the bot |
 | Databases and services the tests need | If they come up as containers, the row above is a yes |
 | Project-specific skills — deploy, code review, log queries | `skills/`, mounted as `/opt/skills/20-project` |
 
@@ -142,22 +138,20 @@ new container goes back to the network — which means it fails when the network
 gone. `COREPACK_HOME=/opt/corepack` and `UV_PYTHON_INSTALL_DIR=/opt/uv-python` are
 the two that bite in practice.
 
-Without a daemon the instance is markedly simpler: no privileged sidecar, no shared
-network namespace, no restart ordering between the two containers. When in doubt keep
-it — an idle dind costs a container and nothing else.
+Dropping the daemon makes the instance markedly simpler: no privileged sidecar, no
+shared network namespace, no restart ordering between two containers. When in doubt
+keep it — an idle dind costs a container and nothing else.
 
 ## Security model
 
-An assistant instance runs as root and mounts the docker socket, so **inside that
-container it can do anything the host's Docker can** — stop services, prune images,
-read any bind-mounted path. That is the point of an assistant, and it is why
-`TG_ALLOWED_USER_ID` is checked on every update.
+No host socket, a separate daemon, and only the volumes that project needs — an
+instance cannot see or stop what runs next door. Inside its own sandbox it is root and
+runs with permission checks bypassed, which is what makes it useful unattended and why
+`TG_ALLOWED_USER_ID` is checked on every update: whoever passes the allowlist has that
+container.
 
-Sandboxes are the opposite: no host socket, a separate daemon, and only the volumes
-that project needs.
-
-Neither variant is meant to face the public internet. There is no inbound HTTP at
-all — the bot polls Telegram.
+It is not meant to face the public internet. There is no inbound HTTP at all — the bot
+polls Telegram.
 
 ## Development
 
