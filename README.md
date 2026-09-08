@@ -23,6 +23,14 @@ user ids — everyone else is ignored.
 Claude's markdown answers are rendered as Telegram HTML — tables included, which
 is most of what makes a phone-sized answer readable.
 
+Plain text is a prompt. Text prefixed with `!` becomes a Claude slash command
+(`!refine x` → `/refine x`), because Telegram keeps `/` for its own autocomplete.
+
+Photos and documents are saved under `/data/inbox` and their path is appended to the
+prompt, so a caption and its file arrive as one message — the CLI reads the file itself.
+Telegram's Bot API caps downloads at 20 MB; larger files are refused with a message.
+The directory grows unbounded, prune it on the host if that matters.
+
 ## One container per project
 
 Each instance gets its own Docker-in-Docker daemon, so the host's containers are

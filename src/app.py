@@ -33,6 +33,7 @@ TOKEN = os.environ["TG_BOT_TOKEN"]
 ALLOWED = {int(x) for x in os.environ.get("TG_ALLOWED_USER_ID", "").split(",") if x.strip()}
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/projects"))
 AUDIT = Path(os.environ.get("AUDIT_LOG", "/data/audit.log"))
+INBOX = Path(os.environ.get("INBOX_DIR", "/data/inbox"))
 
 
 THROTTLE = 2.0   # секунд между editMessageText
@@ -348,11 +349,41 @@ async def on_prompt(msg: Message) -> None:
         login = None
         await msg.answer(f"{'✅' if ok else '❌'} {detail}")
         return
+    await handle(msg, (msg.text or "").strip())
 
+
+@dp.message(F.photo | F.document)
+async def on_file(msg: Message) -> None:
+    """Файл из чата → на диск, путь уходит в промпт вместе с подписью.
+
+    Claude читает файл сам, если в промпте есть путь, — конвертировать и слать
+    содержимое не нужно. Подпись к файлу Telegram кладёт в `caption`, не в `text`.
+    """
+    if login:  # ждём код из чата — файл сейчас не к месту
+        await msg.answer("идёт логин: пришли код или /cancel")
+        return
+    # photo — набор превью одной картинки, последний элемент самый крупный.
+    file = msg.document or msg.photo[-1]
+    name = getattr(file, "file_name", None) or f"{file.file_unique_id}.jpg"
+    # Path(name).name — Telegram отдаёт file_name как есть, `../` увёл бы файл из inbox.
+    dest = INBOX / f"{int(time.time())}-{Path(name).name}"
+    INBOX.mkdir(parents=True, exist_ok=True)
+    try:
+        await msg.bot.download(file, dest)
+    except TelegramBadRequest as e:
+        # Bot API не отдаёт файлы больше 20 МБ — своего Local Bot API server тут нет.
+        log.warning("download failed: %s", e)
+        await msg.answer(f"не смог забрать файл (лимит Telegram — 20 МБ)\n{e}")
+        return
+    caption = (msg.caption or "").strip()
+    await handle(msg, f"{caption}\n\n{dest}".strip() if caption else str(dest))
+
+
+async def handle(msg: Message, prompt: str) -> None:
+    """Промпт в текущий проект: живое сообщение с прогрессом, потом итог."""
     # `!refine текст` → слеш-команда Claude `/refine текст`. Только первый символ,
     # однократно: `почини баг!` и `git commit -m "fix!"` уходят в промпт как есть.
     # Telegram отдаёт `/` своему автокомплиту, поэтому `/` — боту, `!` — Claude.
-    prompt = (msg.text or "").strip()
     if prompt.startswith("!"):
         prompt = "/" + prompt[1:]
     if not prompt:
@@ -363,7 +394,8 @@ async def on_prompt(msg: Message) -> None:
         return
 
     with AUDIT.open("a") as f:
-        f.write(f"{int(time.time())}\t{msg.from_user.id}\t{cwd()}\t{prompt}\n")
+        f.write(f"{int(time.time())}\t{msg.from_user.id}\t{cwd()}\t"
+                f"{prompt.replace(chr(10), ' ')}\n")
 
     project = cwd()
     run = render.Run(prompt, Path(project).name)
@@ -423,6 +455,7 @@ async def main() -> None:
     store.conn()
     AUDIT.parent.mkdir(parents=True, exist_ok=True)
     PROJECTS_DIR.mkdir(parents=True, exist_ok=True)
+    INBOX.mkdir(parents=True, exist_ok=True)
     if not ALLOWED:
         log.warning("TG_ALLOWED_USER_ID пуст — бот не ответит никому")
     bot = Bot(TOKEN)
