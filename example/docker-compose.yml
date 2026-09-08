@@ -108,7 +108,7 @@ services:
   # Telegram long-poll and the published sshd port, so a dropped tunnel takes the whole
   # sandbox offline with it. Which of the two you want depends on the config:
   #   - the .ovpn has `redirect-gateway` (all traffic goes through the VPN) — keep it on,
-  #     and list the LAN in ALLOWED_SUBNETS so ssh survives;
+  #     and list the LAN in SUBNETS so ssh survives;
   #   - the .ovpn only pushes routes to a few private subnets — turn it off. There is no
   #     leak to prevent, and an outage of the tunnel should not cost you the bot.
   #
@@ -118,22 +118,27 @@ services:
   # route. Worth knowing before wondering why a passing curl fails inside a test.
   #
   # example-vpn:
-  #   image: ghcr.io/wfg/openvpn-client:3      # pinned to a major: minor updates are safe,
-  #                                            # a major one is not going to arrive unnoticed
+  #   image: ghcr.io/wfg/openvpn-client:3.1    # pin the minor and check the interface first:
+  #                                            # the README on master documents CONFIG_FILE
+  #                                            # and /config, which no published tag speaks
+  #                                            # yet — 3, 3.1, latest all share one digest
+  #                                            # and want VPN_CONFIG_FILE with /data/vpn
   #   container_name: claude-example-vpn
   #   network_mode: "service:example-dind"     # same namespace as the bot — that is the point
   #   cap_add: [NET_ADMIN]
   #   devices:
   #     - /dev/net/tun:/dev/net/tun
   #   volumes:
-  #     # rw, not ro: openvpn writes into this directory. The .ovpn goes here, and if the
-  #     # config has no credentials baked in, a `credentials.txt` (username on line one,
-  #     # password on line two) next to it, referenced from the config as
-  #     # `auth-user-pass credentials.txt`.
-  #     - ${USER_DATA}/vpn:/config
+  #     # /data/vpn, not /config: the image has WORKDIR=/data and resolves the config as
+  #     # `vpn/$VPN_CONFIG_FILE` relative to it. rw, not ro — openvpn writes a modified
+  #     # copy of the config next to the original. The .ovpn goes here, and if it has no
+  #     # credentials baked in, a `credentials.txt` (username on line one, password on
+  #     # line two) beside it, referenced from the config as `auth-user-pass credentials.txt`.
+  #     - ${USER_DATA}/vpn:/data/vpn
   #   environment:
-  #     CONFIG_FILE: ${VPN_CONFIG}             # filename inside /config; unset picks a random one
+  #     VPN_CONFIG_FILE: ${VPN_CONFIG}         # filename inside /data/vpn; unset picks a
+  #                                            # random *.ovpn/*.conf found there
   #     KILL_SWITCH: "off"                     # see the note above — depends on the config
-  #     # ALLOWED_SUBNETS: <your LAN in CIDR>  # only with the kill switch on: the LAN, so
+  #     # SUBNETS: <your LAN in CIDR>          # only with the kill switch on: the LAN, so
   #                                            # the published sshd port stays reachable
   #   restart: unless-stopped
