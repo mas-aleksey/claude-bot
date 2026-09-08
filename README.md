@@ -120,8 +120,8 @@ network stack of its own.
 
 ### Sizing an instance
 
-The image ships python 3.14 + uv, node 22 + npm, git, docker CLI, psql, jq and vim.
-Anything a project needs beyond that goes into a `Dockerfile` of its own, layered
+The image ships python 3.14 + uv, node 22 + npm, git, docker CLI, psql, jq, vim,
+kubectl, ping and dig. Anything beyond that goes into a `Dockerfile` of its own, layered
 `FROM claude-bot:latest`. Answer these while writing the compose file above, not after
 the first command fails inside the container:
 
@@ -132,6 +132,8 @@ the first command fails inside the container:
 | Build tools and CLIs — make, gh, glab, graphviz, terraform | `Dockerfile`, an `apt-get install` layer or a downloaded binary |
 | Does it need a Docker daemon — image builds, testcontainers, compose in tests | `example/` comes with one. If the project never touches Docker, drop the `<name>-dind` service, `depends_on`, `network_mode` and `DOCKER_HOST`, and move `ports` onto the bot |
 | Databases and services the tests need | If they come up as containers, the row above is a yes |
+| Does it need a VPN to reach the project's infrastructure | `example/` has a commented-out `<name>-vpn` sidecar. Config and credentials go to `${USER_DATA}/vpn`, never into the image |
+| Which kubernetes cluster, if any | The image's kubectl is pinned one minor at a time: `--build-arg KUBECTL_VERSION=<ver>` on the base build. The kubeconfig lives in `${USER_DATA}` |
 | Project-specific skills — deploy, code review, log queries | `skills/`, mounted as `/opt/skills/20-project` |
 
 Two rules cover the whole table.
@@ -149,6 +151,32 @@ the two that bite in practice.
 Dropping the daemon makes the instance markedly simpler: no privileged sidecar, no
 shared network namespace, no restart ordering between two containers. When in doubt
 keep it — an idle dind costs a container and nothing else.
+
+### Reaching a private network
+
+Some projects live behind a VPN. The tunnel is a **separate container** in the
+instance's compose file — `example/` carries it commented out, with the reasoning
+inline. Not a process started from the bot's entrypoint, for three reasons:
+
+- The bot shares dind's network namespace, so a tunnel raised in a sidecar that joins
+  the same namespace *is* the bot's tunnel. Nothing is gained by raising it inside the
+  bot itself.
+- `NET_ADMIN` and `/dev/net/tun` stay off the container running claude as root with
+  permission checks bypassed.
+- `restart: unless-stopped` brings a dropped tunnel back. One started from an
+  entrypoint comes up once and stays down after it dies.
+
+It also keeps the protocol out of this repository: `image` and `command` belong to the
+instance, so an OpenVPN sandbox and a WireGuard one use the same block shape with
+different contents. `entrypoint.sh` knows nothing about either.
+
+**What the tunnel covers.** The bot and dind see it; containers that dind *starts* do
+not — each gets a network namespace of its own. A test that has to reach a private
+address needs `--network host` against the sandbox daemon, or its own route. Check this
+before debugging why a `curl` that works in the bot fails inside a test.
+
+**No modprobe needed.** `CONFIG_TUN=y` on any stock Debian/Ubuntu kernel — `/dev/net/tun`
+is already there. Confirm with `ls /dev/net/tun` on the host before looking anywhere else.
 
 ## Security model
 

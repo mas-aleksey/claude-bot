@@ -81,3 +81,59 @@ services:
       # nothing: paths in -v are resolved by the daemon, not by the client.
       - ${USER_DATA}/projects:/projects
     restart: unless-stopped
+
+  # A VPN tunnel to the project's infrastructure — uncomment if the sandbox needs to reach
+  # something that is not on the public internet. A separate container, not a process
+  # inside the bot, and that choice is the whole design:
+  #
+  #   - the netns is dind's, so a tunnel raised here is the bot's tunnel too — the routes
+  #     and DNS land in the namespace all three containers share;
+  #   - NET_ADMIN and /dev/net/tun stay off the container that runs claude as root with
+  #     permission checks bypassed;
+  #   - `restart: unless-stopped` restarts a tunnel that dropped. A tunnel started from
+  #     the bot's entrypoint comes up once and stays down after it dies;
+  #   - the protocol lives here, not in the shared entrypoint. A WireGuard sandbox swaps
+  #     `image` and the config mount and keeps the rest of this block as it is.
+  #
+  # cap_add is required: unlike dind next door, this container is not privileged.
+  # /dev/net/tun needs no modprobe on a stock Debian/Ubuntu host — CONFIG_TUN=y, the
+  # device is already there. Check with `ls /dev/net/tun` before debugging anything else.
+  #
+  # The config carries credentials and never goes into an image or into git: it sits in
+  # ${USER_DATA}/vpn on the host, next to the rest of the instance's secrets, and the
+  # filename comes from .env so this file names no particular network.
+  #
+  # KILL_SWITCH (default `on`) is a decision, not a detail. It blocks everything in the
+  # shared namespace that is not the tunnel — and that namespace also carries the bot's
+  # Telegram long-poll and the published sshd port, so a dropped tunnel takes the whole
+  # sandbox offline with it. Which of the two you want depends on the config:
+  #   - the .ovpn has `redirect-gateway` (all traffic goes through the VPN) — keep it on,
+  #     and list the LAN in ALLOWED_SUBNETS so ssh survives;
+  #   - the .ovpn only pushes routes to a few private subnets — turn it off. There is no
+  #     leak to prevent, and an outage of the tunnel should not cost you the bot.
+  #
+  # Reality check on what the tunnel covers: the bot and dind see it, containers that dind
+  # *starts* do not — each of those gets a netns of its own. Builds and tests that have to
+  # reach a private address need `--network host` against the sandbox daemon, or their own
+  # route. Worth knowing before wondering why a passing curl fails inside a test.
+  #
+  # example-vpn:
+  #   image: ghcr.io/wfg/openvpn-client:3      # pinned to a major: minor updates are safe,
+  #                                            # a major one is not going to arrive unnoticed
+  #   container_name: claude-example-vpn
+  #   network_mode: "service:example-dind"     # same namespace as the bot — that is the point
+  #   cap_add: [NET_ADMIN]
+  #   devices:
+  #     - /dev/net/tun:/dev/net/tun
+  #   volumes:
+  #     # rw, not ro: openvpn writes into this directory. The .ovpn goes here, and if the
+  #     # config has no credentials baked in, a `credentials.txt` (username on line one,
+  #     # password on line two) next to it, referenced from the config as
+  #     # `auth-user-pass credentials.txt`.
+  #     - ${USER_DATA}/vpn:/config
+  #   environment:
+  #     CONFIG_FILE: ${VPN_CONFIG}             # filename inside /config; unset picks a random one
+  #     KILL_SWITCH: "off"                     # see the note above — depends on the config
+  #     # ALLOWED_SUBNETS: <your LAN in CIDR>  # only with the kill switch on: the LAN, so
+  #                                            # the published sshd port stays reachable
+  #   restart: unless-stopped

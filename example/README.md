@@ -22,7 +22,7 @@ The base image has to be built first — see the repository README.
 
 | | |
 | --- | --- |
-| `docker-compose.yml` | the bot and its dind sidecar, with the reasoning in comments |
+| `docker-compose.yml` | the bot, its dind sidecar and a commented-out VPN sidecar, with the reasoning in comments |
 | `Dockerfile` | a layer over `claude-bot:latest`; a commented-out example of adding a CLI |
 | `.env.example` | every variable the compose file reads |
 | `skills/` | this project's own skills, mounted as `20-project` |

@@ -33,6 +33,22 @@ Then read what you found: `CLAUDE.md`, `README`, `CONTRIBUTING`, the CI config
 Task keys in commit messages give you the tracker's prefix for free — a subject
 line starting `ABC-123` means the project's tracker issues `ABC-` keys.
 
+Then check what this sandbox can actually reach. A repository frequently names hosts
+that only resolve inside the company network, and finding that out on the first real
+task costs more than one command here:
+
+```bash
+ip -br a | grep -E 'tun|wg'                  # is a VPN tunnel up in this sandbox at all
+kubectl config get-contexts 2>/dev/null      # is a cluster configured, and which one
+```
+
+Read the repo for what it expects to reach: `values*.yaml`, `.gitlab-ci.yml`,
+`docker-compose*.yml`, `.env.example` and any `Makefile` target that deploys. Private
+addresses and internal hostnames there are the list of things the tunnel has to cover.
+
+A tunnel is a container in this instance's compose file, not something you can start
+from inside — if it is missing, that is a question for the human, not a task for you.
+
 ## 2. Ask what is left — at most 6 questions, in one batch
 
 Ask only what reading did not answer. Use `AskUserQuestion`, batch them, and
@@ -47,6 +63,7 @@ The questions worth asking, because a repository almost never holds them:
 | Which branch do you branch off, and which one do you merge into? | `origin/HEAD` gives a default, not the team's rule — those differ when a release branch exists |
 | What must pass before you open an MR — tests, lint, types, a migration check? | CI shows what runs after; it does not show what the team expects before |
 | Where does the service run, and how do you see its logs? | Environment URLs and log tooling are outside the repository |
+| Does anything here need a VPN or a cluster I cannot reach yet? | Whether the sandbox has the tunnel and the kubeconfig it needs is invisible from the code — and the answer decides whether half the tasks are even runnable |
 | Anything the code would mislead me about? | Dead directories, a config that looks active and is not, a test suite nobody runs |
 
 Skip a row the moment reading answered it. Six is the ceiling, not the target —

@@ -20,9 +20,16 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # and the human share one container, hence one working tree and one claude session folder.
 # jq/postgresql-client — the tools claude reaches for most often.
 # vim — edits over ssh from inside the container; the slim image has not even vi.
+# iputils-ping/dnsutils — checking a network path from inside the container: an address
+# behind a VPN answers or it does not, a name resolves or it does not. The slim image has
+# neither ping nor dig, so the first question after a tunnel comes up ("is it actually
+# routed?") has no way to be answered. Kept here rather than in a sandbox layer because
+# the answer is the same everywhere and the pair costs about a megabyte.
+# The VPN client itself is deliberately NOT here — a tunnel is a sidecar container in the
+# instance's compose file, see example/docker-compose.yml.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git openssh-client openssh-server \
-        jq postgresql-client vim \
+        jq postgresql-client vim iputils-ping dnsutils \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -43,6 +50,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   docker compose build --build-arg CLAUDE_CODE_VERSION=2.1.240 <service>
 ARG CLAUDE_CODE_VERSION=latest
 RUN npm install -g @anthropic-ai/claude-code@${CLAUDE_CODE_VERSION}
+
+# kubectl, behind an ARG for the same reason as the line above: the client is only
+# supported one minor away from the server, so an instance whose cluster sits on another
+# minor overrides it at build time instead of patching this file:
+#   docker compose build --build-arg KUBECTL_VERSION=v1.33.4 <service>
+# A pinned default rather than stable.txt: the latter turns every rebuild into a version
+# bump nobody asked for, and a client that silently drifted two minors ahead of the
+# cluster fails on individual API calls, not at startup — the worst way to find out.
+# No kubeconfig here, and none baked into any image: the file carries cluster credentials
+# and stays in the instance's ${USER_DATA} (see example/docker-compose.yml).
+ARG KUBECTL_VERSION=v1.36.2
+RUN curl -fsSLo /usr/local/bin/kubectl \
+        "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
+    && chmod +x /usr/local/bin/kubectl \
+    && kubectl version --client=true --output=yaml | grep -q "gitVersion: ${KUBECTL_VERSION}"
 
 # /run/sshd — without it sshd dies with "Missing privilege separation directory".
 # sshd_config.d/ is picked up by the image's default config through Include.
