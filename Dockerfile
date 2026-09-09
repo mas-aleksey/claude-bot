@@ -98,9 +98,14 @@ COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-install-project --no-dev --frozen
 
+# Каталог чистится тем же слоем: пакет уехал в site-packages, а оставленный в образе
+# /src/pyproject.toml виден всем, кто наследует WORKDIR. У euler на этом упала сборка —
+# `uv run python -V` в /src подхватывал requires-python = ">=3.14" и рубил проверку
+# питона 3.13. При bind-маунте такого не было, /src в рантайме оставался пустым.
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --no-editable --no-dev --frozen --reinstall-package claude-bot
+    uv sync --no-editable --no-dev --frozen --reinstall-package claude-bot \
+ && cd / && rm -rf /src && mkdir /src
 
 # UV_PROJECT_ENVIRONMENT has to be /usr/local for the two lines above and nothing else: the
 # bot's dependencies go into the system python, it has no venv of its own. Past that point
