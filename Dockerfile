@@ -84,15 +84,25 @@ COPY claude/output-styles /opt/claude/output-styles
 
 WORKDIR /src
 
-# --reinstall-package: uv кеширует собранный wheel проекта по (имя, версия), а версия в
-# pyproject не двигается — без этого флага правка в src/ уезжает в кеш, и образ собирается
-# зелёным со старым кодом. Ловится только внутри контейнера, поэтому флаг тут навсегда.
-# Зависимости кеш продолжает отдавать: пересобирается один пакет из трёх десятков.
+# COPY, а не --mount=type=bind: BuildKit не включает bind-маунт контекста в ключ кеша
+# слоя, поэтому правка в src/ его НЕ инвалидировала — шаг уходил в CACHED, а образ
+# собирался зелёным со старым кодом внутри. Ловится только `grep` внутри контейнера,
+# поэтому исходники приезжают копированием. Два слоя вместо одного оставляют кеш
+# зависимостям: pyproject и uv.lock меняются редко, src/ — на каждой правке.
+#
+# --reinstall-package: собранный wheel проекта uv кеширует по (имя, версия), а версия в
+# pyproject не двигается. Окружение слоя всегда чистое, и без флага туда ставится
+# прежний артефакт из кеша — проверено на отдельном проекте, содержимое src/ в ключ
+# не входит. Пересобирается один пакет, зависимости кеш отдаёт как раньше.
+COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv \
-    --mount=type=bind,source=.,target=/src \
+    uv sync --no-install-project --no-dev --frozen
+
+COPY src ./src
+RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-editable --no-dev --frozen --reinstall-package claude-bot
 
-# UV_PROJECT_ENVIRONMENT has to be /usr/local for the line above and nothing else: the
+# UV_PROJECT_ENVIRONMENT has to be /usr/local for the two lines above and nothing else: the
 # bot's dependencies go into the system python, it has no venv of its own. Past that point
 # the variable is dangerous — at runtime `uv sync` in a working repository (sandboxes,
 # /projects) writes to the same place, and the project's package shadows the bot's module:
