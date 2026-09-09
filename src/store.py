@@ -45,21 +45,32 @@ def put(key: str, value: str | None) -> None:
         )
 
 
-def session_of(project: str) -> str | None:
+# Колонка `project` хранит составной ключ "<скоуп>:<путь>" — так топик форума помнит
+# свою сессию в каждом проекте, а схема остаётся прежней и миграция не нужна.
+def _key(scope: str, project: str) -> str:
+    return f"{scope}:{project}"
+
+
+def session_of(scope: str, project: str) -> str | None:
     row = conn().execute(
-        "SELECT session_id FROM sessions WHERE project = ?", (project,)
+        "SELECT session_id FROM sessions WHERE project = ?", (_key(scope, project),)
     ).fetchone()
     return row[0] if row else None
 
 
-def save_session(project: str, session_id: str) -> None:
+def save_session(scope: str, project: str, session_id: str) -> None:
     conn().execute(
         "INSERT INTO sessions (project, session_id, updated_at) VALUES (?, ?, ?) "
         "ON CONFLICT(project) DO UPDATE SET session_id = excluded.session_id, "
         "updated_at = excluded.updated_at",
-        (project, session_id, int(time.time())),
+        (_key(scope, project), session_id, int(time.time())),
     )
 
 
-def drop_session(project: str) -> None:
-    conn().execute("DELETE FROM sessions WHERE project = ?", (project,))
+def drop_session(scope: str, project: str) -> None:
+    conn().execute("DELETE FROM sessions WHERE project = ?", (_key(scope, project),))
+
+
+def live_keys() -> list[tuple[str, str]]:
+    """Указатели на живые «⏳»-сообщения, по одному на скоуп. Нужны после рестарта."""
+    return conn().execute("SELECT key, value FROM state WHERE key LIKE '%:live'").fetchall()

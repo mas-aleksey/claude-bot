@@ -24,11 +24,14 @@ CONFIG = "/root/.claude.json"
 # а не по списку хостов. Проверено на 2.1.220: claude.com/cai/oauth/authorize?...
 URL_RE = re.compile(r"https://\S+/oauth/\S+")
 
-_current: asyncio.subprocess.Process | None = None
+# Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
+# идти параллельно. Личка и обычная группа живут в скоупе "0".
+_runs: dict[str, asyncio.subprocess.Process] = {}
 
 
-def busy() -> bool:
-    return _current is not None and _current.returncode is None
+def busy(scope: str) -> bool:
+    proc = _runs.get(scope)
+    return proc is not None and proc.returncode is None
 
 
 def _patch_config(mutate) -> None:
@@ -92,14 +95,13 @@ async def run(
     cwd: str,
     session_id: str | None = None,
     model: str | None = None,
+    scope: str = "0",
 ) -> AsyncIterator[dict]:
     """Событие за событием из `--output-format stream-json`.
 
     Служебные события бота отдаются с типом `_bot` — так вызывающему не нужен
     второй канал под ошибки и код возврата.
     """
-    global _current
-
     trust(cwd)
     argv = [*BASE, "-p", prompt, "--output-format", "stream-json", "--verbose"]
     if session_id:
@@ -117,7 +119,7 @@ async def run(
         # роняют readline на `Separator is found, but chunk is longer than limit`.
         limit=16 * 1024 * 1024,
     )
-    _current = proc
+    _runs[scope] = proc
 
     try:
         async for line in proc.stdout:
@@ -134,13 +136,13 @@ async def run(
         if rc != 0:
             yield {"type": "_bot", "kind": "error", "rc": rc, "text": err}
     finally:
-        if _current is proc:
-            _current = None
+        if _runs.get(scope) is proc:
+            del _runs[scope]
 
 
-async def cancel() -> bool:
+async def cancel(scope: str) -> bool:
     """SIGTERM группе, через 2 с — SIGKILL. proc.kill() оставил бы живых детей."""
-    proc = _current
+    proc = _runs.get(scope)
     if proc is None or proc.returncode is not None:
         return False
     pgid = os.getpgid(proc.pid)

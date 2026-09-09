@@ -52,9 +52,20 @@ async def allowlist(handler, event: TelegramObject, data: dict):
     return await handler(event, data)
 
 
-def cwd() -> str:
-    """Текущий проект. Дефолт — первый в /projects; пусто — сам PROJECTS_DIR."""
-    if saved := store.get("cwd"):
+def scope(msg: Message) -> str:
+    """Ключ состояния: топик форума = свой проект и своя сессия, поэтому в топиках
+    можно работать параллельно. Личка и обычная группа — общий скоуп "0".
+
+    Условие ровно `is_topic_message`: обычный реплай тоже приносит message_thread_id,
+    и по нему состояние расползлось бы на случайные скоупы. Ответы в топик уходят сами —
+    aiogram подставляет message_thread_id в msg.answer по тому же признаку.
+    """
+    return str(msg.message_thread_id) if msg.is_topic_message else "0"
+
+
+def cwd(scope: str) -> str:
+    """Текущий проект скоупа. Дефолт — первый в /projects; пусто — сам PROJECTS_DIR."""
+    if saved := store.get(f"{scope}:cwd"):
         return saved
     found = projects()
     return str(found[0] if found else PROJECTS_DIR)
@@ -92,6 +103,7 @@ HELP = [
 HELP_TAIL = """
 <b>ввод</b>
 текст — промпт в текущий проект
+в группе с топиками каждый топик — своя сессия и свой проект, работают параллельно
 <code>!refine текст</code> — слеш-команда Claude <code>/refine текст</code>
 
 <b>mcp и plugin — аргументы уходят в CLI как есть</b>
@@ -113,20 +125,22 @@ async def cmd_help(msg: Message) -> None:
 
 @dp.message(Command("start", "status"))
 async def cmd_status(msg: Message) -> None:
+    sc = scope(msg)
+    here = cwd(sc)
     auth = await runner.auth_status()
     await msg.answer(
-        f"проект: {Path(cwd()).name} ({cwd()})\n"
+        f"проект: {Path(here).name} ({here})\n"
         f"модель: {store.get('model', 'default')}\n"
-        f"сессия: {store.session_of(cwd()) or 'новая'}\n"
+        f"сессия: {store.session_of(sc, here) or 'новая'}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
-        f"занят: {runner.busy()}\n"
+        f"занят: {runner.busy(sc)}\n"
         f"\n/help — команды"
     )
 
 
 @dp.message(Command("projects"))
 async def cmd_projects(msg: Message) -> None:
-    here = cwd()
+    here = cwd(scope(msg))
     rows = [
         [InlineKeyboardButton(
             text=f"{'✅ ' if str(p) == here else ''}{p.name}", callback_data=f"cd:{p}"
@@ -142,15 +156,16 @@ async def cb_cd(cb: CallbackQuery) -> None:
     if Path(path) not in projects():
         await cb.answer("проекта больше нет", show_alert=True)
         return
-    store.put("cwd", path)
+    store.put(f"{scope(cb.message)}:cwd", path)
     await cb.answer(Path(path).name)
     await cb.message.edit_text(f"проект: {path}")
 
 
 @dp.message(Command("sessions"))
 async def cmd_sessions(msg: Message) -> None:
-    here = cwd()
-    current = store.session_of(here)
+    sc = scope(msg)
+    here = cwd(sc)
+    current = store.session_of(sc, here)
     # Диск, а не asyncio: транскрипты бывают на десятки мегабайт. Держим в to_thread,
     # чтобы чтение не морозило long-polling.
     found = await asyncio.to_thread(sessions.recent, here)
@@ -174,14 +189,16 @@ async def cmd_sessions(msg: Message) -> None:
 @dp.callback_query(F.data.startswith("rs:"))
 async def cb_resume(cb: CallbackQuery) -> None:
     sid = cb.data.removeprefix("rs:")
-    store.save_session(cwd(), sid)
+    sc = scope(cb.message)
+    store.save_session(sc, cwd(sc), sid)
     await cb.answer("переключено")
     await cb.message.edit_text(f"сессия: {sid}")
 
 
 @dp.message(Command("new"))
 async def cmd_new(msg: Message) -> None:
-    store.drop_session(cwd())
+    sc = scope(msg)
+    store.drop_session(sc, cwd(sc))
     await msg.answer("сессия сброшена")
 
 
@@ -193,7 +210,9 @@ async def cmd_cancel(msg: Message) -> None:
         login = None
         await msg.answer("логин отменён")
         return
-    await msg.answer("остановлено" if await runner.cancel() else "нечего останавливать")
+    await msg.answer(
+        "остановлено" if await runner.cancel(scope(msg)) else "нечего останавливать"
+    )
 
 
 @dp.message(Command("model"))
@@ -216,7 +235,7 @@ async def cmd_cd(msg: Message) -> None:
     if not arg or path not in projects():  # только то, что примонтировано
         await msg.answer("нет такого проекта. /projects — список")
         return
-    store.put("cwd", str(path))
+    store.put(f"{scope(msg)}:cwd", str(path))
     await msg.answer(f"проект: {path}")
 
 
@@ -257,7 +276,7 @@ async def cmd_clone(msg: Message) -> None:
     if proc.returncode:
         await msg.answer(f"❌ {out.decode('utf-8', 'replace')[-1500:]}")
         return
-    store.put("cwd", str(path))
+    store.put(f"{scope(msg)}:cwd", str(path))
     await msg.answer(f"✅ проект: {path}")
 
 
@@ -289,7 +308,7 @@ async def cmd_logout(msg: Message) -> None:
 
 
 async def _cli_reply(msg: Message, *args: str) -> None:
-    _, out = await runner.cli(*args, cwd=cwd())
+    _, out = await runner.cli(*args, cwd=cwd(scope(msg)))
     await msg.answer(render.strip_ansi(out)[:4000] or "пусто")
 
 
@@ -389,22 +408,27 @@ async def handle(msg: Message, prompt: str) -> None:
     if not prompt:
         return
 
-    if runner.busy():
+    sc = scope(msg)
+    if runner.busy(sc):
         await msg.answer("занят. /cancel — остановить текущий")
         return
 
+    project = cwd(sc)
+
     with AUDIT.open("a") as f:
-        f.write(f"{int(time.time())}\t{msg.from_user.id}\t{cwd()}\t"
+        f.write(f"{int(time.time())}\t{msg.from_user.id}\t{project}\t"
                 f"{prompt.replace(chr(10), ' ')}\n")
 
-    project = cwd()
     run = render.Run(prompt, Path(project).name)
     live = await send(msg, run.text())
     last_text, last_edit = run.text(), 0.0
-    store.put("live", f"{live.chat.id}:{live.message_id}")  # для дорисовки после рестарта
+    # Для дорисовки после рестарта. Ключ со скоупом — у каждого топика своё «⏳».
+    store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
 
     try:
-        async for ev in runner.run(prompt, project, store.session_of(project), store.get("model")):
+        async for ev in runner.run(
+            prompt, project, store.session_of(sc, project), store.get("model"), scope=sc
+        ):
             run.feed(ev)
             now = time.monotonic()
             if now - last_edit < THROTTLE:
@@ -419,8 +443,8 @@ async def handle(msg: Message, prompt: str) -> None:
         run.done, run.error = True, f"{type(e).__name__}: {e}"
 
     if run.session_id:
-        store.save_session(project, run.session_id)
-    store.put("live", None)
+        store.save_session(sc, project, run.session_id)
+    store.put(f"{sc}:live", None)
 
     final, extra = run.parts()
     if final != last_text:
@@ -440,15 +464,15 @@ async def handle(msg: Message, prompt: str) -> None:
 
 
 async def mark_orphan(bot: Bot) -> None:
-    """Процесс умер вместе с контейнером, а «⏳» в чате осталось висеть."""
-    if not (live := store.get("live")):
-        return
-    store.put("live", None)
-    chat_id, _, message_id = live.partition(":")
-    with contextlib.suppress(Exception):
-        await bot.edit_message_text(
-            "⚠️ прервано рестартом", chat_id=int(chat_id), message_id=int(message_id)
-        )
+    """Процессы умерли вместе с контейнером, а «⏳» в чатах осталось висеть.
+    Топиков много — обходим все скоупы, по одному «⏳» на каждый."""
+    for key, live in store.live_keys():
+        store.put(key, None)
+        chat_id, _, message_id = live.partition(":")
+        with contextlib.suppress(Exception):
+            await bot.edit_message_text(
+                "⚠️ прервано рестартом", chat_id=int(chat_id), message_id=int(message_id)
+            )
 
 
 async def main() -> None:
