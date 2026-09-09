@@ -26,19 +26,15 @@ import render
 import runner
 import sessions
 import store
-import webui
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("claude_bot")
 
 TOKEN = os.environ["TG_BOT_TOKEN"]
 ALLOWED = {int(x) for x in os.environ.get("TG_ALLOWED_USER_ID", "").split(",") if x.strip()}
-PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/projects"))
+PROJECTS_DIR = sessions.PROJECTS_DIR
 AUDIT = Path(os.environ.get("AUDIT_LOG", "/data/audit.log"))
 INBOX = Path(os.environ.get("INBOX_DIR", "/data/inbox"))
-# Пусто — читалка не поднимается. Порт открывается не всем инстансам: ассистенту он
-# не нужен, а песочнице нужен только если её пробросили через Traefik.
-WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
 
 
 THROTTLE = 2.0   # секунд между editMessageText
@@ -72,16 +68,8 @@ def cwd(scope: str) -> str:
     """Текущий проект скоупа. Дефолт — первый в /projects; пусто — сам PROJECTS_DIR."""
     if saved := store.get(f"{scope}:cwd"):
         return saved
-    found = projects()
+    found = sessions.projects()
     return str(found[0] if found else PROJECTS_DIR)
-
-
-def projects() -> list[Path]:
-    """Всё, что примонтировано в /projects. Список сканируется, а не конфигурируется:
-    добавил mount в compose (или git clone внутрь) — проект появился, рестарт не нужен."""
-    if not PROJECTS_DIR.is_dir():
-        return []
-    return sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
 
 
 # Один источник правды: и для /help, и для меню команд Telegram (setMyCommands).
@@ -150,7 +138,7 @@ async def cmd_projects(msg: Message) -> None:
         [InlineKeyboardButton(
             text=f"{'✅ ' if str(p) == here else ''}{p.name}", callback_data=f"cd:{p}"
         )]
-        for p in projects()
+        for p in sessions.projects()
     ]
     await msg.answer("проекты:", reply_markup=InlineKeyboardMarkup(inline_keyboard=rows))
 
@@ -158,7 +146,7 @@ async def cmd_projects(msg: Message) -> None:
 @dp.callback_query(F.data.startswith("cd:"))
 async def cb_cd(cb: CallbackQuery) -> None:
     path = cb.data.removeprefix("cd:")
-    if Path(path) not in projects():
+    if Path(path) not in sessions.projects():
         await cb.answer("проекта больше нет", show_alert=True)
         return
     store.put(f"{scope(cb.message)}:cwd", path)
@@ -237,7 +225,7 @@ async def cmd_model(msg: Message) -> None:
 async def cmd_cd(msg: Message) -> None:
     arg = (msg.text or "").partition(" ")[2].strip()
     path = PROJECTS_DIR / arg
-    if not arg or path not in projects():  # только то, что примонтировано
+    if not arg or path not in sessions.projects():  # только то, что примонтировано
         await msg.answer("нет такого проекта. /projects — список")
         return
     store.put(f"{scope(msg)}:cwd", str(path))
@@ -253,7 +241,7 @@ async def cmd_clone(msg: Message) -> None:
         return
     url, name = args[0], (args[1] if len(args) > 1 else Path(args[0]).name.removesuffix(".git"))
     # Только имя каталога: `../x` и `a/b` увели бы клон из /projects, а `/cd` его потом
-    # не нашёл бы (projects() сканирует один уровень).
+    # не нашёл бы (sessions.projects() сканирует один уровень).
     if name != Path(name).name or name.startswith("."):
         await msg.answer("плохое имя проекта")
         return
@@ -496,8 +484,6 @@ async def main() -> None:
     await bot.set_my_commands(cmds)
     await bot.set_my_commands(cmds, scope=BotCommandScopeAllGroupChats())
     await mark_orphan(bot)
-    if WEB_PORT:
-        await webui.start(projects, WEB_PORT)
     await dp.start_polling(bot)
 
 

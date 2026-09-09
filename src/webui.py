@@ -1,8 +1,15 @@
 """Читалка транскриптов в браузере: проекты, сессии, история сессии.
 
-Только чтение. Ни одного пути к запуску claude: промпты остаются в Telegram, где их
-гейтит `runner.busy`. Поэтому окно можно держать открытым рядом с работающим ботом,
-не деля с ним слот запуска.
+Отдельный процесс, а не поток внутри бота, и мимо netns dind. Причина не в нагрузке:
+чтобы отдать порт в Traefik, контейнеру нужна сеть `proxy`, а бот сидит в namespace
+dind — вместе с демоном docker, который образ `dind` всё равно поднимает на
+`0.0.0.0:2375` без TLS (`--host` в compose только добавляется к его собственному,
+подавить нельзя). Пустить туда лабораторную сеть значило бы отдать root в песочнице
+любому контейнеру из `proxy`. Читалке хватает файлов, поэтому она берёт их томами
+`:ro` — и запрет на запись держит docker, а не наши намерения.
+
+Только чтение и по коду: ни одного пути к запуску claude. Промпты остаются в Telegram,
+где их гейтит `runner.busy`, и слот запуска с ботом не делится.
 
 Живой прогон дочитывается опросом с оффсетом — claude пишет транскрипт по ходу, и
 достаточно отдавать хвост файла с указанной строки. SSE не нужен: нет ни
@@ -12,6 +19,7 @@
 import asyncio
 import json
 import logging
+import os
 import re
 from pathlib import Path
 
@@ -102,15 +110,14 @@ def _int(value: str | None) -> int:
         return 0
 
 
-def build(projects) -> web.Application:
-    """`projects` — функция из app.py, чтобы не дублировать сканирование /projects
-    и не заводить встречный импорт."""
-
+def build() -> web.Application:
     async def index(_: web.Request) -> web.Response:
         return web.Response(text=PAGE, content_type="text/html")
 
     async def api_projects(_: web.Request) -> web.Response:
-        return web.json_response([{"name": p.name, "path": str(p)} for p in projects()])
+        return web.json_response(
+            [{"name": p.name, "path": str(p)} for p in sessions.projects()]
+        )
 
     async def api_sessions(req: web.Request) -> web.Response:
         # Диск, а не asyncio: заголовок сессии читается из транскрипта целиком, а он
@@ -136,13 +143,17 @@ def build(projects) -> web.Application:
     return app
 
 
-async def start(projects, port: int) -> None:
-    """Поднять читалку в том же процессе, что и бот. Отдельный контейнер ей не нужен:
-    транскрипты лежат рядом, а нагрузка — один опрос в несколько секунд."""
-    site = web.AppRunner(build(projects))
+async def start(port: int) -> None:
+    site = web.AppRunner(build())
     await site.setup()
     await web.TCPSite(site, "0.0.0.0", port).start()
     log.info("webui на :%d", port)
+
+
+async def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    await start(int(os.environ.get("WEB_PORT") or 9317))
+    await asyncio.Event().wait()  # сервер живёт в фоне, процессу нужно чем-то держаться
 
 
 PAGE = """<!doctype html>
@@ -237,3 +248,7 @@ $('proj').onchange = () => { cur = null; clearInterval(timer); $('log').innerHTM
 loadProjects();
 </script></body></html>
 """
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

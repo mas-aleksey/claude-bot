@@ -11,6 +11,19 @@ import time
 from pathlib import Path
 
 TRANSCRIPTS = Path(os.environ.get("CLAUDE_TRANSCRIPTS", "/root/.claude/projects"))
+PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/projects"))
+
+
+def projects() -> list[Path]:
+    """Всё, что примонтировано в /projects. Список сканируется, а не конфигурируется:
+    добавил mount в compose (или git clone внутрь) — проект появился, рестарт не нужен.
+
+    Живёт здесь, а не в app.py: читают и бот, и читалка, а тащить в читалку aiogram
+    с обязательным TG_BOT_TOKEN только за эту функцию не стоит.
+    """
+    if not PROJECTS_DIR.is_dir():
+        return []
+    return sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
 
 
 def _slug(cwd: str) -> str:
