@@ -84,9 +84,13 @@ COPY claude/output-styles /opt/claude/output-styles
 
 WORKDIR /src
 
+# --reinstall-package: uv кеширует собранный wheel проекта по (имя, версия), а версия в
+# pyproject не двигается — без этого флага правка в src/ уезжает в кеш, и образ собирается
+# зелёным со старым кодом. Ловится только внутри контейнера, поэтому флаг тут навсегда.
+# Зависимости кеш продолжает отдавать: пересобирается один пакет из трёх десятков.
 RUN --mount=type=cache,target=/root/.cache/uv \
     --mount=type=bind,source=.,target=/src \
-    uv sync --no-editable --no-dev --frozen
+    uv sync --no-editable --no-dev --frozen --reinstall-package claude-bot
 
 # UV_PROJECT_ENVIRONMENT has to be /usr/local for the line above and nothing else: the
 # bot's dependencies go into the system python, it has no venv of its own. Past that point
