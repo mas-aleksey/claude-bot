@@ -34,6 +34,12 @@ def busy(scope: str) -> bool:
     return proc is not None and proc.returncode is None
 
 
+def active() -> list[str]:
+    """Скоупы, где прямо сейчас идёт запуск. Панели в браузере рисуют по ним индикатор
+    и видят в том числе запуски из Telegram — словарь один на процесс."""
+    return [scope for scope, proc in _runs.items() if proc.returncode is None]
+
+
 def _patch_config(mutate) -> None:
     """Прочитать /root/.claude.json, дать `mutate` его поправить, записать если менялось.
 

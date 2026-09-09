@@ -26,6 +26,7 @@ import render
 import runner
 import sessions
 import store
+import webui
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("claude_bot")
@@ -35,6 +36,9 @@ ALLOWED = {int(x) for x in os.environ.get("TG_ALLOWED_USER_ID", "").split(",") i
 PROJECTS_DIR = sessions.PROJECTS_DIR
 AUDIT = Path(os.environ.get("AUDIT_LOG", "/data/audit.log"))
 INBOX = Path(os.environ.get("INBOX_DIR", "/data/inbox"))
+# Пусто — рабочее пространство в браузере не поднимается. Порт нужен не всем инстансам:
+# ассистенту он ни к чему, песочнице — только если её пробросили через Traefik.
+WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
 
 
 THROTTLE = 2.0   # секунд между editMessageText
@@ -484,6 +488,8 @@ async def main() -> None:
     await bot.set_my_commands(cmds)
     await bot.set_my_commands(cmds, scope=BotCommandScopeAllGroupChats())
     await mark_orphan(bot)
+    if WEB_PORT:
+        await webui.start(WEB_PORT)
     await dp.start_polling(bot)
 
 

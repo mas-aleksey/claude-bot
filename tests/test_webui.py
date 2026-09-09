@@ -80,9 +80,10 @@ def test_transcript_rejects_bad_id(transcripts, tmp_path, sid):
         webui.transcript(str(tmp_path), sid)
 
 
-def test_transcript_missing_session_is_404(transcripts, tmp_path):
-    with pytest.raises(web.HTTPNotFound):
-        webui.transcript(str(tmp_path), "7b53843c-b9b5-43be-aedd-0ef5c0f376b4")
+def test_transcript_missing_file_is_not_an_error(transcripts, tmp_path):
+    """Новая сессия: id уже есть, файла ещё нет. Это нормальное состояние."""
+    path = webui.transcript(str(tmp_path), "7b53843c-b9b5-43be-aedd-0ef5c0f376b4")
+    assert not path.exists()
 
 
 def test_transcript_found(transcripts, tmp_path):

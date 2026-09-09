@@ -1,19 +1,20 @@
-"""Читалка транскриптов в браузере: проекты, сессии, история сессии.
+"""Рабочее пространство в браузере: несколько сессий на одной странице.
 
-Отдельный процесс, а не поток внутри бота, и мимо netns dind. Причина не в нагрузке:
-чтобы отдать порт в Traefik, контейнеру нужна сеть `proxy`, а бот сидит в namespace
-dind — вместе с демоном docker, который образ `dind` всё равно поднимает на
-`0.0.0.0:2375` без TLS (`--host` в compose только добавляется к его собственному,
-подавить нельзя). Пустить туда лабораторную сеть значило бы отдать root в песочнице
-любому контейнеру из `proxy`. Читалке хватает файлов, поэтому она берёт их томами
-`:ro` — и запрет на запись держит docker, а не наши намерения.
+Живёт в процессе бота, в netns dind — у сессий из браузера ровно то же окружение, что
+у сессий из Telegram: `localhost:2375`, те же порты тестовых контейнеров, те же тома.
+Отдельным контейнером на сети `proxy` этого не получить, а маршрут из netns даёт хост:
+порт публикуется на шлюзе сети proxy, Traefik ходит на него так же, как на AdGuard.
 
-Только чтение и по коду: ни одного пути к запуску claude. Промпты остаются в Telegram,
-где их гейтит `runner.busy`, и слот запуска с ботом не делится.
+Параллельность бесплатна — `runner._runs` уже словарь, а скоупом служит id панели из
+браузера. Панель живёт в localStorage, поэтому её скоуп переживает перезагрузку страницы
+и кнопка «стоп» после F5 бьёт по своему запуску.
 
-Живой прогон дочитывается опросом с оффсетом — claude пишет транскрипт по ходу, и
-достаточно отдавать хвост файла с указанной строки. SSE не нужен: нет ни
-переподключений, ни второго потребителя событий из `runner`.
+Вывод не стримится: транскрипт и есть поток. Claude пишет его по ходу, панель тейлит
+файл с оффсета, и запуск, начатый в Telegram, виден в браузере тем же механизмом.
+
+Один запуск на панель. Гонять одну сессию из двух мест одновременно никто не мешает —
+проверки на это нет сознательно, два claude в одном транскрипте просто перемешают
+записи. Понадобится защита — сравнивать session_id активных запусков в `runner`.
 """
 
 import asyncio
@@ -26,32 +27,43 @@ from pathlib import Path
 from aiohttp import web
 
 import render
+import runner
 import sessions
+import store
 
 log = logging.getLogger("claude_bot.webui")
 
 # id сессии приходит от клиента и подставляется в имя файла. Пропускаем только то,
 # чем claude их и называет — uuid: ни слешей, ни точек, ни `..`.
 SESSION_RE = re.compile(r"[0-9a-fA-F-]{8,64}\Z")
+# id панели генерит браузер, а он становится ключом в `runner._runs` и попадает в логи.
+PANE_RE = re.compile(r"[0-9a-zA-Z-]{4,64}\Z")
 
 # Строк за один ответ. Транскрипт бывает на десятки тысяч строк, а страница должна
 # отрисоваться сразу — остальное доедет следующими опросами по тому же оффсету.
 CHUNK = 3000
+# Столько ждём `session_id` от claude, прежде чем ответить панели «не завелось».
+# Первое событие приходит за пару секунд, но на холодном старте бывает дольше.
+INIT_TIMEOUT = 90
+
+# Ссылки на фоновые прогоны: без них сборщик мусора вправе убить запуск на середине.
+_tasks: set[asyncio.Task] = set()
 
 
 def transcript(project: str, session_id: str) -> Path:
-    """Файл транскрипта по проекту и id.
+    """Путь к транскрипту по проекту и id, существование не проверяется.
 
     Оба параметра клиентские. `project` безопасен по построению: `_slug` заменяет
-    каждый не-алфанумерик на `-`, так что каталог из него не выйдет. `id` проверяем
-    сами, потом ещё раз — существованием файла.
+    каждый не-алфанумерик на `-`, так что каталог из него не выйдет. `id` держит
+    регулярка — она тут и есть защита, а не наличие файла.
+
+    Отсутствие файла — нормальное состояние, а не ошибка: у новой сессии id уже
+    известен из первого события, а транскрипт claude создаёт не мгновенно. Панель в
+    этот момент уже опрашивает, и 404 в ответ был бы ложной тревогой.
     """
     if not SESSION_RE.match(session_id):
         raise web.HTTPBadRequest(text="плохой id сессии")
-    path = sessions.TRANSCRIPTS / sessions._slug(project) / f"{session_id}.jsonl"
-    if not path.is_file():
-        raise web.HTTPNotFound(text="нет такой сессии")
-    return path
+    return sessions.TRANSCRIPTS / sessions._slug(project) / f"{session_id}.jsonl"
 
 
 def items(path: Path, start: int) -> tuple[int, list[dict]]:
@@ -59,7 +71,7 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
 
     Оставляем три вида: промпт человека, текст ответа и шаг инструмента. Мысли и
     `tool_result` выброшены намеренно — первые длиннее самого ответа, вторые бывают
-    на мегабайт, а в читалке нужен разговор, а не сырой поток. Незнакомое событие
+    на мегабайт, а в панели нужен разговор, а не сырой поток. Незнакомое событие
     пропускается молча: типов в транскрипте больше, чем нам нужно, и список растёт
     с версиями claude.
     """
@@ -117,12 +129,44 @@ def peers() -> list[dict]:
 
 
 def _int(value: str | None) -> int:
-    """`from` из query. Мусор — это ноль, а не 500: читалка не должна падать от
+    """`from` из query. Мусор — это ноль, а не 500: панель не должна падать от
     правки адреса руками."""
     try:
         return max(0, int(value or 0))
     except ValueError:
         return 0
+
+
+def _project(raw: str) -> str:
+    """Проект из запроса. Только то, что реально примонтировано: строка уходит в `cwd`
+    процесса claude, и `/etc` тут был бы полноценным рабочим каталогом."""
+    if raw in {str(p) for p in sessions.projects()}:
+        return raw
+    raise web.HTTPBadRequest(text="нет такого проекта")
+
+
+async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
+                 got: asyncio.Future) -> None:
+    """Довести запуск до конца, ничего не рендеря: вывод claude сам пишет в транскрипт,
+    а панель его тейлит. Наружу отдаём только первый session_id — панели нужно знать,
+    какой файл читать, особенно когда сессия новая и id придумал claude.
+    """
+    sid = session_id
+    try:
+        async for ev in runner.run(prompt, project, session_id, store.get("model"),
+                                   scope=scope):
+            if not got.done() and (sid := ev.get("session_id") or sid):
+                got.set_result(sid)
+            if ev.get("type") == "_bot" and ev.get("kind") == "error":
+                log.warning("scope=%s rc=%s %s", scope, ev.get("rc"),
+                            (ev.get("text") or "")[:300])
+    except Exception:
+        log.exception("прогон из веба упал: scope=%s", scope)
+    finally:
+        # None — панель покажет ошибку. Ставим результат, а не исключение: ждать его
+        # уже могло некому, а невынутое исключение из future засоряет лог.
+        if not got.done():
+            got.set_result(sid)
 
 
 def build() -> web.Application:
@@ -148,8 +192,50 @@ def build() -> web.Application:
 
     async def api_messages(req: web.Request) -> web.Response:
         path = transcript(req.query.get("project", ""), req.query.get("id", ""))
-        seen, found = await asyncio.to_thread(items, path, _int(req.query.get("from")))
+        start = _int(req.query.get("from"))
+        if not path.is_file():
+            return web.json_response({"next": start, "items": []})
+        seen, found = await asyncio.to_thread(items, path, start)
         return web.json_response({"next": seen, "items": found})
+
+    async def api_status(_: web.Request) -> web.Response:
+        """Какие панели заняты. Источник — те же `runner._runs`, что у Telegram,
+        поэтому веб видит и чужие запуски, а не только свои."""
+        return web.json_response({"busy": runner.active()})
+
+    async def api_prompt(req: web.Request) -> web.Response:
+        data = await req.json()
+        prompt = (data.get("prompt") or "").strip()
+        pane = data.get("pane") or ""
+        session_id = data.get("session") or None
+        if not prompt or not PANE_RE.match(pane):
+            raise web.HTTPBadRequest(text="нужны prompt и pane")
+        if session_id and not SESSION_RE.match(session_id):
+            raise web.HTTPBadRequest(text="плохой id сессии")
+        project = _project(data.get("project") or "")
+
+        scope = f"web:{pane}"
+        if runner.busy(scope):
+            raise web.HTTPConflict(text="панель занята")
+
+        got: asyncio.Future = asyncio.get_running_loop().create_future()
+        # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
+        # продолжается в фоне и виден ей через транскрипт.
+        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got))
+        _tasks.add(task)
+        task.add_done_callback(_tasks.discard)
+        try:
+            sid = await asyncio.wait_for(asyncio.shield(got), INIT_TIMEOUT)
+        except TimeoutError:
+            sid = None
+        return web.json_response({"session": sid})
+
+    async def api_cancel(req: web.Request) -> web.Response:
+        data = await req.json()
+        pane = data.get("pane") or ""
+        if not PANE_RE.match(pane):
+            raise web.HTTPBadRequest(text="нужен pane")
+        return web.json_response({"stopped": await runner.cancel(f"web:{pane}")})
 
     app = web.Application()
     app.add_routes([
@@ -158,6 +244,9 @@ def build() -> web.Application:
         web.get("/api/projects", api_projects),
         web.get("/api/sessions", api_sessions),
         web.get("/api/messages", api_messages),
+        web.get("/api/status", api_status),
+        web.post("/api/prompt", api_prompt),
+        web.post("/api/cancel", api_cancel),
     ])
     return app
 
@@ -169,56 +258,66 @@ async def start(port: int) -> None:
     log.info("webui на :%d", port)
 
 
-async def main() -> None:
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    await start(int(os.environ.get("WEB_PORT") or 9317))
-    await asyncio.Event().wait()  # сервер живёт в фоне, процессу нужно чем-то держаться
-
-
 PAGE = """<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>claude — сессии</title>
+<title>claude</title>
 <style>
 :root { color-scheme: dark light }
 * { box-sizing: border-box }
 body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; height:100vh }
-aside { width:300px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
-aside select { margin:8px; padding:6px }
-#list { overflow:auto; flex:1 }
-#list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
-  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
-#list button:hover { background:#8882 }
-#list button[aria-current=true] { background:#8884; font-weight:600 }
-#list .ago { opacity:.6; font-size:12px }
+aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
 #peers { display:flex; gap:2px; padding:8px 8px 0 }
 #peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
   text-decoration:none; color:inherit; font-size:13px }
 #peers a[aria-current=page] { background:#8884; font-weight:600 }
-main { flex:1; overflow:auto; padding:16px 20px }
-.msg { margin:0 0 14px; white-space:pre-wrap; overflow-wrap:anywhere }
+aside select, aside button.new { margin:8px 8px 0; padding:6px }
+#list { overflow:auto; flex:1; margin-top:8px }
+#list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
+  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
+#list button:hover { background:#8882 }
+#panes { flex:1; display:flex; overflow-x:auto }
+section { flex:0 0 min(560px, 100%); display:flex; flex-direction:column;
+  border-right:1px solid #8884 }
+header { display:flex; gap:6px; align-items:center; padding:6px 10px; border-bottom:1px solid #8884 }
+header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap }
+header .dot { width:8px; height:8px; border-radius:50%; background:#8886; flex:none }
+header .dot.busy { background:#e90 }
+.log { flex:1; overflow:auto; padding:12px 14px }
+.msg { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere }
 .user { border-left:3px solid #4a9; padding-left:10px }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
+.err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
-#empty { opacity:.5 }
+form { display:flex; gap:6px; padding:8px; border-top:1px solid #8884 }
+textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
+  background:none; color:inherit; border:1px solid #8884; border-radius:4px }
+#empty { margin:auto; opacity:.5 }
 </style></head><body>
 <aside>
   <nav id=peers></nav>
   <select id=proj></select>
+  <button class=new id=new>+ новая сессия</button>
   <div id=list></div>
 </aside>
-<main><div id=empty>выбери сессию слева</div><div id=log></div></main>
+<div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
 <script>
 const $ = (id) => document.getElementById(id);
-let cur = null, next = 0, timer = null;
+const get = (u) => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status));
+const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(r.status));
+const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
-const get = (url) => fetch(url).then(r => r.ok ? r.json() : Promise.reject(r.status));
+// Панели переживают F5: в них лежит id, который на сервере служит скоупом запуска,
+// поэтому после перезагрузки «стоп» бьёт по своему прогону, а не по чужому.
+let panes = JSON.parse(localStorage.getItem('panes') || '[]');
+const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 
 async function loadPeers() {
-  let ps;
-  try { ps = await get('api/peers'); } catch (e) { return; }
-  // Одна песочница — вкладка не нужна, она бы только занимала место.
+  let ps; try { ps = await get('api/peers'); } catch (e) { return; }
   if (ps.length < 2) return;
   $('peers').innerHTML = ps.map(p => {
     const here = p.url.includes(location.host) ? ' aria-current=page' : '';
@@ -228,7 +327,8 @@ async function loadPeers() {
 
 async function loadProjects() {
   const ps = await get('api/projects');
-  $('proj').innerHTML = ps.map(p => `<option value="${p.path}">${p.name}</option>`).join('');
+  $('proj').innerHTML = ps.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('');
+  if (panes.length) $('proj').value = panes[panes.length - 1].project || ps[0]?.path;
   if (ps.length) loadSessions();
 }
 
@@ -236,55 +336,116 @@ async function loadSessions() {
   const project = $('proj').value;
   const ss = await get('api/sessions?project=' + encodeURIComponent(project));
   $('list').innerHTML = ss.map(s =>
-    `<button data-id="${s.id}"><span class=ago>${s.ago}</span> ${s.title.slice(0, 70)}</button>`
-  ).join('') || '<div id=empty style=padding:10px>сессий нет</div>';
-  for (const b of $('list').children) {
-    if (b.tagName === 'BUTTON') b.onclick = () => open(b.dataset.id, b);
+    `<button data-id="${s.id}"><span style="opacity:.6;font-size:12px">${esc(s.ago)}</span>
+     ${esc(s.title.slice(0, 60))}</button>`).join('') ||
+    '<div style="padding:10px;opacity:.5">сессий нет</div>';
+  for (const b of $('list').querySelectorAll('button')) {
+    b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0 });
   }
 }
 
-function open(id, btn) {
-  for (const b of $('list').children) b.removeAttribute('aria-current');
-  if (btn) btn.setAttribute('aria-current', 'true');
-  cur = id; next = 0;
-  $('log').innerHTML = ''; $('empty').hidden = true;
-  clearInterval(timer);
-  poll();
-  // Транскрипт пишется по ходу запуска, поэтому хвост дочитываем опросом.
-  timer = setInterval(poll, 3000);
+function addPane(p) {
+  if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
+  panes.push(p); save();
+  drawPane(p);
+  poll(p);
 }
 
-async function poll() {
-  if (!cur) return;
-  const q = new URLSearchParams({ project: $('proj').value, id: cur, from: next });
-  let data;
-  try { data = await get('api/messages?' + q); } catch (e) { return; }
-  next = data.next;
-  if (!data.items.length) return;
-  const atEnd = Math.abs(window.scrollY) < 1 ||
-    document.querySelector('main').scrollTop + window.innerHeight >=
-    document.querySelector('main').scrollHeight - 40;
-  $('log').insertAdjacentHTML('beforeend', data.items.map(render).join(''));
-  if (atEnd) document.querySelector('main').scrollTop = 1e9;
+function closePane(p) {
+  panes = panes.filter(x => x.pane !== p.pane); save();
+  document.getElementById('pane-' + p.pane)?.remove();
+  $('empty').hidden = panes.length > 0;
 }
 
-const esc = (s) => s.replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+function drawPane(p) {
+  $('empty').hidden = true;
+  const el = document.createElement('section');
+  el.id = 'pane-' + p.pane;
+  el.innerHTML = `
+    <header>
+      <span class=dot></span>
+      <span class=who></span>
+      <button class=stop title="остановить">стоп</button>
+      <button class=close title="закрыть панель">×</button>
+    </header>
+    <div class=log></div>
+    <form><textarea placeholder="промпт, Ctrl+Enter — отправить"></textarea><button>→</button></form>`;
+  $('panes').append(el);
+  el.querySelector('.who').textContent =
+    p.project.split('/').pop() + (p.session ? ' · ' + p.session.slice(0, 8) : ' · новая');
+  el.querySelector('.close').onclick = () => closePane(p);
+  el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane }).catch(() => {});
+  const form = el.querySelector('form');
+  const ta = el.querySelector('textarea');
+  form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
+  ta.onkeydown = (e) => {
+    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
+  };
+}
 
-function render(it) {
+function log(p, html) {
+  document.querySelector('#pane-' + p.pane + ' .log').insertAdjacentHTML('beforeend', html);
+}
+
+async function send(p, ta) {
+  const prompt = ta.value.trim();
+  if (!prompt) return;
+  ta.value = '';
+  log(p, `<div class="msg user"><span class=role>ты</span>${esc(prompt)}</div>`);
+  try {
+    const r = await post('api/prompt',
+      { pane: p.pane, project: p.project, session: p.session || null, prompt });
+    if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
+    if (!p.session) {
+      // Новая сессия: id придумал claude, панель дочитывает уже созданный транскрипт.
+      p.session = r.session; p.next = 0; save();
+      document.querySelector('#pane-' + p.pane + ' .who').textContent =
+        p.project.split('/').pop() + ' · ' + r.session.slice(0, 8);
+      loadSessions();
+    }
+  } catch (code) {
+    log(p, `<div class="msg err">не отправилось (${esc(code)})</div>`);
+  }
+}
+
+function renderItem(it) {
   if (it.role === 'tool') {
-    return `<div class="msg tool">${it.icon} ${esc(it.name)}: ${esc(it.text)}</div>`;
+    return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${esc(it.text)}</div>`;
   }
   const who = it.role === 'user' ? 'ты' : 'claude';
   return `<div class="msg ${it.role}"><span class=role>${who}</span>${esc(it.text)}</div>`;
 }
 
-$('proj').onchange = () => { cur = null; clearInterval(timer); $('log').innerHTML = '';
-  $('empty').hidden = false; loadSessions(); };
+async function poll(p) {
+  if (!p.session) return;
+  const q = new URLSearchParams({ project: p.project, id: p.session, from: p.next });
+  let data; try { data = await get('api/messages?' + q); } catch (e) { return; }
+  const first = p.next === 0;
+  p.next = data.next; save();
+  if (!data.items.length) return;
+  const box = document.querySelector('#pane-' + p.pane + ' .log');
+  if (!box) return;
+  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  // При первом опросе панель уже могла нарисовать отправленный промпт сама — он же
+  // придёт из транскрипта. Дубль на один экран дешевле, чем сверять тексты.
+  box.insertAdjacentHTML('beforeend', data.items.map(renderItem).join(''));
+  if (atEnd || first) box.scrollTop = 1e9;
+}
+
+async function tick() {
+  let busy = [];
+  try { busy = (await get('api/status')).busy; } catch (e) { /* переживём */ }
+  for (const p of panes) {
+    document.querySelector('#pane-' + p.pane + ' .dot')
+      ?.classList.toggle('busy', busy.includes('web:' + p.pane));
+    await poll(p);
+  }
+}
+
+$('proj').onchange = loadSessions;
+$('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
-loadProjects();
+loadProjects().then(() => { panes.forEach(p => { p.next = 0; drawPane(p); }); tick(); });
+setInterval(tick, 3000);
 </script></body></html>
 """
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
