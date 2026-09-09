@@ -14,6 +14,7 @@ from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.types import (
     BotCommand,
+    BotCommandScopeAllGroupChats,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
@@ -484,7 +485,12 @@ async def main() -> None:
         log.warning("TG_ALLOWED_USER_ID пуст — бот не ответит никому")
     bot = Bot(TOKEN)
     # Автокомплит по «/» в клиенте. Описание Telegram режет на 256 символов — не наш случай.
-    await bot.set_my_commands([BotCommand(command=c, description=d) for c, d in HELP])
+    # Два скоупа, а не один: дефолтный клиент в группах не подхватывает, и в топиках
+    # автокомплит оставался пустым (getMyCommands: default 13, all_group_chats 0).
+    # Кнопки «Меню» в группе не будет никакой — setChatMenuButton работает только в личке.
+    cmds = [BotCommand(command=c, description=d) for c, d in HELP]
+    await bot.set_my_commands(cmds)
+    await bot.set_my_commands(cmds, scope=BotCommandScopeAllGroupChats())
     await mark_orphan(bot)
     await dp.start_polling(bot)
 
