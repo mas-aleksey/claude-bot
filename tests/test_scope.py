@@ -53,3 +53,32 @@ def test_live_keys_finds_every_scope(db):
     db.put("20:live", "1:200")
     db.put("10:cwd", "/projects/a")  # не :live — в выборку попасть не должен
     assert dict(db.live_keys()) == {"10:live": "1:100", "20:live": "1:200"}
+
+
+def test_migrates_pre_topic_state(tmp_path, monkeypatch):
+    """Живой инстанс до правки: cwd и сессии без скоупа. Миграция уводит их в "0"."""
+    import sqlite3
+
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.executescript(
+        "CREATE TABLE sessions (project TEXT PRIMARY KEY, session_id TEXT NOT NULL,"
+        " updated_at INTEGER NOT NULL);"
+        "CREATE TABLE state (key TEXT PRIMARY KEY, value TEXT);"
+    )
+    old.execute("INSERT INTO state VALUES ('cwd', '/projects/rp-ai')")
+    old.execute("INSERT INTO state VALUES ('model', 'opus')")
+    old.execute("INSERT INTO sessions VALUES ('/projects/rp-ai', 'sess-ai', 1)")
+    old.commit()
+    old.close()
+
+    monkeypatch.setattr(store, "DB_PATH", str(path))
+    monkeypatch.setattr(store, "_conn", None)
+
+    assert store.get("0:cwd") == "/projects/rp-ai"
+    assert store.session_of("0", "/projects/rp-ai") == "sess-ai"
+    assert store.get("model") == "opus"  # модель общая, скоуп ей не нужен
+
+    # Повторный коннект не должен приписать второй префикс.
+    monkeypatch.setattr(store, "_conn", None)
+    assert store.get("0:cwd") == "/projects/rp-ai"
