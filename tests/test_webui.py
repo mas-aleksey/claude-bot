@@ -96,3 +96,15 @@ def test_transcript_found(transcripts, tmp_path):
 @pytest.mark.parametrize("raw,want", [("5", 5), (None, 0), ("", 0), ("-3", 0), ("абв", 0)])
 def test_int_never_raises(raw, want):
     assert webui._int(raw) == want
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("", []),
+    ("one=https://one.example", [{"name": "one", "url": "https://one.example"}]),
+    ("  a = https://a  , b=https://b ",
+     [{"name": "a", "url": "https://a"}, {"name": "b", "url": "https://b"}]),
+    ("сломано,=https://x,y=", []),  # без имени или без url запись выбрасывается
+])
+def test_peers_parsing(monkeypatch, raw, want):
+    monkeypatch.setenv("WEB_PEERS", raw)
+    assert webui.peers() == want

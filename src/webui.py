@@ -101,6 +101,21 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
     return seen, out
 
 
+def peers() -> list[dict]:
+    """`WEB_PEERS=one=https://one.example,two=https://two.example` → вкладки в шапке.
+
+    Список задаётся руками, а не выясняется сам: инстансы друг о друге не знают, у
+    каждого свой compose, своя сеть и свой домен. Пусто или одна запись — вкладок нет,
+    одиночная песочница выглядит как раньше.
+    """
+    out = []
+    for chunk in os.environ.get("WEB_PEERS", "").split(","):
+        name, _, url = chunk.partition("=")
+        if name.strip() and url.strip():
+            out.append({"name": name.strip(), "url": url.strip()})
+    return out
+
+
 def _int(value: str | None) -> int:
     """`from` из query. Мусор — это ноль, а не 500: читалка не должна падать от
     правки адреса руками."""
@@ -113,6 +128,9 @@ def _int(value: str | None) -> int:
 def build() -> web.Application:
     async def index(_: web.Request) -> web.Response:
         return web.Response(text=PAGE, content_type="text/html")
+
+    async def api_peers(_: web.Request) -> web.Response:
+        return web.json_response(peers())
 
     async def api_projects(_: web.Request) -> web.Response:
         return web.json_response(
@@ -136,6 +154,7 @@ def build() -> web.Application:
     app = web.Application()
     app.add_routes([
         web.get("/", index),
+        web.get("/api/peers", api_peers),
         web.get("/api/projects", api_projects),
         web.get("/api/sessions", api_sessions),
         web.get("/api/messages", api_messages),
@@ -172,6 +191,10 @@ aside select { margin:8px; padding:6px }
 #list button:hover { background:#8882 }
 #list button[aria-current=true] { background:#8884; font-weight:600 }
 #list .ago { opacity:.6; font-size:12px }
+#peers { display:flex; gap:2px; padding:8px 8px 0 }
+#peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
+  text-decoration:none; color:inherit; font-size:13px }
+#peers a[aria-current=page] { background:#8884; font-weight:600 }
 main { flex:1; overflow:auto; padding:16px 20px }
 .msg { margin:0 0 14px; white-space:pre-wrap; overflow-wrap:anywhere }
 .user { border-left:3px solid #4a9; padding-left:10px }
@@ -181,6 +204,7 @@ main { flex:1; overflow:auto; padding:16px 20px }
 #empty { opacity:.5 }
 </style></head><body>
 <aside>
+  <nav id=peers></nav>
   <select id=proj></select>
   <div id=list></div>
 </aside>
@@ -190,6 +214,17 @@ const $ = (id) => document.getElementById(id);
 let cur = null, next = 0, timer = null;
 
 const get = (url) => fetch(url).then(r => r.ok ? r.json() : Promise.reject(r.status));
+
+async function loadPeers() {
+  let ps;
+  try { ps = await get('api/peers'); } catch (e) { return; }
+  // Одна песочница — вкладка не нужна, она бы только занимала место.
+  if (ps.length < 2) return;
+  $('peers').innerHTML = ps.map(p => {
+    const here = p.url.includes(location.host) ? ' aria-current=page' : '';
+    return `<a href="${esc(p.url)}"${here}>${esc(p.name)}</a>`;
+  }).join('');
+}
 
 async function loadProjects() {
   const ps = await get('api/projects');
@@ -245,6 +280,7 @@ function render(it) {
 
 $('proj').onchange = () => { cur = null; clearInterval(timer); $('log').innerHTML = '';
   $('empty').hidden = false; loadSessions(); };
+loadPeers();
 loadProjects();
 </script></body></html>
 """
