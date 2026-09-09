@@ -99,9 +99,9 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-install-project --no-dev --frozen
 
 # Каталог чистится тем же слоем: пакет уехал в site-packages, а оставленный в образе
-# /src/pyproject.toml виден всем, кто наследует WORKDIR. У euler на этом упала сборка —
-# `uv run python -V` в /src подхватывал requires-python = ">=3.14" и рубил проверку
-# питона 3.13. При bind-маунте такого не было, /src в рантайме оставался пустым.
+# /src/pyproject.toml виден всем, кто наследует WORKDIR. На этом падала сборка образа
+# песочницы: `uv run python -V` в /src подхватывал requires-python = ">=3.14" и отвергал
+# младший питон. При bind-маунте такого не было, /src в рантайме оставался пустым.
 COPY src ./src
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --no-editable --no-dev --frozen --reinstall-package claude-bot \
