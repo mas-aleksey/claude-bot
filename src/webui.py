@@ -357,8 +357,8 @@ def build() -> web.Application:
         return web.json_response(killed)
 
     async def api_status(_: web.Request) -> web.Response:
-        """Какие панели заняты и что упало. Занятость берётся из тех же `runner._runs`,
-        что у Telegram, поэтому веб видит и чужие запуски, а не только свои."""
+        """Какие панели заняты, сколько уже идут и что упало. Занятость берётся из тех
+        же `runner._runs`, что у Telegram, поэтому веб видит и чужие запуски."""
         return web.json_response({"busy": runner.active(), "errors": _errors})
 
     async def api_prompt(req: web.Request) -> web.Response:
@@ -500,12 +500,25 @@ header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow
   white-space:nowrap }
 header .dot { width:8px; height:8px; border-radius:50%; flex:none;
   background:oklch(0.62 0.20 var(--hue,250)) }
-/* Занятость важнее опознавания: оранжевый перебивает цвет панели, а мигание видно
-   краем глаза, когда смотришь в другую панель. */
+/* Занятость важнее опознавания: оранжевый перебивает цвет панели. */
 header .dot.busy { background:#e90; animation:pulse 1.1s ease-in-out infinite }
 @keyframes pulse { 50% { opacity:.25; transform:scale(.7) } }
-/* Отключённая анимация — не потеря информации: цвет точки остаётся оранжевым. */
-@media (prefers-reduced-motion: reduce) { header .dot.busy { animation:none } }
+header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; flex:none }
+
+/* Дышит рамка всей панели, а не точка 8x8: у квартальной панели на экране 1440px это
+   188 000 пикселей против 64, поэтому мигание точки и было незаметно. */
+section.busy { animation:breathe 1.6s ease-in-out infinite }
+@keyframes breathe {
+  50% { border-color:oklch(0.72 0.22 var(--hue,250));
+        box-shadow:0 0 0 3px oklch(0.72 0.22 var(--hue,250) / .28) }
+}
+/* Без движения подсказка обязана остаться: раньше правило просто убирало анимацию, и
+   занятость становилась совсем невидимой. Теперь вместо пульсации — постоянный ореол. */
+@media (prefers-reduced-motion: reduce) {
+  header .dot.busy { animation:none }
+  section.busy { animation:none; border-color:oklch(0.72 0.22 var(--hue,250));
+    box-shadow:0 0 0 3px oklch(0.72 0.22 var(--hue,250) / .28) }
+}
 header .hits { font-size:11px; opacity:.6; flex:none }
 .log { flex:1; overflow:auto; padding:12px 14px }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
@@ -793,6 +806,7 @@ function drawPane(p) {
     <header>
       <span class=dot></span>
       <span class=who></span>
+      <span class=timer></span>
       <span class=hits></span>
       <button class=stop title="остановить">стоп</button>
       <button class=close title="закрыть панель">×</button>
@@ -826,6 +840,11 @@ async function send(p, ta) {
   const prompt = ta.value.trim();
   if (!prompt) return;
   ta.value = '';
+  // Момент отправки — единственный жест пользователя, на котором браузер позволяет
+  // спросить разрешение. На загрузке страницы Safari и Chrome такой запрос игнорируют.
+  if ('Notification' in window && Notification.permission === 'default') {
+    Notification.requestPermission().catch(() => {});
+  }
   echoes.set(p.pane, prompt);
   log(p, `<div class="msg user"><span class=role>ты</span>${esc(prompt)}</div>`);
   try {
@@ -971,15 +990,51 @@ function lastAnswerHas(p, text) {
   return [...msgs].slice(-3).some(m => m.textContent.toLowerCase().includes(needle));
 }
 
+const fmt = (sec) => {
+  const s = Math.max(0, Math.round(sec));
+  return s < 3600 ? `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`
+                  : `${Math.floor(s / 3600)}ч ${Math.floor(s % 3600 / 60)}м`;
+};
+
+// Сколько шёл запуск на прошлом тике: в момент, когда панель освободилась, сервер уже
+// не знает длительности, а в уведомлении она — самое интересное.
+const lastElapsed = new Map();
+
+// Уведомление шлём только когда вкладки не видно: на экране пульсирующая рамка и так
+// заметна, а дубль поверх неё раздражает. tag сворачивает повторы по одной панели.
+function notifyDone(p, seconds) {
+  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!document.hidden) return;
+  const where = p.project.split('/').pop();
+  new Notification(`claude · ${where}`,
+    { body: seconds ? `ответ готов за ${fmt(seconds)}` : 'ответ готов', tag: p.pane });
+}
+
 let ticks = 0;
 
 async function tick() {
   let st = { busy: [], errors: {} };
   try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
+  let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
-    document.querySelector('#pane-' + p.pane + ' .dot')
-      ?.classList.toggle('busy', st.busy.includes(scope));
+    const el = document.getElementById('pane-' + p.pane);
+    const elapsed = (st.busy || {})[scope];
+    const busy = elapsed !== undefined;
+    if (busy) running++;
+
+    el?.classList.toggle('busy', busy);
+    el?.querySelector('.dot')?.classList.toggle('busy', busy);
+    const timer = el?.querySelector('.timer');
+    if (timer) timer.textContent = busy ? fmt(elapsed) : '';
+
+    // Переход «занята → свободна» — единственный момент, когда есть что сообщить.
+    if (busy) {
+      lastElapsed.set(p.pane, elapsed);
+    } else if (lastElapsed.has(p.pane)) {
+      notifyDone(p, lastElapsed.get(p.pane));
+      lastElapsed.delete(p.pane);
+    }
 
     // Упавший прогон: показываем текст один раз, до следующего запуска в этой панели.
     const err = (st.errors || {})[scope];
@@ -996,6 +1051,9 @@ async function tick() {
 
     await poll(p);
   }
+  // Число работающих панелей в заголовке вкладки: видно, даже когда браузер свёрнут.
+  document.title = running ? `● ${running} · claude` : 'claude';
+
   // Сессию могли начать в Telegram или в соседней панели — список слева должен это
   // увидеть сам, а не после перезагрузки страницы.
   if (++ticks % 5 === 0 && !$('find').value.trim()) loadSessions().catch(() => {});

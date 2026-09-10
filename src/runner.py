@@ -8,6 +8,7 @@ import pty
 import re
 import signal
 import subprocess
+import time
 from collections.abc import AsyncIterator
 
 from render import strip_ansi
@@ -26,18 +27,22 @@ URL_RE = re.compile(r"https://\S+/oauth/\S+")
 
 # Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
 # идти параллельно. Личка и обычная группа живут в скоупе "0".
-_runs: dict[str, asyncio.subprocess.Process] = {}
+# Хранится пара (процесс, момент старта): время нужно интерфейсу, чтобы показать
+# «работает 0:42». Пара, а не второй словарь — так они не разъедутся.
+_runs: dict[str, tuple[asyncio.subprocess.Process, float]] = {}
 
 
 def busy(scope: str) -> bool:
-    proc = _runs.get(scope)
-    return proc is not None and proc.returncode is None
+    entry = _runs.get(scope)
+    return entry is not None and entry[0].returncode is None
 
 
-def active() -> list[str]:
-    """Скоупы, где прямо сейчас идёт запуск. Панели в браузере рисуют по ним индикатор
-    и видят в том числе запуски из Telegram — словарь один на процесс."""
-    return [scope for scope, proc in _runs.items() if proc.returncode is None]
+def active() -> dict[str, float]:
+    """{скоуп: сколько секунд идёт} для живых запусков. Панели в браузере рисуют по
+    этому индикатор и видят в том числе запуски из Telegram — словарь один на процесс."""
+    now = time.monotonic()
+    return {scope: now - started for scope, (proc, started) in _runs.items()
+            if proc.returncode is None}
 
 
 def _patch_config(mutate) -> None:
@@ -125,7 +130,7 @@ async def run(
         # роняют readline на `Separator is found, but chunk is longer than limit`.
         limit=16 * 1024 * 1024,
     )
-    _runs[scope] = proc
+    _runs[scope] = (proc, time.monotonic())
 
     try:
         async for line in proc.stdout:
@@ -142,13 +147,14 @@ async def run(
         if rc != 0:
             yield {"type": "_bot", "kind": "error", "rc": rc, "text": err}
     finally:
-        if _runs.get(scope) is proc:
+        if (entry := _runs.get(scope)) and entry[0] is proc:
             del _runs[scope]
 
 
 async def cancel(scope: str) -> bool:
     """SIGTERM группе, через 2 с — SIGKILL. proc.kill() оставил бы живых детей."""
-    proc = _runs.get(scope)
+    entry = _runs.get(scope)
+    proc = entry[0] if entry else None
     if proc is None or proc.returncode is not None:
         return False
     pgid = os.getpgid(proc.pid)

@@ -93,10 +93,10 @@ async def test_prompt_conflicts_when_pane_busy(client, fake_run, monkeypatch, tm
     assert fake_run == []
 
 
-async def test_status_lists_busy_scopes(client, monkeypatch):
-    monkeypatch.setattr(runner, "active", lambda: ["web:pane-1", "5"])
+async def test_status_lists_busy_scopes_with_elapsed(client, monkeypatch):
+    monkeypatch.setattr(runner, "active", lambda: {"web:pane-1": 42.0, "5": 3.5})
     r = await client.get("/api/status")
-    assert (await r.json())["busy"] == ["web:pane-1", "5"]
+    assert (await r.json())["busy"] == {"web:pane-1": 42.0, "5": 3.5}
 
 
 async def test_cancel_hits_own_scope(client, monkeypatch):
@@ -112,13 +112,20 @@ async def test_cancel_hits_own_scope(client, monkeypatch):
     assert seen == ["web:pane-1"]
 
 
-def test_active_reports_only_live(monkeypatch):
+def test_active_reports_only_live_with_elapsed(monkeypatch):
+    """Помимо факта занятости отдаём длительность — по ней панель показывает «0:42»."""
+    import time as _time
+
     class Proc:
         def __init__(self, rc):
             self.returncode = rc
 
-    monkeypatch.setattr(runner, "_runs", {"a": Proc(None), "b": Proc(0)})
-    assert runner.active() == ["a"]
+    started = _time.monotonic() - 5
+    monkeypatch.setattr(runner, "_runs", {"a": (Proc(None), started), "b": (Proc(0), started)})
+
+    got = runner.active()
+    assert list(got) == ["a"]
+    assert 4.5 < got["a"] < 60
 
 
 async def test_messages_empty_until_transcript_appears(client, tmp_path):
