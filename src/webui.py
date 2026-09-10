@@ -505,19 +505,17 @@ header .dot.busy { background:#e90; animation:pulse 1.1s ease-in-out infinite }
 @keyframes pulse { 50% { opacity:.25; transform:scale(.7) } }
 header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; flex:none }
 
-/* Дышит рамка всей панели, а не точка 8x8: у квартальной панели на экране 1440px это
-   188 000 пикселей против 64, поэтому мигание точки и было незаметно. */
-section.busy { animation:breathe 1.6s ease-in-out infinite }
-@keyframes breathe {
-  50% { border-color:oklch(0.72 0.22 var(--hue,250));
-        box-shadow:0 0 0 3px oklch(0.72 0.22 var(--hue,250) / .28) }
-}
+/* Мигает заголовок панели, а не точка 8x8: полоса во всю ширину против 64 пикселей в
+   углу — потому точку и не было видно. Насыщенность в ярком кадре умеренная: в
+   заголовке лежит текст, и заливка в полную силу его бы утопила. */
+section.busy header { animation:blink 1.2s ease-in-out infinite }
+@keyframes blink { 50% { background:oklch(0.68 0.21 var(--hue,250) / .70) } }
 /* Без движения подсказка обязана остаться: раньше правило просто убирало анимацию, и
-   занятость становилась совсем невидимой. Теперь вместо пульсации — постоянный ореол. */
+   занятость становилась совсем невидимой. Теперь заголовок просто горит ярко. */
 @media (prefers-reduced-motion: reduce) {
   header .dot.busy { animation:none }
-  section.busy { animation:none; border-color:oklch(0.72 0.22 var(--hue,250));
-    box-shadow:0 0 0 3px oklch(0.72 0.22 var(--hue,250) / .28) }
+  section.busy header { animation:none;
+    background:oklch(0.68 0.21 var(--hue,250) / .70) }
 }
 header .hits { font-size:11px; opacity:.6; flex:none }
 .log { flex:1; overflow:auto; padding:12px 14px }
