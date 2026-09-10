@@ -49,6 +49,11 @@ INIT_TIMEOUT = 90
 # Ссылки на фоновые прогоны: без них сборщик мусора вправе убить запуск на середине.
 _tasks: set[asyncio.Task] = set()
 
+# Последняя ошибка прогона по скоупу. Без неё упавший запуск выглядел в браузере как
+# молчание: индикатор гаснет, в панели ничего, и человек ждёт ответа, которого не будет.
+# Текст живёт до следующего запуска в той же панели.
+_errors: dict[str, str] = {}
+
 
 def transcript(project: str, session_id: str) -> Path:
     """Путь к транскрипту по проекту и id, существование не проверяется.
@@ -152,17 +157,28 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     какой файл читать, особенно когда сессия новая и id придумал claude.
     """
     sid = session_id
+    err = ""
+    _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     try:
         async for ev in runner.run(prompt, project, session_id, store.get("model"),
                                    scope=scope):
             if not got.done() and (sid := ev.get("session_id") or sid):
                 got.set_result(sid)
+            # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
+            # отказ модели, недоступный проект — всё это claude пишет в stdout и
+            # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
+            if ev.get("type") == "result" and ev.get("is_error"):
+                err = (ev.get("result") or "").strip()[:2000]
             if ev.get("type") == "_bot" and ev.get("kind") == "error":
-                log.warning("scope=%s rc=%s %s", scope, ev.get("rc"),
-                            (ev.get("text") or "")[:300])
-    except Exception:
+                rc_text = f"rc={ev.get('rc')} {(ev.get('text') or '').strip()}".strip()
+                err = err or rc_text
+                log.warning("scope=%s %s", scope, rc_text[:300])
+    except Exception as e:
+        err = f"{type(e).__name__}: {e}"
         log.exception("прогон из веба упал: scope=%s", scope)
     finally:
+        if err:
+            _errors[scope] = err
         # None — панель покажет ошибку. Ставим результат, а не исключение: ждать его
         # уже могло некому, а невынутое исключение из future засоряет лог.
         if not got.done():
@@ -199,9 +215,9 @@ def build() -> web.Application:
         return web.json_response({"next": seen, "items": found})
 
     async def api_status(_: web.Request) -> web.Response:
-        """Какие панели заняты. Источник — те же `runner._runs`, что у Telegram,
-        поэтому веб видит и чужие запуски, а не только свои."""
-        return web.json_response({"busy": runner.active()})
+        """Какие панели заняты и что упало. Занятость берётся из тех же `runner._runs`,
+        что у Telegram, поэтому веб видит и чужие запуски, а не только свои."""
+        return web.json_response({"busy": runner.active(), "errors": _errors})
 
     async def api_prompt(req: web.Request) -> web.Response:
         data = await req.json()
@@ -375,6 +391,13 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random(
 // поэтому после перезагрузки «стоп» бьёт по своему прогону, а не по чужому.
 let panes = JSON.parse(localStorage.getItem('panes') || '[]');
 const save = () => localStorage.setItem('panes', JSON.stringify(panes));
+
+// Отправленный промпт панель печатает сразу, а через секунды он же приезжает из
+// транскрипта. Держим его тут, чтобы снять дубль. Не в самой панели: она уходит в
+// localStorage, и после F5 залипшее эхо съело бы строку из истории.
+const echoes = new Map();
+// Показанная ошибка — чтобы не перерисовывать её на каждом тике.
+const shownErr = new Map();
 
 async function loadPeers() {
   let ps; try { ps = await get('api/peers'); } catch (e) { return; }
@@ -569,6 +592,7 @@ async function send(p, ta) {
   const prompt = ta.value.trim();
   if (!prompt) return;
   ta.value = '';
+  echoes.set(p.pane, prompt);
   log(p, `<div class="msg user"><span class=role>ты</span>${esc(prompt)}</div>`);
   try {
     const r = await post('api/prompt',
@@ -684,20 +708,48 @@ async function poll(p) {
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return;
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
-  // При первом опросе панель уже могла нарисовать отправленный промпт сама — он же
-  // придёт из транскрипта. Дубль на один экран дешевле, чем сверять тексты.
-  box.insertAdjacentHTML('beforeend', data.items.map(renderItem).join(''));
+  // Свой же промпт, уже напечатанный локально, из транскрипта не берём — иначе он
+  // стоит в панели дважды. Снимаем ровно одно совпадение: тот же текст мог быть
+  // отправлен и раньше, в истории он законный.
+  const echo = echoes.get(p.pane);
+  let taken = false;
+  const shown = echo
+    ? data.items.filter(it => {
+        if (!taken && it.role === 'user' && it.text === echo) { taken = true; return false; }
+        return true;
+      })
+    : data.items;
+  if (taken) echoes.delete(p.pane);
+  box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
   if (atEnd || first) box.scrollTop = 1e9;
 }
 
+let ticks = 0;
+
 async function tick() {
-  let busy = [];
-  try { busy = (await get('api/status')).busy; } catch (e) { /* переживём */ }
+  let st = { busy: [], errors: {} };
+  try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
   for (const p of panes) {
+    const scope = 'web:' + p.pane;
     document.querySelector('#pane-' + p.pane + ' .dot')
-      ?.classList.toggle('busy', busy.includes('web:' + p.pane));
+      ?.classList.toggle('busy', st.busy.includes(scope));
+
+    // Упавший прогон: показываем текст один раз, до следующего запуска в этой панели.
+    const err = (st.errors || {})[scope];
+    if (err) {
+      if (shownErr.get(p.pane) !== err) {
+        shownErr.set(p.pane, err);
+        log(p, `<div class="msg err">❌ ${esc(err)}</div>`);
+      }
+    } else {
+      shownErr.delete(p.pane);
+    }
+
     await poll(p);
   }
+  // Сессию могли начать в Telegram или в соседней панели — список слева должен это
+  // увидеть сам, а не после перезагрузки страницы.
+  if (++ticks % 5 === 0) loadSessions().catch(() => {});
 }
 
 $('proj').onchange = loadSessions;

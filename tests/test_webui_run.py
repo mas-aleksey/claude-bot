@@ -126,3 +126,57 @@ async def test_messages_empty_until_transcript_appears(client, tmp_path):
     r = await client.get("/api/messages", params=q)
     assert r.status == 200
     assert await r.json() == {"next": 7, "items": []}  # оффсет не сбрасывается
+
+
+@pytest.fixture
+def failing_run(monkeypatch):
+    """runner.run, который отдаёт session_id и следом падение с кодом возврата."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "_bot", "kind": "error", "rc": 2, "text": "claude: no such option"}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_errors", {})
+
+
+async def test_failed_run_shows_up_in_status(client, failing_run, tmp_path):
+    """Упавший прогон обязан быть виден в браузере: иначе панель просто молчит."""
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    errors = (await (await client.get("/api/status")).json())["errors"]
+    assert "rc=2" in errors["web:pane-1"]
+    assert "no such option" in errors["web:pane-1"]
+
+
+async def test_new_run_clears_previous_error(client, fake_run, tmp_path, monkeypatch):
+    monkeypatch.setattr(webui, "_errors", {"web:pane-1": "rc=2 старое"})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    errors = (await (await client.get("/api/status")).json())["errors"]
+    assert "web:pane-1" not in errors
+
+
+async def test_result_error_text_beats_bare_return_code(client, monkeypatch, tmp_path):
+    """Причина приходит в `result`, а стоп-код — это всегда просто rc=1 при пустом
+    stderr. Поймано живьём на лимите подписки: панель показывала «rc=1» и молчала
+    о том, что лимит исчерпан."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "result", "is_error": True, "result": "You've hit your session limit"}
+        yield {"type": "_bot", "kind": "error", "rc": 1, "text": ""}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_errors", {})
+
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    assert (await (await client.get("/api/status")).json())["errors"] == {
+        "web:pane-1": "You've hit your session limit"}
