@@ -93,10 +93,12 @@ async def test_prompt_conflicts_when_pane_busy(client, fake_run, monkeypatch, tm
     assert fake_run == []
 
 
-async def test_status_lists_busy_scopes_with_elapsed(client, monkeypatch):
-    monkeypatch.setattr(runner, "active", lambda: {"web:pane-1": 42.0, "5": 3.5})
+async def test_status_lists_runs(client, monkeypatch):
+    runs = [{"scope": "web:pane-1", "secs": 42.0, "session": "a"},
+            {"scope": "5", "secs": 3.5, "session": "b"}]
+    monkeypatch.setattr(runner, "active", lambda: runs)
     r = await client.get("/api/status")
-    assert (await r.json())["busy"] == {"web:pane-1": 42.0, "5": 3.5}
+    assert (await r.json())["runs"] == runs
 
 
 async def test_cancel_hits_own_scope(client, monkeypatch):
@@ -112,8 +114,9 @@ async def test_cancel_hits_own_scope(client, monkeypatch):
     assert seen == ["web:pane-1"]
 
 
-def test_active_reports_only_live_with_elapsed(monkeypatch):
-    """Помимо факта занятости отдаём длительность — по ней панель показывает «0:42»."""
+def test_active_reports_live_runs_with_elapsed_and_session(monkeypatch):
+    """Кроме факта занятости отдаём длительность и сессию: по сессии панель узнаёт свой
+    сеанс, даже если его гоняют из топика под другим скоупом."""
     import time as _time
 
     class Proc:
@@ -121,11 +124,15 @@ def test_active_reports_only_live_with_elapsed(monkeypatch):
             self.returncode = rc
 
     started = _time.monotonic() - 5
-    monkeypatch.setattr(runner, "_runs", {"a": (Proc(None), started), "b": (Proc(0), started)})
+    monkeypatch.setattr(runner, "_runs", {
+        "5": (Proc(None), started, "sess-live"),
+        "web:x": (Proc(0), started, "sess-done"),
+    })
 
-    got = runner.active()
-    assert list(got) == ["a"]
-    assert 4.5 < got["a"] < 60
+    (got,) = runner.active()
+    assert got["scope"] == "5"
+    assert got["session"] == "sess-live"
+    assert 4.5 < got["secs"] < 60
 
 
 async def test_messages_empty_until_transcript_appears(client, tmp_path):
@@ -297,3 +304,46 @@ def test_days_has_a_floor(raw, want):
     """days=0 снесло бы и сегодняшнюю работу. «Удалить всё» — не то же самое, что
     «удалить старое»."""
     assert webui._days(raw) == want
+
+
+async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
+    """Сессию новой панели придумывает claude, и запомнить её можно только из первого
+    события. Тег ставится внутри runner.run, чтобы вызывающий не смог забыть."""
+    class Proc:
+        returncode = None
+        pid = 1
+
+        def __init__(self):
+            self.stdout = self
+            self.stderr = self
+
+        async def __aiter__(self):  # pragma: no cover — заменяется ниже
+            yield b""
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        async def read(self):
+            return b""
+
+    proc = Proc()
+
+    async def lines():
+        yield json.dumps({"type": "system", "session_id": "sess-new"}).encode()
+
+    proc.stdout = lines()
+
+    async def fake_exec(*a, **kw):
+        return proc
+
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(runner, "trust", lambda cwd: None)
+    monkeypatch.setattr(runner, "_runs", {})
+
+    seen = []
+    async for ev in runner.run("промпт", str(tmp_path), scope="web:pane-1"):
+        seen.append(ev)
+        assert runner.active()[0]["session"] == "sess-new"  # тег появился сразу
+
+    assert seen[0]["session_id"] == "sess-new"

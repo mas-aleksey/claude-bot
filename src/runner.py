@@ -27,9 +27,11 @@ URL_RE = re.compile(r"https://\S+/oauth/\S+")
 
 # Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
 # идти параллельно. Личка и обычная группа живут в скоупе "0".
-# Хранится пара (процесс, момент старта): время нужно интерфейсу, чтобы показать
-# «работает 0:42». Пара, а не второй словарь — так они не разъедутся.
-_runs: dict[str, tuple[asyncio.subprocess.Process, float]] = {}
+# Хранится тройка (процесс, момент старта, id сессии). Время нужно интерфейсу для
+# «работает 0:42», а сессия — чтобы панель в браузере понимала, что её сеанс гоняют из
+# Telegram: скоупы у них разные, а транскрипт один. Одной структурой, а не тремя
+# словарями, — так они не разъедутся.
+_runs: dict[str, tuple[asyncio.subprocess.Process, float, str | None]] = {}
 
 
 def busy(scope: str) -> bool:
@@ -37,12 +39,20 @@ def busy(scope: str) -> bool:
     return entry is not None and entry[0].returncode is None
 
 
-def active() -> dict[str, float]:
-    """{скоуп: сколько секунд идёт} для живых запусков. Панели в браузере рисуют по
-    этому индикатор и видят в том числе запуски из Telegram — словарь один на процесс."""
+def active() -> list[dict]:
+    """Живые запуски: скоуп, длительность и сессия. Список, а не словарь по скоупу:
+    сопоставлять в интерфейсе приходится и по сессии тоже."""
     now = time.monotonic()
-    return {scope: now - started for scope, (proc, started) in _runs.items()
-            if proc.returncode is None}
+    return [{"scope": scope, "secs": now - started, "session": sid}
+            for scope, (proc, started, sid) in _runs.items() if proc.returncode is None]
+
+
+def _tag(scope: str, session_id: str) -> None:
+    """Запомнить сессию запуска. У новой сессии id придумывает claude, поэтому он
+    появляется только из первого события — вызывается изнутри `run`, чтобы ни один
+    вызывающий не смог об этом забыть."""
+    if entry := _runs.get(scope):
+        _runs[scope] = (entry[0], entry[1], session_id)
 
 
 def _patch_config(mutate) -> None:
@@ -130,7 +140,7 @@ async def run(
         # роняют readline на `Separator is found, but chunk is longer than limit`.
         limit=16 * 1024 * 1024,
     )
-    _runs[scope] = (proc, time.monotonic())
+    _runs[scope] = (proc, time.monotonic(), session_id)
 
     try:
         async for line in proc.stdout:
@@ -138,9 +148,15 @@ async def run(
             if not line:
                 continue
             try:
-                yield json.loads(line)
+                ev = json.loads(line)
             except json.JSONDecodeError:
                 yield {"type": "_bot", "kind": "raw", "text": line.decode("utf-8", "replace")}
+                continue
+            # Сессию запоминаем здесь, а не в вызывающем: у новой её придумывает claude,
+            # и первое событие — единственное место, где она становится известна всем.
+            if sid := ev.get("session_id"):
+                _tag(scope, sid)
+            yield ev
 
         rc = await proc.wait()
         err = (await proc.stderr.read()).decode("utf-8", "replace").strip()

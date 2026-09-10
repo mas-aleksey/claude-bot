@@ -357,9 +357,10 @@ def build() -> web.Application:
         return web.json_response(killed)
 
     async def api_status(_: web.Request) -> web.Response:
-        """Какие панели заняты, сколько уже идут и что упало. Занятость берётся из тех
-        же `runner._runs`, что у Telegram, поэтому веб видит и чужие запуски."""
-        return web.json_response({"busy": runner.active(), "errors": _errors})
+        """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
+        что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
+        его гоняют из топика под другим скоупом."""
+        return web.json_response({"runs": runner.active(), "errors": _errors})
 
     async def api_prompt(req: web.Request) -> web.Response:
         data = await req.json()
@@ -1047,24 +1048,32 @@ function notifyDone(p, seconds) {
 let ticks = 0;
 
 async function tick() {
-  let st = { busy: [], errors: {} };
+  let st = { runs: [], errors: {} };
   try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
   let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
     const el = document.getElementById('pane-' + p.pane);
-    const elapsed = (st.busy || {})[scope];
-    const busy = elapsed !== undefined;
+    // Свой запуск — либо начатый этой панелью, либо любой другой над той же сессией:
+    // из топика Telegram или из соседней панели. Скоупы у них разные, транскрипт один,
+    // и без сопоставления по сессии панель молчала, пока в неё сыпались ответы.
+    const mine = (st.runs || []).find(
+      (r) => r.scope === scope || (p.session && r.session === p.session));
+    const busy = !!mine;
     if (busy) running++;
 
     el?.classList.toggle('busy', busy);
     el?.querySelector('.dot')?.classList.toggle('busy', busy);
     const timer = el?.querySelector('.timer');
-    if (timer) timer.textContent = busy ? fmt(elapsed) : '';
+    if (timer) {
+      const foreign = busy && mine.scope !== scope;
+      timer.textContent = busy ? (foreign ? '↗ ' : '') + fmt(mine.secs) : '';
+      timer.title = foreign ? 'запуск начат не из этой панели' : '';
+    }
 
     // Переход «занята → свободна» — единственный момент, когда есть что сообщить.
     if (busy) {
-      lastElapsed.set(p.pane, elapsed);
+      lastElapsed.set(p.pane, mine.secs);
     } else if (lastElapsed.has(p.pane)) {
       notifyDone(p, lastElapsed.get(p.pane));
       lastElapsed.delete(p.pane);
