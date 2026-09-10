@@ -59,6 +59,62 @@ def ago(seconds: float) -> str:
     return f"{int(seconds)}г"
 
 
+def search(cwd: str, query: str, limit: int = 20) -> list[tuple[str, str, float, str]]:
+    """[(session_id, заголовок, возраст, фрагмент)] по подстроке, свежие сверху.
+
+    Ни индекса, ни внешнего grep: замер на живом инстансе — 45 МБ транскриптов
+    сканируются целиком за 0.47 с. Поэтому читаем файл, проверяем подстроку, и только
+    у совпавших разбираем строки ради фрагмента.
+
+    Ищем по тексту разговора, а не по всему файлу: `tool_result` бывает на мегабайт, и
+    попадание в него означало бы «нашлось там, где ты ничего не писал».
+
+    Быстрый путь опирается на то, что claude пишет текст литералами UTF-8, а не
+    escape-последовательностями (проверено на живых транскриптах: в файле лежит
+    «тест», а не его код). Начнёт экранировать — подстрока перестанет находиться,
+    и придётся разбирать каждую строку каждого файла.
+    """
+    if not (needle := query.strip().lower()):
+        return []
+    now = time.time()
+    out: list[tuple[str, str, float, str]] = []
+    files = sorted((TRANSCRIPTS / _slug(cwd)).glob("*.jsonl"),
+                   key=lambda f: f.stat().st_mtime, reverse=True)
+    for path in files:
+        raw = path.read_text("utf-8", "replace")
+        if needle not in raw.lower():
+            continue
+        if snippet := _snippet(raw, needle):
+            out.append((path.stem, title(path), now - path.stat().st_mtime, snippet))
+        if len(out) >= limit:
+            break
+    return out
+
+
+def _snippet(raw: str, needle: str) -> str:
+    """Фрагмент вокруг первого попадания в тексте разговора. Пусто — значит подстрока
+    нашлась только в служебных полях или в выводе инструментов, и показывать нечего."""
+    for line in raw.splitlines():
+        if needle not in line.lower():
+            continue
+        try:
+            ev = json.loads(line)
+        except ValueError:
+            continue
+        if ev.get("type") not in ("user", "assistant"):
+            continue
+        content = (ev.get("message") or {}).get("content")
+        if isinstance(content, list):
+            content = " ".join(b.get("text", "") for b in content if b.get("type") == "text")
+        text = " ".join((content or "").split())
+        at = text.lower().find(needle)
+        if at < 0:
+            continue
+        start = max(0, at - 60)
+        return ("…" if start else "") + text[start:at + len(needle) + 90].strip() + "…"
+    return ""
+
+
 def recent(cwd: str, limit: int = 10) -> list[tuple[str, str, float]]:
     """[(session_id, заголовок, возраст в секундах)] проекта, свежие сверху."""
     files = sorted(

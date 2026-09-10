@@ -220,6 +220,16 @@ def build() -> web.Application:
         seen, found = await asyncio.to_thread(items, path, start)
         return web.json_response({"next": seen, "items": found})
 
+    async def api_search(req: web.Request) -> web.Response:
+        """Поиск по сессиям проекта. Диск в потоке: скан всех транскриптов проекта —
+        полсекунды на 45 МБ, но держать на это event loop незачем."""
+        found = await asyncio.to_thread(
+            sessions.search, req.query.get("project", ""), req.query.get("q", ""), 20)
+        return web.json_response([
+            {"id": sid, "title": title or sid, "ago": sessions.ago(age), "snippet": snip}
+            for sid, title, age, snip in found
+        ])
+
     async def api_status(_: web.Request) -> web.Response:
         """Какие панели заняты и что упало. Занятость берётся из тех же `runner._runs`,
         что у Telegram, поэтому веб видит и чужие запуски, а не только свои."""
@@ -265,6 +275,7 @@ def build() -> web.Application:
         web.get("/api/peers", api_peers),
         web.get("/api/projects", api_projects),
         web.get("/api/sessions", api_sessions),
+        web.get("/api/search", api_search),
         web.get("/api/messages", api_messages),
         web.get("/api/status", api_status),
         web.post("/api/prompt", api_prompt),
@@ -295,11 +306,16 @@ aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex
 #peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
   text-decoration:none; color:inherit; font-size:13px }
 #peers a[aria-current=page] { background:#8884; font-weight:600 }
-aside select, aside button.new { margin:8px 8px 0; padding:6px }
+aside select, aside button.new, aside input { margin:8px 8px 0; padding:6px }
+aside input { background:none; color:inherit; border:1px solid #8884; border-radius:4px;
+  font:inherit }
+#list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
+  overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
 #list { overflow:auto; flex:1; margin-top:8px }
 #list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
 #list button:hover { background:#8882 }
+#list .ago { opacity:.6; font-size:12px }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
@@ -313,7 +329,10 @@ aside select, aside button.new { margin:8px 8px 0; padding:6px }
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
   min-width:0; min-height:0; border:1px solid #8884; border-radius:6px; background:Canvas;
   grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
-section.act { z-index:5; box-shadow:0 6px 24px #0005; border-color:#8ab }
+/* Цвет панели — свой оттенок на заголовке и рамке. Не единственный признак: в
+   заголовке остаются проект и id сессии, так что различать можно и без цвета. */
+section.act { z-index:5; box-shadow:0 6px 24px #0005;
+  border-color:oklch(0.65 0.14 var(--hue,220)) }
 /* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
    и pointermove до нас не доходит. */
 .grip, .h { touch-action:none }   /* иначе жест уходит прокрутке, pointermove не придёт */
@@ -340,14 +359,21 @@ section.act { z-index:5; box-shadow:0 6px 24px #0005; border-color:#8ab }
    стало бы нечем закрыть. Верхние 12px заголовка отданы ручке .h-n, ниже — перенос,
    как у обычного окна. */
 header { display:flex; gap:6px; align-items:center; padding:6px 22px 6px 20px;
-  border-bottom:1px solid #8884 }
+  border-bottom:1px solid #8884; background:oklch(0.65 0.12 var(--hue,220) / .16) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
-header .dot { width:8px; height:8px; border-radius:50%; background:#8886; flex:none }
+header .dot { width:8px; height:8px; border-radius:50%; flex:none;
+  background:oklch(0.65 0.14 var(--hue,220) / .55) }
+/* Занятость важнее опознавания: оранжевый перебивает цвет панели. */
 header .dot.busy { background:#e90 }
+header .hits { font-size:11px; opacity:.6; flex:none }
 .log { flex:1; overflow:auto; padding:12px 14px }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
+/* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
+   «где я говорил» первым делом. Полупрозрачный oklch читается и в тёмной теме, и в
+   светлой — страница живёт под color-scheme: dark light. */
+.user { background:oklch(0.62 0.10 165 / .20); padding:8px 10px; border-radius:6px }
 .body > :first-child { margin-top:0 }
 .body > :last-child { margin-bottom:0 }
 .body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin:.6em 0 .3em; font-size:1em }
@@ -360,7 +386,6 @@ header .dot.busy { background:#e90 }
 .body th, .body td { border:1px solid #8884; padding:2px 6px; text-align:left }
 .body a { color:#7ad }
 .body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
-.user { border-left:3px solid #4a9; padding-left:10px }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
 .err { color:#e55 }
@@ -382,6 +407,8 @@ textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   <nav id=peers></nav>
   <select id=proj></select>
   <button class=new id=new>+ новая сессия</button>
+  <input id=find type=search placeholder="поиск по сессиям проекта">
+  <input id=filter type=search placeholder="фильтр открытых панелей">
   <div id=list></div>
 </aside>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
@@ -392,6 +419,14 @@ const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 
   body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
+
+// Оттенки для панелей: шесть штук по кругу, светлота и насыщенность заданы в CSS.
+// Берём первый незанятый, чтобы соседние панели не совпали по цвету.
+const HUES = [200, 30, 145, 300, 85, 255];
+const freeHue = () => {
+  const used = new Set(panes.map(x => x.hue));
+  return HUES.find(h => !used.has(h)) ?? HUES[panes.length % HUES.length];
+};
 
 // Панели переживают F5: в них лежит id, который на сервере служит скоупом запуска,
 // поэтому после перезагрузки «стоп» бьёт по своему прогону, а не по чужому.
@@ -421,15 +456,58 @@ async function loadProjects() {
   if (ps.length) loadSessions();
 }
 
-async function loadSessions() {
-  const project = $('proj').value;
-  const ss = await get('api/sessions?project=' + encodeURIComponent(project));
-  $('list').innerHTML = ss.map(s =>
-    `<button data-id="${s.id}"><span style="opacity:.6;font-size:12px">${esc(s.ago)}</span>
-     ${esc(s.title.slice(0, 60))}</button>`).join('') ||
-    '<div style="padding:10px;opacity:.5">сессий нет</div>';
+function fillList(project, rows, empty) {
+  $('list').innerHTML = rows.map(s =>
+    `<button data-id="${s.id}"><span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
+    (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
+    `<div style="padding:10px;opacity:.5">${empty}</div>`;
   for (const b of $('list').querySelectorAll('button')) {
     b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0 });
+  }
+}
+
+async function loadSessions() {
+  const project = $('proj').value;
+  fillList(project, await get('api/sessions?project=' + encodeURIComponent(project)),
+           'сессий нет');
+}
+
+// Поиск по сессиям проекта: сервер сканирует транскрипты и отдаёт фрагмент вокруг
+// попадания. Дебаунс, потому что скан хоть и быстрый, но не на каждую букву.
+let findTimer = null;
+
+function scheduleFind() {
+  clearTimeout(findTimer);
+  findTimer = setTimeout(runFind, 300);
+}
+
+async function runFind() {
+  const q = $('find').value.trim();
+  const project = $('proj').value;
+  if (!q) return loadSessions();
+  const url = 'api/search?project=' + encodeURIComponent(project) + '&q=' + encodeURIComponent(q);
+  try {
+    fillList(project, await get(url), 'ничего не нашлось');
+  } catch (e) { /* следующий ввод попробует снова */ }
+}
+
+// Фильтр по открытым панелям — то, чего не умеет Ctrl+F: сворачивает все панели сразу
+// до совпавших сообщений и показывает число попаданий в заголовке. Подсветку не рисуем:
+// внутри уже готовый HTML разметки, и вставлять в него теги — верный способ его порвать.
+// Найденное дальше ищется тем же Ctrl+F.
+function applyFilter() {
+  const q = $('filter').value.trim().toLowerCase();
+  for (const p of panes) {
+    const el = document.getElementById('pane-' + p.pane);
+    if (!el) continue;
+    let hits = 0;
+    for (const m of el.querySelectorAll('.msg')) {
+      const show = !q || m.textContent.toLowerCase().includes(q);
+      m.hidden = !show;
+      if (q && show) hits++;
+    }
+    const box = el.querySelector('.hits');
+    if (box) box.textContent = q ? (hits ? `${hits} совп.` : 'нет') : '';
   }
 }
 
@@ -546,6 +624,7 @@ function wireHandles(p, el) {
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
   p.w = p.w || W; p.h = p.h || H;
+  p.hue = p.hue ?? freeHue();
   panes.push(p);
   if (!p.c) place(p);
   save();
@@ -567,6 +646,7 @@ function drawPane(p) {
     <header>
       <span class=dot></span>
       <span class=who></span>
+      <span class=hits></span>
       <button class=stop title="остановить">стоп</button>
       <button class=close title="закрыть панель">×</button>
     </header>
@@ -583,6 +663,7 @@ function drawPane(p) {
   ta.onkeydown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
   };
+  el.style.setProperty('--hue', p.hue ?? HUES[0]);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
   el.onpointerdown = () => raise(el);
@@ -727,6 +808,7 @@ async function poll(p) {
     : data.items;
   if (taken) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
+  if ($('filter').value.trim()) applyFilter();  // дошедшее при активном фильтре
   if (atEnd || first) box.scrollTop = 1e9;
 }
 
@@ -755,10 +837,12 @@ async function tick() {
   }
   // Сессию могли начать в Telegram или в соседней панели — список слева должен это
   // увидеть сам, а не после перезагрузки страницы.
-  if (++ticks % 5 === 0) loadSessions().catch(() => {});
+  if (++ticks % 5 === 0 && !$('find').value.trim()) loadSessions().catch(() => {});
 }
 
-$('proj').onchange = loadSessions;
+$('proj').onchange = () => { $('find').value = ''; loadSessions(); };
+$('find').oninput = scheduleFind;
+$('filter').oninput = applyFilter;
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadProjects().then(() => {

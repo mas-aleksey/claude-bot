@@ -5,6 +5,7 @@
 """
 
 import asyncio
+import json
 import os
 
 import pytest
@@ -203,3 +204,23 @@ async def test_stderr_text_goes_to_panel(client, monkeypatch, tmp_path, stderr, 
     await asyncio.sleep(0)
 
     assert (await (await client.get("/api/status")).json())["errors"]["web:pane-1"] == expect
+
+
+async def test_search_endpoint_returns_snippets(client, tmp_path, monkeypatch):
+    cwd = tmp_path / "proj"
+    d = tmp_path / "transcripts" / sessions._slug(str(cwd))
+    d.mkdir(parents=True)
+    (d / "11111111-2222-3333-4444-555555555555.jsonl").write_text(
+        json.dumps({"type": "user", "message": {"role": "user", "content": "почини докер"}},
+                   ensure_ascii=False) + "\n", encoding="utf-8")
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "transcripts")
+
+    r = await client.get("/api/search", params={"project": str(cwd), "q": "докер"})
+    (row,) = await r.json()
+    assert row["id"] == "11111111-2222-3333-4444-555555555555"
+    assert "докер" in row["snippet"]
+
+
+async def test_search_without_query_is_empty(client, tmp_path):
+    r = await client.get("/api/search", params={"project": str(tmp_path / "proj"), "q": " "})
+    assert await r.json() == []
