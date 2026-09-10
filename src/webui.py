@@ -454,8 +454,12 @@ header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow
   white-space:nowrap }
 header .dot { width:8px; height:8px; border-radius:50%; flex:none;
   background:oklch(0.62 0.20 var(--hue,250)) }
-/* Занятость важнее опознавания: оранжевый перебивает цвет панели. */
-header .dot.busy { background:#e90 }
+/* Занятость важнее опознавания: оранжевый перебивает цвет панели, а мигание видно
+   краем глаза, когда смотришь в другую панель. */
+header .dot.busy { background:#e90; animation:pulse 1.1s ease-in-out infinite }
+@keyframes pulse { 50% { opacity:.25; transform:scale(.7) } }
+/* Отключённая анимация — не потеря информации: цвет точки остаётся оранжевым. */
+@media (prefers-reduced-motion: reduce) { header .dot.busy { animation:none } }
 header .hits { font-size:11px; opacity:.6; flex:none }
 .log { flex:1; overflow:auto; padding:12px 14px }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
