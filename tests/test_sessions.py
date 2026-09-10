@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -29,7 +30,11 @@ def test_recent_title_and_order(transcripts, tmp_path):
     write(d, "old", {"type": "last-prompt", "lastPrompt": "первый"})
     write(d, "new", {"type": "last-prompt", "lastPrompt": "второй"},
           {"type": "ai-title", "aiTitle": "Заголовок"})
-    (d / "old.jsonl").touch()  # старую делаем свежее — проверяем сортировку по mtime
+    # Время задаём явно, а не через touch(): overlayfs в контейнере огрубляет метки, и
+    # у обоих файлов st_mtime_ns выходил одинаковым — тест падал не на сортировке, а на
+    # том, что «свежее» не наступило.
+    os.utime(d / "new.jsonl", (1000, 1000))
+    os.utime(d / "old.jsonl", (2000, 2000))
 
     got = sessions.recent(str(cwd))
     assert [(sid, name) for sid, name, _ in got] == [("old", "первый"), ("new", "Заголовок")]
