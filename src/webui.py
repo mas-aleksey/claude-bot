@@ -77,6 +77,18 @@ COMMAND_RE = re.compile(
     r"(?:.*?<command-args>\s*(?P<args>[^<]*?)\s*</command-args>)?",
     re.S)
 
+# Служебные обёртки, которые тоже приезжают user-сообщением, но человек их не писал.
+# Список не выдуман: пересчитан по живым транскриптам — task-notification 20 штук,
+# local-command-caveat 6, local-command-stdout 5. Неизвестный тег специально оставляем
+# текстом человека: лучше показать лишнее, чем спрятать настоящее сообщение.
+NOTES = {
+    "task-notification": "фоновая задача завершилась",
+    "local-command-caveat": "служебная пометка клиента",
+    "local-command-stdout": "вывод локальной команды",
+}
+SERVICE_RE = re.compile(r"\A<([a-z-]{4,40})>")
+SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
+
 
 def items(path: Path, start: int) -> tuple[int, list[dict]]:
     """Со строки `start`: (номер следующей строки, читаемые элементы).
@@ -147,11 +159,29 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
 
 
 def _prompt(text: str) -> dict:
-    """Промпт человека. Вызов слеш-команды сжимаем до `/имя аргументы`: в сыром виде это
-    три XML-подобных тега, которые человек не писал и читать не должен."""
+    """Строковое `user`-сообщение: промпт человека, слеш-команда или служебная врезка.
+
+    Слеш-команду сжимаем до `/имя аргументы` — в сыром виде это три XML-подобных тега.
+    Проверяем её первой: `local-command-caveat` часто идёт преамбулой к настоящей
+    команде в том же сообщении, и команда тут главнее.
+
+    Служебные врезки уходят в серую пометку. Иначе уведомление о фоновой задаче стоит
+    в панели под подписью «ты», хотя человек не писал ни строки.
+    """
     if m := COMMAND_RE.search(text):
         return {"role": "user", "text": f"{m['name']} {m['args'] or ''}".strip()}
-    return {"role": "user", "text": text}
+
+    tag = SERVICE_RE.match(text)
+    if not tag or not (label := NOTES.get(tag[1])):
+        return {"role": "user", "text": text}
+
+    if tag[1] == "task-notification" and (m := SUMMARY_RE.search(text)):
+        label += ": " + " ".join(m[1].split())[:160]
+    elif tag[1] == "local-command-stdout":
+        body = " ".join(re.sub(r"</?local-command-stdout>", " ", text).split())
+        if body:
+            label += ": " + body[:160]
+    return {"role": "note", "text": label}
 
 
 def peers() -> list[dict]:
