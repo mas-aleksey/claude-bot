@@ -276,9 +276,21 @@ aside select, aside button.new { margin:8px 8px 0; padding:6px }
 #list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
 #list button:hover { background:#8882 }
-#panes { flex:1; display:flex; overflow-x:auto }
-section { flex:0 0 min(560px, 100%); display:flex; flex-direction:column;
-  border-right:1px solid #8884 }
+/* Сетка, а не свободные окна: место панели — целые клетки, поэтому «прилипание»
+   получается само, без пиксельной математики и без перекрытий. `dense` подтягивает
+   плитки к началу, так что дырок после перетаскивания не остаётся.
+   --rowh дублирует ROWH в скрипте: одно значение нужно и вёрстке, и расчёту клетки. */
+#panes { flex:1; overflow:auto; display:grid; gap:8px; padding:8px; align-content:start;
+  grid-template-columns:repeat(var(--cols,2), minmax(0,1fr));
+  grid-auto-rows:var(--rowh,320px); grid-auto-flow:dense }
+section { position:relative; display:flex; flex-direction:column; overflow:hidden;
+  min-width:0; min-height:0; border:1px solid #8884; border-radius:6px;
+  grid-column:span var(--w,1); grid-row:span var(--h,1) }
+section.dragging { opacity:.35 }
+section.target { outline:2px dashed #8ab; outline-offset:-2px }
+.grip { cursor:grab; user-select:none }
+.rs { position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
+  background:linear-gradient(135deg, transparent 50%, #8886 50%) }
 header { display:flex; gap:6px; align-items:center; padding:6px 10px; border-bottom:1px solid #8884 }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
@@ -294,7 +306,7 @@ header .dot.busy { background:#e90 }
 form { display:flex; gap:6px; padding:8px; border-top:1px solid #8884 }
 textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   background:none; color:inherit; border:1px solid #8884; border-radius:4px }
-#empty { margin:auto; opacity:.5 }
+#empty { grid-column:1/-1; margin:auto; opacity:.5 }
 </style></head><body>
 <aside>
   <nav id=peers></nav>
@@ -344,8 +356,90 @@ async function loadSessions() {
   }
 }
 
+// Клетка сетки. COLW — порог, после которого влезает ещё одна колонка; ROWH обязан
+// совпадать с --rowh в стилях, иначе расчёт размера при перетаскивании поедет.
+const COLW = 420, ROWH = 320, GAP = 8, PAD = 8, MAXCOLS = 4, MAXH = 4;
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const cols = () => +($('panes').style.getPropertyValue('--cols') || 2);
+
+function setCols() {
+  const w = $('panes').clientWidth - PAD * 2;
+  $('panes').style.setProperty('--cols', clamp(Math.floor((w + GAP) / (COLW + GAP)), 1, MAXCOLS));
+  panes.forEach(applyGeom);  // панель шире новой сетки — ужать, а не рвать вёрстку
+}
+
+function colStep() {
+  const c = cols();
+  return ($('panes').clientWidth - PAD * 2 - GAP * (c - 1)) / c + GAP;
+}
+
+function applyGeom(p) {
+  const el = document.getElementById('pane-' + p.pane);
+  if (!el) return;
+  el.style.setProperty('--w', clamp(p.w || 1, 1, cols()));
+  el.style.setProperty('--h', clamp(p.h || 1, 1, MAXH));
+}
+
+// Порядок в массиве = порядок в сетке. append переносит существующий узел, слушатели
+// и содержимое при этом сохраняются.
+function reflow() {
+  panes.forEach(p => {
+    const el = document.getElementById('pane-' + p.pane);
+    if (el) $('panes').append(el);
+  });
+}
+
+let dragged = null;
+
+function wireDrag(p, el) {
+  const head = el.querySelector('header');
+  head.draggable = true;
+  head.classList.add('grip');
+  head.ondragstart = (e) => {
+    dragged = p;
+    el.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', p.pane);  // без данных Firefox не начнёт перенос
+  };
+  head.ondragend = () => { dragged = null; el.classList.remove('dragging'); };
+  el.ondragover = (e) => {
+    if (!dragged || dragged.pane === p.pane) return;
+    e.preventDefault();  // без этого drop не случится вовсе
+    el.classList.add('target');
+  };
+  el.ondragleave = () => el.classList.remove('target');
+  el.ondrop = (e) => {
+    e.preventDefault();
+    el.classList.remove('target');
+    if (!dragged || dragged.pane === p.pane) return;
+    const i = panes.indexOf(dragged), j = panes.indexOf(p);
+    if (i < 0 || j < 0) return;
+    panes[i] = p; panes[j] = dragged; save();
+    reflow();
+  };
+}
+
+function wireResize(p, el) {
+  const grip = document.createElement('div');
+  grip.className = 'rs';
+  grip.title = 'потянуть — размер по клеткам';
+  el.append(grip);
+  grip.onpointerdown = (e) => {
+    e.preventDefault();
+    grip.setPointerCapture(e.pointerId);
+    const box = el.getBoundingClientRect();
+    grip.onpointermove = (ev) => {
+      p.w = clamp(Math.round((ev.clientX - box.left + GAP) / colStep()), 1, cols());
+      p.h = clamp(Math.round((ev.clientY - box.top + GAP) / (ROWH + GAP)), 1, MAXH);
+      applyGeom(p);
+    };
+    grip.onpointerup = () => { grip.onpointermove = null; save(); };
+  };
+}
+
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
+  p.w = p.w || 1; p.h = p.h || 1;
   panes.push(p); save();
   drawPane(p);
   poll(p);
@@ -381,6 +475,9 @@ function drawPane(p) {
   ta.onkeydown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
   };
+  wireDrag(p, el);
+  wireResize(p, el);
+  applyGeom(p);
 }
 
 function log(p, html) {
@@ -445,7 +542,13 @@ async function tick() {
 $('proj').onchange = loadSessions;
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
-loadProjects().then(() => { panes.forEach(p => { p.next = 0; drawPane(p); }); tick(); });
+window.addEventListener('resize', setCols);
+setCols();
+loadProjects().then(() => {
+  panes.forEach(p => { p.next = 0; drawPane(p); });
+  setCols();
+  tick();
+});
 setInterval(tick, 3000);
 </script></body></html>
 """
