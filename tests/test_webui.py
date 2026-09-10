@@ -109,3 +109,53 @@ def test_int_never_raises(raw, want):
 def test_peers_parsing(monkeypatch, raw, want):
     monkeypatch.setenv("WEB_PEERS", raw)
     assert webui.peers() == want
+
+
+SKILL_BODY = "Ты исследуешь ЧУЖОЙ репозиторий через GitLab REST API. " * 20
+
+
+def test_skill_body_is_collapsed_not_shown_as_answer(tmp_path):
+    """Тело скилла приходит user-сообщением со списком блоков. Раньше текстовый блок
+    считался ответом claude всегда, и скилл вываливался в панель его словами."""
+    path = tmp_path / "s.jsonl"
+    write(path,
+          {"type": "user", "message": {"role": "user", "content": "/refine задачу"}},
+          {"type": "user", "message": {"role": "user", "content": [
+              {"type": "text", "text": SKILL_BODY}]}},
+          {"type": "assistant", "message": {"role": "assistant", "content": [
+              {"type": "text", "text": "разобрал"}]}})
+    _, got = webui.items(path, 0)
+
+    assert [i["role"] for i in got] == ["user", "note", "assistant"]
+    assert SKILL_BODY not in got[1]["text"]
+    assert "подставлен контекст" in got[1]["text"]
+    assert str(len(SKILL_BODY)) in got[1]["text"]  # объём виден, содержимое нет
+
+
+def test_slash_command_wrapper_becomes_one_line(tmp_path):
+    path = tmp_path / "s.jsonl"
+    write(path, {"type": "user", "message": {"role": "user", "content":
+          "<command-message>refine</command-message>\n"
+          "<command-name>/refine</command-name>\n"
+          "<command-args>RP-3945 + HANDOFF.md</command-args>"}})
+    _, got = webui.items(path, 0)
+
+    assert got == [{"role": "user", "text": "/refine RP-3945 + HANDOFF.md"}]
+
+
+def test_slash_command_without_args(tmp_path):
+    path = tmp_path / "s.jsonl"
+    write(path, {"type": "user", "message": {"role": "user", "content":
+          "<command-name>/end</command-name>"}})
+    _, got = webui.items(path, 0)
+    assert got == [{"role": "user", "text": "/end"}]
+
+
+def test_empty_injected_context_is_skipped(tmp_path):
+    """Пустой список блоков — служебное событие, пометка о нём была бы шумом."""
+    path = tmp_path / "s.jsonl"
+    write(path, {"type": "user", "message": {"role": "user", "content": []}},
+                {"type": "user", "message": {"role": "user", "content": [
+                    {"type": "tool_result", "content": "лог"}]}})
+    _, got = webui.items(path, 0)
+    assert got == []

@@ -224,3 +224,21 @@ async def test_search_endpoint_returns_snippets(client, tmp_path, monkeypatch):
 async def test_search_without_query_is_empty(client, tmp_path):
     r = await client.get("/api/search", params={"project": str(tmp_path / "proj"), "q": " "})
     assert await r.json() == []
+
+
+async def test_session_list_shows_size_only_for_heavy(client, tmp_path, monkeypatch):
+    """Цифра у каждой сессии — шум: у большинства она одинаково мелкая. Показываем
+    только те, что открываются заметно дольше."""
+    cwd = tmp_path / "proj"
+    d = tmp_path / "transcripts" / sessions._slug(str(cwd))
+    d.mkdir(parents=True)
+    line = json.dumps({"type": "user", "message": {"role": "user", "content": "x"}}) + "\n"
+    (d / "aaaaaaaa-2222-3333-4444-555555555555.jsonl").write_text(line)
+    (d / "bbbbbbbb-2222-3333-4444-555555555555.jsonl").write_text(
+        line + "#" * (2 << 20))
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "transcripts")
+
+    rows = {r["id"][:8]: r["size"] for r in
+            await (await client.get("/api/sessions", params={"project": str(cwd)})).json()}
+    assert rows["aaaaaaaa"] == ""
+    assert rows["bbbbbbbb"].endswith("МБ")

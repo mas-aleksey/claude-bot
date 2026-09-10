@@ -71,14 +71,32 @@ def transcript(project: str, session_id: str) -> Path:
     return sessions.TRANSCRIPTS / sessions._slug(project) / f"{session_id}.jsonl"
 
 
+# Слеш-команда приезжает в транскрипт вот такой обёрткой, а не текстом человека.
+COMMAND_RE = re.compile(
+    r"<command-name>\s*(?P<name>[^<]+?)\s*</command-name>"
+    r"(?:.*?<command-args>\s*(?P<args>[^<]*?)\s*</command-args>)?",
+    re.S)
+
+
 def items(path: Path, start: int) -> tuple[int, list[dict]]:
     """Со строки `start`: (номер следующей строки, читаемые элементы).
 
-    Оставляем три вида: промпт человека, текст ответа и шаг инструмента. Мысли и
-    `tool_result` выброшены намеренно — первые длиннее самого ответа, вторые бывают
-    на мегабайт, а в панели нужен разговор, а не сырой поток. Незнакомое событие
-    пропускается молча: типов в транскрипте больше, чем нам нужно, и список растёт
-    с версиями claude.
+    Роль берётся из типа события, а не из вида блока. Раньше текстовый блок считался
+    ответом claude всегда — и тело скилла, которое приходит `user`-сообщением со
+    списком блоков, вываливалось в панель как будто это сказал claude.
+
+    Что показываем:
+      * `user` строкой — промпт человека; обёртка слеш-команды сжимается в одну строку;
+      * `assistant` с `text` — ответ;
+      * `assistant` с `tool_use` — шаг инструмента;
+      * `user` со списком блоков — подставленный контекст (тело скилла, вывод
+        `/context`, вставленная картинка). Человек это не писал и claude не говорил,
+        поэтому вместо содержимого — одна серая пометка с размером. Молча выбрасывать
+        нельзя: тогда из панели бесследно исчезало бы то, что реально было в сессии.
+
+    Мысли и `tool_result` не показываем: первые длиннее ответа, вторые бывают на
+    мегабайт. Незнакомое событие пропускается молча — типов в транскрипте больше, чем
+    нам нужно, и список растёт с версиями claude.
     """
     out: list[dict] = []
     seen = start
@@ -91,14 +109,24 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
                 ev = json.loads(line)
             except ValueError:
                 continue
-            if ev.get("type") not in ("user", "assistant"):
+            role = ev.get("type")
+            if role not in ("user", "assistant"):
                 continue
             content = (ev.get("message") or {}).get("content")
-            # Промпт человека приходит строкой, всё остальное — списком блоков.
+
             if isinstance(content, str):
-                if content.strip():
-                    out.append({"role": "user", "text": content})
+                if text := content.strip():
+                    out.append(_prompt(text))
                 continue
+
+            if role == "user":
+                # Подставленный контекст: показываем факт и объём, не содержимое.
+                size = sum(len(b.get("text", "")) for b in content or []
+                           if b.get("type") == "text")
+                if size:
+                    out.append({"role": "note", "text": f"подставлен контекст, {size} симв."})
+                continue
+
             for block in content or []:
                 kind = block.get("type")
                 if kind == "text":
@@ -116,6 +144,14 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
             if len(out) >= CHUNK:
                 break
     return seen, out
+
+
+def _prompt(text: str) -> dict:
+    """Промпт человека. Вызов слеш-команды сжимаем до `/имя аргументы`: в сыром виде это
+    три XML-подобных тега, которые человек не писал и читать не должен."""
+    if m := COMMAND_RE.search(text):
+        return {"role": "user", "text": f"{m['name']} {m['args'] or ''}".strip()}
+    return {"role": "user", "text": text}
 
 
 def peers() -> list[dict]:
@@ -140,6 +176,20 @@ def _int(value: str | None) -> int:
         return max(0, int(value or 0))
     except ValueError:
         return 0
+
+
+# Ниже этого размера цифра в списке — шум: у большинства сессий она одинаково мелкая.
+# Выше — предупреждение, что панель будет открываться заметно дольше.
+HEAVY = 1 << 20
+
+
+def _heavy(project: str, session_id: str) -> str:
+    """Размер транскрипта, но только если он большой. Пустая строка — не показывать."""
+    try:
+        size = transcript(project, session_id).stat().st_size
+    except (OSError, web.HTTPException):
+        return ""
+    return f"{size / HEAVY:.1f} МБ" if size >= HEAVY else ""
 
 
 def _project(raw: str) -> str:
@@ -206,9 +256,11 @@ def build() -> web.Application:
     async def api_sessions(req: web.Request) -> web.Response:
         # Диск, а не asyncio: заголовок сессии читается из транскрипта целиком, а он
         # бывает на десятки мегабайт — в общем event loop это заморозило бы long-poll.
-        found = await asyncio.to_thread(sessions.recent, req.query.get("project", ""), 30)
+        project = req.query.get("project", "")
+        found = await asyncio.to_thread(sessions.recent, project, 30)
         return web.json_response([
-            {"id": sid, "title": title or sid, "ago": sessions.ago(age)}
+            {"id": sid, "title": title or sid, "ago": sessions.ago(age),
+             "size": _heavy(project, sid)}
             for sid, title, age in found
         ])
 
@@ -316,6 +368,7 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
 #list button:hover { background:#8882 }
 #list .ago { opacity:.6; font-size:12px }
+#list .size { float:right; opacity:.5; font-size:11px }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
@@ -388,6 +441,7 @@ header .hits { font-size:11px; opacity:.6; flex:none }
 .body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
+.note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
 form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #8884 }
@@ -459,6 +513,7 @@ async function loadProjects() {
 function fillList(project, rows, empty) {
   $('list').innerHTML = rows.map(s =>
     `<button data-id="${s.id}"><span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
+    (s.size ? `<span class=size>${esc(s.size)}</span>` : '') +
     (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
     `<div style="padding:10px;opacity:.5">${empty}</div>`;
   for (const b of $('list').querySelectorAll('button')) {
@@ -773,6 +828,10 @@ function inline(t) {
 // --- md:end ---
 
 function renderItem(it) {
+  // Подставленный контекст: факт и объём, без содержимого.
+  if (it.role === 'note') {
+    return `<div class="msg note">↳ ${esc(it.text)}</div>`;
+  }
   if (it.role === 'tool') {
     return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${esc(it.text)}</div>`;
   }
@@ -812,6 +871,14 @@ async function poll(p) {
   if (atEnd || first) box.scrollTop = 1e9;
 }
 
+// Сравниваем с последними ответами, а не со всей панелью: тот же текст мог быть в
+// истории давно и законно.
+function lastAnswerHas(p, text) {
+  const msgs = document.querySelectorAll('#pane-' + p.pane + ' .msg.assistant');
+  const needle = text.trim().toLowerCase();
+  return [...msgs].slice(-3).some(m => m.textContent.toLowerCase().includes(needle));
+}
+
 let ticks = 0;
 
 async function tick() {
@@ -827,7 +894,9 @@ async function tick() {
     if (err) {
       if (shownErr.get(p.pane) !== err) {
         shownErr.set(p.pane, err);
-        log(p, `<div class="msg err">❌ ${esc(err)}</div>`);
+        // Причину claude часто пишет и в сам ответ — например про исчерпанный лимит.
+        // Тогда красная строка была бы вторым экземпляром того же текста.
+        if (!lastAnswerHas(p, err)) log(p, `<div class="msg err">❌ ${esc(err)}</div>`);
       }
     } else {
       shownErr.delete(p.pane);
