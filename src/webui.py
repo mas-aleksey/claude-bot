@@ -379,13 +379,19 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #panes { flex:1; overflow:hidden; display:grid; gap:8px; padding:8px;
   grid-template-columns:repeat(12, minmax(0,1fr));
   grid-template-rows:repeat(8, minmax(0,1fr)) }
+/* Цвет панели: рамка в полную силу, фон бледной заливкой. Заливка идёт градиентом
+   поверх Canvas, а не цветом с альфой: панели перекрываются, и полупрозрачный фон
+   просвечивал бы соседнюю. Градиент — верхний слой, Canvas — нижний непрозрачный. */
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
-  min-width:0; min-height:0; border:1px solid #8884; border-radius:6px; background:Canvas;
+  min-width:0; min-height:0; border-radius:6px;
+  border:1px solid oklch(0.62 0.16 var(--hue,250) / .5);
+  background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .07),
+                             oklch(0.62 0.16 var(--hue,250) / .07)), Canvas;
   grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
-/* Цвет панели — свой оттенок на заголовке и рамке. Не единственный признак: в
-   заголовке остаются проект и id сессии, так что различать можно и без цвета. */
+/* Активная — та же рамка, но в полную насыщенность, плюс тень. Цвет не единственный
+   признак: в заголовке остаются проект и id сессии. */
 section.act { z-index:5; box-shadow:0 6px 24px #0005;
-  border-color:oklch(0.65 0.14 var(--hue,220)) }
+  border-color:oklch(0.62 0.20 var(--hue,250)) }
 /* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
    и pointermove до нас не доходит. */
 .grip, .h { touch-action:none }   /* иначе жест уходит прокрутке, pointermove не придёт */
@@ -412,11 +418,12 @@ section.act { z-index:5; box-shadow:0 6px 24px #0005;
    стало бы нечем закрыть. Верхние 12px заголовка отданы ручке .h-n, ниже — перенос,
    как у обычного окна. */
 header { display:flex; gap:6px; align-items:center; padding:6px 22px 6px 20px;
-  border-bottom:1px solid #8884; background:oklch(0.65 0.12 var(--hue,220) / .16) }
+  border-bottom:1px solid oklch(0.62 0.16 var(--hue,250) / .4);
+  background:oklch(0.62 0.18 var(--hue,250) / .30) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
 header .dot { width:8px; height:8px; border-radius:50%; flex:none;
-  background:oklch(0.65 0.14 var(--hue,220) / .55) }
+  background:oklch(0.62 0.20 var(--hue,250)) }
 /* Занятость важнее опознавания: оранжевый перебивает цвет панели. */
 header .dot.busy { background:#e90 }
 header .hits { font-size:11px; opacity:.6; flex:none }
@@ -476,7 +483,10 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random(
 
 // Оттенки для панелей: шесть штук по кругу, светлота и насыщенность заданы в CSS.
 // Берём первый незанятый, чтобы соседние панели не совпали по цвету.
-const HUES = [200, 30, 145, 300, 85, 255];
+// Первые четыре разнесены максимально: синий, красно-оранжевый, зелёный, пурпурный.
+// Дальше циан и янтарный. Насыщенность и светлота заданы в CSS одинаковыми для всех,
+// поэтому панели отличаются только тоном и выглядят одной семьёй.
+const HUES = [250, 25, 145, 305, 195, 60];
 const freeHue = () => {
   const used = new Set(panes.map(x => x.hue));
   return HUES.find(h => !used.has(h)) ?? HUES[panes.length % HUES.length];
@@ -915,6 +925,10 @@ $('filter').oninput = applyFilter;
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadProjects().then(() => {
+  // Панели из localStorage могли получить оттенок из прежней палитры. Переназначаем по
+  // одной: freeHue смотрит на уже занятые, поэтому цвета не совпадут.
+  panes.forEach(p => { if (!HUES.includes(p.hue)) p.hue = freeHue(); });
+  save();
   panes.forEach(p => { p.next = 0; drawPane(p); });
   tick();
 });
