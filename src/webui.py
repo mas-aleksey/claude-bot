@@ -533,7 +533,14 @@ header .hits { font-size:11px; opacity:.6; flex:none }
 .body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin:.6em 0 .3em; font-size:1em }
 .body h1, .body h2 { font-size:1.08em }
 .body ul, .body ol { margin:.3em 0; padding-left:1.4em }
-.body pre { margin:.4em 0; padding:8px; overflow:auto; background:#8881; border-radius:4px }
+.body pre { position:relative; margin:.4em 0; padding:8px; overflow:auto;
+  background:#8881; border-radius:4px }
+/* Кнопка появляется по наведению: в узкой панели постоянная отнимала бы место у кода.
+   Прилипает к правому краю самого блока, поэтому не уезжает при его прокрутке. */
+.body pre .copy { position:sticky; float:right; top:0; right:0; opacity:0;
+  font:inherit; font-size:11px; padding:1px 5px; cursor:pointer; color:inherit;
+  background:Canvas; border:1px solid #8884; border-radius:3px }
+.body pre:hover .copy, .body pre .copy:focus { opacity:.9 }
 .body code { font-family:ui-monospace,monospace; font-size:.92em }
 .body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
 .body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }
@@ -546,8 +553,8 @@ header .hits { font-size:11px; opacity:.6; flex:none }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
 form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #8884 }
-textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
-  background:none; color:inherit; border:1px solid #8884; border-radius:4px }
+textarea { flex:1; resize:none; min-height:52px; max-height:240px; padding:6px;
+  font:inherit; background:none; color:inherit; border:1px solid #8884; border-radius:4px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
 /* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
    отключаем ручки — тянуть тут всё равно нечего. */
@@ -618,12 +625,14 @@ async function loadProjects() {
 
 function fillList(project, rows, empty) {
   $('list').innerHTML = rows.map(s =>
-    `<button data-id="${s.id}"><span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
+    `<button data-id="${s.id}" data-title="${esc(s.title)}">` +
+    `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
     (s.size ? `<span class=size>${esc(s.size)}</span>` : '') +
     (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
     `<div style="padding:10px;opacity:.5">${empty}</div>`;
   for (const b of $('list').querySelectorAll('button')) {
-    b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0 });
+    b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0,
+                                title: b.dataset.title });
   }
 }
 
@@ -847,8 +856,7 @@ function drawPane(p) {
     <div class=log></div>
     <form><textarea placeholder="промпт, Ctrl+Enter — отправить"></textarea><button>→</button></form>`;
   $('panes').append(el);
-  el.querySelector('.who').textContent =
-    p.project.split('/').pop() + (p.session ? ' · ' + p.session.slice(0, 8) : ' · новая');
+  setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
   el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane }).catch(() => {});
   const form = el.querySelector('form');
@@ -857,12 +865,57 @@ function drawPane(p) {
   ta.onkeydown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
   };
+  ta.oninput = () => grow(ta);
   el.style.setProperty('--hue', p.hue ?? HUES[0]);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
   el.onpointerdown = () => raise(el);
   fit(p);
   applyGeom(p);
+}
+
+// Заголовок панели: проект и название сессии. Восьми символов id хватало, чтобы
+// отличить панели, но не чтобы вспомнить, о чём сессия. Название приходит с сервера в
+// списке сессий, а у новой берётся из первого промпта.
+function setWho(p, el) {
+  const who = (el || document.getElementById('pane-' + p.pane))?.querySelector('.who');
+  if (!who) return;
+  const label = p.title ? p.title.slice(0, 48)
+                        : (p.session ? p.session.slice(0, 8) : 'новая');
+  who.textContent = p.project.split('/').pop() + ' · ' + label;
+  who.title = p.title || p.session || '';
+}
+
+// Поле растёт под текст до потолка в 240px: сбрасываем высоту, чтобы scrollHeight
+// пересчитался, и ставим по содержимому. Дальше поле скроллится само.
+function grow(ta) {
+  ta.style.height = 'auto';
+  ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
+}
+
+// Кнопка «копировать» у каждого блока кода. Вешаем после вставки и помечаем блок,
+// чтобы на следующем опросе не навесить вторую. Текст снимаем до добавления кнопки —
+// иначе в буфер попало бы и её собственное слово.
+function wireCopy(box) {
+  if (!navigator.clipboard) return;  // без HTTPS или в старом браузере кнопки не будет
+  for (const pre of box.querySelectorAll('pre:not([data-copy])')) {
+    pre.dataset.copy = '1';
+    const text = (pre.querySelector('code') || pre).textContent;
+    const btn = document.createElement('button');
+    btn.className = 'copy';
+    btn.type = 'button';
+    btn.textContent = 'копировать';
+    btn.onclick = async () => {
+      try {
+        await navigator.clipboard.writeText(text);
+        btn.textContent = 'скопировано';
+      } catch (e) {
+        btn.textContent = 'не вышло';
+      }
+      setTimeout(() => { btn.textContent = 'копировать'; }, 1200);
+    };
+    pre.prepend(btn);
+  }
 }
 
 function log(p, html) {
@@ -873,6 +926,7 @@ async function send(p, ta) {
   const prompt = ta.value.trim();
   if (!prompt) return;
   ta.value = '';
+  grow(ta);
   // Момент отправки — единственный жест пользователя, на котором браузер позволяет
   // спросить разрешение. На загрузке страницы Safari и Chrome такой запрос игнорируют.
   if ('Notification' in window && Notification.permission === 'default') {
@@ -886,9 +940,12 @@ async function send(p, ta) {
     if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
     if (!p.session) {
       // Новая сессия: id придумал claude, панель дочитывает уже созданный транскрипт.
-      p.session = r.session; p.next = 0; save();
-      document.querySelector('#pane-' + p.pane + ' .who').textContent =
-        p.project.split('/').pop() + ' · ' + r.session.slice(0, 8);
+      // Название берём из промпта — сервер даст своё только при следующем обновлении
+      // списка, а подпись нужна сразу.
+      p.session = r.session; p.next = 0;
+      p.title = p.title || prompt.slice(0, 60);
+      save();
+      setWho(p);
       loadSessions();
     }
   } catch (code) {
@@ -1011,6 +1068,7 @@ async function poll(p) {
     : data.items;
   if (taken) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
+  wireCopy(box);
   // Дописанное при активном поиске тоже надо подсветить. Встроенный Ctrl+F на каждой
   // вставке в DOM теряет позицию, а тут диапазоны просто пересобираются.
   if ($('filter').value.trim()) applyFilter();
