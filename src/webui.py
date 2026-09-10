@@ -518,6 +518,8 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
 }
 header .hits { font-size:11px; opacity:.6; flex:none }
+/* Оба цвета заданы явно: подсветка должна читаться и в тёмной теме, и в светлой. */
+::highlight(find) { background:#fd0; color:#000 }
 .log { flex:1; overflow:auto; padding:12px 14px }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
@@ -560,7 +562,7 @@ textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   <select id=proj></select>
   <button class=new id=new>+ новая сессия</button>
   <input id=find type=search placeholder="поиск по сессиям проекта">
-  <input id=filter type=search placeholder="фильтр открытых панелей">
+  <input id=filter type=search placeholder="поиск по открытым панелям">
   <button class=new id=purge title="удалить старые сессии во всех проектах">
     очистить старше 2 дней</button>
   <div id=list></div>
@@ -649,24 +651,56 @@ async function runFind() {
   } catch (e) { /* следующий ввод попробует снова */ }
 }
 
-// Фильтр по открытым панелям — то, чего не умеет Ctrl+F: сворачивает все панели сразу
-// до совпавших сообщений и показывает число попаданий в заголовке. Подсветку не рисуем:
-// внутри уже готовый HTML разметки, и вставлять в него теги — верный способ его порвать.
-// Найденное дальше ищется тем же Ctrl+F.
+// Поиск по открытым панелям: подсвечиваем найденное, ничего не скрывая — как Ctrl+F.
+// Раньше несовпавшие сообщения прятались, то есть контекст исчезал ровно тогда, когда
+// он нужнее всего.
+//
+// Подсветка через CSS Custom Highlight API: диапазоны регистрируются в CSS.highlights,
+// DOM не мутируется вообще. Это принципиально — внутри .body лежит готовый HTML
+// разметки, и вставка <mark> его бы порвала. Снятие тоже бесплатное, восстанавливать
+// исходный HTML не нужно. В браузере без этого API останется счётчик без жёлтого.
+function textNodes(root) {
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
+    // Подписи «ты» и «claude» не текст беседы: попадание в них было бы шумом.
+    acceptNode: (n) => n.parentElement?.closest('.role')
+      ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
+  });
+  const out = [];
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
+  return out;
+}
+
 function applyFilter() {
   const q = $('filter').value.trim().toLowerCase();
+  const has = 'highlights' in CSS;
+  if (has) CSS.highlights.delete('find');
+  if (!q) {
+    for (const p of panes) {
+      const box = document.getElementById('pane-' + p.pane)?.querySelector('.hits');
+      if (box) box.textContent = '';
+    }
+    return;
+  }
+
+  const all = [];
   for (const p of panes) {
     const el = document.getElementById('pane-' + p.pane);
     if (!el) continue;
     let hits = 0;
-    for (const m of el.querySelectorAll('.msg')) {
-      const show = !q || m.textContent.toLowerCase().includes(q);
-      m.hidden = !show;
-      if (q && show) hits++;
+    for (const node of textNodes(el)) {
+      const text = node.data.toLowerCase();
+      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
+        const range = new Range();
+        range.setStart(node, i);
+        range.setEnd(node, i + q.length);
+        all.push(range);
+        hits++;
+      }
     }
     const box = el.querySelector('.hits');
-    if (box) box.textContent = q ? (hits ? `${hits} совп.` : 'нет') : '';
+    if (box) box.textContent = hits || '—';
   }
+  if (has && all.length) CSS.highlights.set('find', new Highlight(...all));
 }
 
 // Сетка фиксированного размера в клетках: 12 на 8. Клетка — доля области, а не пиксели,
@@ -976,7 +1010,9 @@ async function poll(p) {
     : data.items;
   if (taken) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
-  if ($('filter').value.trim()) applyFilter();  // дошедшее при активном фильтре
+  // Дописанное при активном поиске тоже надо подсветить. Встроенный Ctrl+F на каждой
+  // вставке в DOM теряет позицию, а тут диапазоны просто пересобираются.
+  if ($('filter').value.trim()) applyFilter();
   if (atEnd || first) box.scrollTop = 1e9;
 }
 
