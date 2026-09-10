@@ -180,3 +180,26 @@ async def test_result_error_text_beats_bare_return_code(client, monkeypatch, tmp
 
     assert (await (await client.get("/api/status")).json())["errors"] == {
         "web:pane-1": "You've hit your session limit"}
+
+
+@pytest.mark.parametrize("stderr,expect", [
+    ("No conversation found with session ID: x", "No conversation found with session ID: x (rc=1)"),
+    ("", "claude вышел с кодом 1 и ничего не сообщил — "
+         "причина, если она есть, в последнем ответе выше"),
+])
+async def test_stderr_text_goes_to_panel(client, monkeypatch, tmp_path, stderr, expect):
+    """Голый код возврата ничего не объясняет. Текст из stderr идёт вперёд, код в скобки,
+    а при пустом stderr панель хотя бы говорит, куда смотреть."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "_bot", "kind": "error", "rc": 1, "text": stderr}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_errors", {})
+
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    assert (await (await client.get("/api/status")).json())["errors"]["web:pane-1"] == expect

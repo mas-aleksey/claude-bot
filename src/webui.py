@@ -170,9 +170,15 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
             if ev.get("type") == "result" and ev.get("is_error"):
                 err = (ev.get("result") or "").strip()[:2000]
             if ev.get("type") == "_bot" and ev.get("kind") == "error":
-                rc_text = f"rc={ev.get('rc')} {(ev.get('text') or '').strip()}".strip()
-                err = err or rc_text
-                log.warning("scope=%s %s", scope, rc_text[:300])
+                rc = ev.get("rc")
+                stderr = (ev.get("text") or "").strip()
+                # Текст вперёд, код в скобках: читают ошибку, а не номер. Если текста
+                # нет ни в result, ни в stderr — говорим это словами, потому что голое
+                # `rc=1` не подсказывает даже, куда смотреть.
+                err = err or (f"{stderr[:2000]} (rc={rc})" if stderr else
+                              f"claude вышел с кодом {rc} и ничего не сообщил — "
+                              f"причина, если она есть, в последнем ответе выше")
+                log.warning("scope=%s rc=%s %s", scope, rc, stderr[:300])
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         log.exception("прогон из веба упал: scope=%s", scope)
