@@ -3,6 +3,7 @@
 через node — он есть в базовом образе, потому что на нём работает claude-cli.
 """
 
+import re
 import shutil
 import subprocess
 
@@ -21,6 +22,15 @@ def test_page_script_parses(tmp_path):
     js.write_text(slice_out("script"), encoding="utf-8")
     done = subprocess.run(["node", "--check", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
+
+
+def test_grid_size_matches_between_css_and_script():
+    """Сетку рисует CSS, а шаг перетаскивания считает скрипт по своим COLS и ROWS.
+    Разъедутся — панель будет прыгать не туда, и заметить это можно только мышью."""
+    cols, rows = re.search(r"COLS = (\d+), ROWS = (\d+)", slice_out("script")).groups()
+    css = slice_out("style")
+    assert f"grid-template-columns:repeat({cols}," in css
+    assert f"grid-template-rows:repeat({rows}," in css
 
 
 def test_page_has_both_halves():

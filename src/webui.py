@@ -282,10 +282,12 @@ aside select, aside button.new { margin:8px 8px 0; padding:6px }
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
    трогали последней. Фон непрозрачный по той же причине.
-   --rowh дублирует ROWH в скрипте: значение нужно и вёрстке, и расчёту клетки. */
-#panes { flex:1; overflow:auto; display:grid; gap:8px; padding:8px; align-content:start;
-  grid-template-columns:repeat(var(--cols,6), minmax(0,1fr));
-  grid-auto-rows:var(--rowh,80px) }
+   Клетка — доля области (1fr), а не пиксели: панели тянутся вместе с окном и держат
+   свои пропорции. Числа 12 и 8 дублируют COLS и ROWS в скрипте — вёрстка рисует сетку,
+   а скрипт по ней считает шаг перетаскивания, поэтому значения обязаны совпадать. */
+#panes { flex:1; overflow:hidden; display:grid; gap:8px; padding:8px;
+  grid-template-columns:repeat(12, minmax(0,1fr));
+  grid-template-rows:repeat(8, minmax(0,1fr)) }
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
   min-width:0; min-height:0; border:1px solid #8884; border-radius:6px; background:Canvas;
   grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
@@ -345,6 +347,14 @@ form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #88
 textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   background:none; color:inherit; border:1px solid #8884; border-radius:4px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
+/* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
+   отключаем ручки — тянуть тут всё равно нечего. */
+@media (max-width: 700px) {
+  #panes { overflow:auto; grid-template-columns:1fr; grid-template-rows:none;
+    grid-auto-rows:min(70vh, 480px) }
+  section { grid-column:1/-1 !important; grid-row:auto !important }
+  .h { display:none }
+}
 </style></head><body>
 <aside>
   <nav id=peers></nav>
@@ -394,28 +404,24 @@ async function loadSessions() {
   }
 }
 
-// Клетка сетки. CELL — целевая ширина колонки, ROWH обязан совпадать с --rowh в стилях,
-// иначе перетаскивание будет считать шаг не по той сетке, что рисует браузер.
-const CELL = 100, ROWH = 80, GAP = 8, PAD = 8, MAXCOLS = 16, MAXH = 16, ROWS = 120;
+// Сетка фиксированного размера в клетках: 12 на 8. Клетка — доля области, а не пиксели,
+// поэтому панели тянутся и сжимаются вместе с окном, сохраняя свои пропорции. Панель по
+// умолчанию 6x4, то есть ровно четверть: четыре сессии раскладываются по углам.
+const COLS = 12, ROWS = 8, W = COLS / 2, H = ROWS / 2, GAP = 8, PAD = 8;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const cols = () => +($('panes').style.getPropertyValue('--cols') || 6);
-const colStep = () => {
-  const c = cols();
-  return ($('panes').clientWidth - PAD * 2 - GAP * (c - 1)) / c + GAP;
-};
 
-function setCols() {
-  const w = $('panes').clientWidth - PAD * 2;
-  $('panes').style.setProperty('--cols', clamp(Math.round((w + GAP) / (CELL + GAP)), 1, MAXCOLS));
-  panes.forEach(p => { fit(p); applyGeom(p); });
-}
+// Шаг клетки меряем по факту, а не считаем от константы: окно могли изменить, а grid
+// пересчитал доли сам. Поэтому перетаскивание точно и до, и после ресайза окна.
+const colStep = () => ($('panes').clientWidth - PAD * 2 - GAP * (COLS - 1)) / COLS + GAP;
+const rowStep = () => ($('panes').clientHeight - PAD * 2 - GAP * (ROWS - 1)) / ROWS + GAP;
 
-// Сетка сузилась (окно, телефон) — подрезаем прямоугольник, а не рвём вёрстку.
+// Прямоугольник обязан лежать внутри сетки: за её краем grid добавил бы неявные ряды,
+// и панель уехала бы за границу области.
 function fit(p) {
-  p.w = clamp(p.w || 4, 1, cols());
-  p.h = clamp(p.h || 4, 1, MAXH);
-  p.c = clamp(p.c || 1, 1, cols() - p.w + 1);
-  p.r = Math.max(1, p.r || 1);
+  p.w = clamp(p.w || W, 1, COLS);
+  p.h = clamp(p.h || H, 1, ROWS);
+  p.c = clamp(p.c || 1, 1, COLS - p.w + 1);
+  p.r = clamp(p.r || 1, 1, ROWS - p.h + 1);
 }
 
 function applyGeom(p) {
@@ -435,10 +441,10 @@ function place(p) {
         if (busy(c + i, r + j)) return false;
     return true;
   };
-  for (let r = 1; r <= ROWS; r++)
-    for (let c = 1; c <= cols() - p.w + 1; c++)
+  for (let r = 1; r <= ROWS - p.h + 1; r++)
+    for (let c = 1; c <= COLS - p.w + 1; c++)
       if (free(c, r)) { p.c = c; p.r = r; return; }
-  p.c = 1; p.r = 1;
+  p.c = 1; p.r = 1;  // мест нет — кладём поверх, разберёт человек
 }
 
 function raise(el) {
@@ -460,20 +466,20 @@ function wireGrab(p, el, node, edge) {
     raise(el);
     if (!edge) node.classList.add('moving');
     const from = { x: e.clientX, y: e.clientY, c: p.c, r: p.r, w: p.w, h: p.h };
-    const step = { x: colStep(), y: ROWH + GAP };
+    const step = { x: colStep(), y: rowStep() };
 
     node.onpointermove = (ev) => {
       const dc = Math.round((ev.clientX - from.x) / step.x);
       const dr = Math.round((ev.clientY - from.y) / step.y);
       if (!edge) {
-        p.c = clamp(from.c + dc, 1, cols() - p.w + 1);
-        p.r = Math.max(1, from.r + dr);
+        p.c = clamp(from.c + dc, 1, COLS - p.w + 1);
+        p.r = clamp(from.r + dr, 1, ROWS - p.h + 1);
       } else {
         // Тянем за восточную или южную — двигается только размер. За западную или
         // северную — вместе с размером сдвигается начало, поэтому противоположная
         // сторона остаётся на месте.
-        if (edge.includes('e')) p.w = clamp(from.w + dc, 1, cols() - p.c + 1);
-        if (edge.includes('s')) p.h = clamp(from.h + dr, 1, MAXH);
+        if (edge.includes('e')) p.w = clamp(from.w + dc, 1, COLS - p.c + 1);
+        if (edge.includes('s')) p.h = clamp(from.h + dr, 1, ROWS - p.r + 1);
         if (edge.includes('w')) {
           const c = clamp(from.c + dc, 1, from.c + from.w - 1);
           p.w = from.w + (from.c - c);
@@ -510,7 +516,7 @@ function wireHandles(p, el) {
 
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
-  p.w = p.w || 4; p.h = p.h || 4;
+  p.w = p.w || W; p.h = p.h || H;
   panes.push(p);
   if (!p.c) place(p);
   save();
@@ -697,11 +703,8 @@ async function tick() {
 $('proj').onchange = loadSessions;
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
-window.addEventListener('resize', setCols);
-setCols();
 loadProjects().then(() => {
   panes.forEach(p => { p.next = 0; drawPane(p); });
-  setCols();
   tick();
 });
 setInterval(tick, 3000);
