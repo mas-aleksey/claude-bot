@@ -276,21 +276,32 @@ aside select, aside button.new { margin:8px 8px 0; padding:6px }
 #list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
 #list button:hover { background:#8882 }
-/* Сетка, а не свободные окна: место панели — целые клетки, поэтому «прилипание»
-   получается само, без пиксельной математики и без перекрытий. `dense` подтягивает
-   плитки к началу, так что дырок после перетаскивания не остаётся.
-   --rowh дублирует ROWH в скрипте: одно значение нужно и вёрстке, и расчёту клетки. */
+/* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
+   любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
+   разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
+   трогали последней. Фон непрозрачный по той же причине.
+   --rowh дублирует ROWH в скрипте: значение нужно и вёрстке, и расчёту клетки. */
 #panes { flex:1; overflow:auto; display:grid; gap:8px; padding:8px; align-content:start;
-  grid-template-columns:repeat(var(--cols,2), minmax(0,1fr));
-  grid-auto-rows:var(--rowh,320px); grid-auto-flow:dense }
+  grid-template-columns:repeat(var(--cols,6), minmax(0,1fr));
+  grid-auto-rows:var(--rowh,160px) }
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
-  min-width:0; min-height:0; border:1px solid #8884; border-radius:6px;
-  grid-column:span var(--w,1); grid-row:span var(--h,1) }
-section.dragging { opacity:.35 }
-section.target { outline:2px dashed #8ab; outline-offset:-2px }
-.grip { cursor:grab; user-select:none }
-.rs { position:absolute; right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
-  background:linear-gradient(135deg, transparent 50%, #8886 50%) }
+  min-width:0; min-height:0; border:1px solid #8884; border-radius:6px; background:Canvas;
+  grid-column:var(--c,1) / span var(--w,2); grid-row:var(--r,1) / span var(--h,2) }
+section.act { z-index:5; box-shadow:0 6px 24px #0005; border-color:#8ab }
+/* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
+   и pointermove до нас не доходит. */
+.grip { cursor:grab; user-select:none; touch-action:none }
+.grip.moving { cursor:grabbing }
+.h { position:absolute; touch-action:none }
+.h-n { top:-3px; left:10px; right:10px; height:9px; cursor:ns-resize }
+.h-s { bottom:-3px; left:10px; right:10px; height:9px; cursor:ns-resize }
+.h-w { left:-3px; top:10px; bottom:10px; width:9px; cursor:ew-resize }
+.h-e { right:-3px; top:10px; bottom:10px; width:9px; cursor:ew-resize }
+.h-nw { left:-3px; top:-3px; width:13px; height:13px; cursor:nwse-resize }
+.h-ne { right:-3px; top:-3px; width:13px; height:13px; cursor:nesw-resize }
+.h-sw { left:-3px; bottom:-3px; width:13px; height:13px; cursor:nesw-resize }
+.h-se { right:-3px; bottom:-3px; width:13px; height:13px; cursor:nwse-resize }
+section.act .h-se { background:linear-gradient(135deg, transparent 50%, #8ab 50%) }
 header { display:flex; gap:6px; align-items:center; padding:6px 10px; border-bottom:1px solid #8884 }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
@@ -356,91 +367,126 @@ async function loadSessions() {
   }
 }
 
-// Клетка сетки. COLW — порог, после которого влезает ещё одна колонка; ROWH обязан
-// совпадать с --rowh в стилях, иначе расчёт размера при перетаскивании поедет.
-const COLW = 420, ROWH = 320, GAP = 8, PAD = 8, MAXCOLS = 4, MAXH = 4;
+// Клетка сетки. CELL — целевая ширина колонки, ROWH обязан совпадать с --rowh в стилях,
+// иначе перетаскивание будет считать шаг не по той сетке, что рисует браузер.
+const CELL = 200, ROWH = 160, GAP = 8, PAD = 8, MAXCOLS = 8, MAXH = 8, ROWS = 60;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
-const cols = () => +($('panes').style.getPropertyValue('--cols') || 2);
+const cols = () => +($('panes').style.getPropertyValue('--cols') || 6);
+const colStep = () => {
+  const c = cols();
+  return ($('panes').clientWidth - PAD * 2 - GAP * (c - 1)) / c + GAP;
+};
 
 function setCols() {
   const w = $('panes').clientWidth - PAD * 2;
-  $('panes').style.setProperty('--cols', clamp(Math.floor((w + GAP) / (COLW + GAP)), 1, MAXCOLS));
-  panes.forEach(applyGeom);  // панель шире новой сетки — ужать, а не рвать вёрстку
+  $('panes').style.setProperty('--cols', clamp(Math.round((w + GAP) / (CELL + GAP)), 1, MAXCOLS));
+  panes.forEach(p => { fit(p); applyGeom(p); });
 }
 
-function colStep() {
-  const c = cols();
-  return ($('panes').clientWidth - PAD * 2 - GAP * (c - 1)) / c + GAP;
+// Сетка сузилась (окно, телефон) — подрезаем прямоугольник, а не рвём вёрстку.
+function fit(p) {
+  p.w = clamp(p.w || 2, 1, cols());
+  p.h = clamp(p.h || 2, 1, MAXH);
+  p.c = clamp(p.c || 1, 1, cols() - p.w + 1);
+  p.r = Math.max(1, p.r || 1);
 }
 
 function applyGeom(p) {
   const el = document.getElementById('pane-' + p.pane);
   if (!el) return;
-  el.style.setProperty('--w', clamp(p.w || 1, 1, cols()));
-  el.style.setProperty('--h', clamp(p.h || 1, 1, MAXH));
+  for (const k of ['c', 'r', 'w', 'h']) el.style.setProperty('--' + k, p[k]);
 }
 
-// Порядок в массиве = порядок в сетке. append переносит существующий узел, слушатели
-// и содержимое при этом сохраняются.
-function reflow() {
-  panes.forEach(p => {
-    const el = document.getElementById('pane-' + p.pane);
-    if (el) $('panes').append(el);
-  });
+// Первое свободное место под прямоугольник панели. Без этого две новые панели легли бы
+// одна на другую, и рабочий стол начинался бы с разбора завала.
+function place(p) {
+  const busy = (c, r) => panes.some(x => x !== p && x.c <= c && c < x.c + x.w &&
+                                                    x.r <= r && r < x.r + x.h);
+  const free = (c, r) => {
+    for (let i = 0; i < p.w; i++)
+      for (let j = 0; j < p.h; j++)
+        if (busy(c + i, r + j)) return false;
+    return true;
+  };
+  for (let r = 1; r <= ROWS; r++)
+    for (let c = 1; c <= cols() - p.w + 1; c++)
+      if (free(c, r)) { p.c = c; p.r = r; return; }
+  p.c = 1; p.r = 1;
 }
 
-let dragged = null;
+function raise(el) {
+  document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
+  el.classList.add('act');
+}
 
-function wireDrag(p, el) {
-  const head = el.querySelector('header');
-  head.draggable = true;
-  head.classList.add('grip');
-  head.ondragstart = (e) => {
-    dragged = p;
-    el.classList.add('dragging');
-    e.dataTransfer.effectAllowed = 'move';
-    e.dataTransfer.setData('text/plain', p.pane);  // без данных Firefox не начнёт перенос
-  };
-  head.ondragend = () => { dragged = null; el.classList.remove('dragging'); };
-  el.ondragover = (e) => {
-    if (!dragged || dragged.pane === p.pane) return;
-    e.preventDefault();  // без этого drop не случится вовсе
-    el.classList.add('target');
-  };
-  el.ondragleave = () => el.classList.remove('target');
-  el.ondrop = (e) => {
+// Одна механика на перенос и на растягивание: и то и другое меняет прямоугольник панели
+// в клетках. `edge` пуст для переноса, иначе содержит буквы сторон, за которые тянут.
+// Pointer events, а не HTML5 drag-and-drop: последний в Safari работает через пень-колоду,
+// а пальцем не работает вообще.
+function wireGrab(p, el, node, edge) {
+  node.onpointerdown = (e) => {
+    // Кнопки в заголовке («стоп», «×») не должны запускать перенос: preventDefault ниже
+    // съел бы их click, и панель стало бы нечем закрыть.
+    if (e.button || e.target.closest('button')) return;
     e.preventDefault();
-    el.classList.remove('target');
-    if (!dragged || dragged.pane === p.pane) return;
-    const i = panes.indexOf(dragged), j = panes.indexOf(p);
-    if (i < 0 || j < 0) return;
-    panes[i] = p; panes[j] = dragged; save();
-    reflow();
-  };
-}
+    node.setPointerCapture(e.pointerId);
+    raise(el);
+    if (!edge) node.classList.add('moving');
+    const from = { x: e.clientX, y: e.clientY, c: p.c, r: p.r, w: p.w, h: p.h };
+    const step = { x: colStep(), y: ROWH + GAP };
 
-function wireResize(p, el) {
-  const grip = document.createElement('div');
-  grip.className = 'rs';
-  grip.title = 'потянуть — размер по клеткам';
-  el.append(grip);
-  grip.onpointerdown = (e) => {
-    e.preventDefault();
-    grip.setPointerCapture(e.pointerId);
-    const box = el.getBoundingClientRect();
-    grip.onpointermove = (ev) => {
-      p.w = clamp(Math.round((ev.clientX - box.left + GAP) / colStep()), 1, cols());
-      p.h = clamp(Math.round((ev.clientY - box.top + GAP) / (ROWH + GAP)), 1, MAXH);
-      applyGeom(p);
+    node.onpointermove = (ev) => {
+      const dc = Math.round((ev.clientX - from.x) / step.x);
+      const dr = Math.round((ev.clientY - from.y) / step.y);
+      if (!edge) {
+        p.c = clamp(from.c + dc, 1, cols() - p.w + 1);
+        p.r = Math.max(1, from.r + dr);
+      } else {
+        // Тянем за восточную или южную — двигается только размер. За западную или
+        // северную — вместе с размером сдвигается начало, поэтому противоположная
+        // сторона остаётся на месте.
+        if (edge.includes('e')) p.w = clamp(from.w + dc, 1, cols() - p.c + 1);
+        if (edge.includes('s')) p.h = clamp(from.h + dr, 1, MAXH);
+        if (edge.includes('w')) {
+          const c = clamp(from.c + dc, 1, from.c + from.w - 1);
+          p.w = from.w + (from.c - c);
+          p.c = c;
+        }
+        if (edge.includes('n')) {
+          const r = clamp(from.r + dr, 1, from.r + from.h - 1);
+          p.h = from.h + (from.r - r);
+          p.r = r;
+        }
+      }
+      applyGeom(p);  // панель переставляется по клеткам сразу, а не после отпускания
     };
-    grip.onpointerup = () => { grip.onpointermove = null; save(); };
+
+    node.onpointerup = node.onpointercancel = () => {
+      node.onpointermove = null;
+      node.classList.remove('moving');
+      save();
+    };
   };
+}
+
+const EDGES = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+
+function wireHandles(p, el) {
+  wireGrab(p, el, el.querySelector('header'), '');
+  for (const edge of EDGES) {
+    const h = document.createElement('div');
+    h.className = 'h h-' + edge;
+    el.append(h);
+    wireGrab(p, el, h, edge);
+  }
 }
 
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
-  p.w = p.w || 1; p.h = p.h || 1;
-  panes.push(p); save();
+  p.w = p.w || 2; p.h = p.h || 2;
+  panes.push(p);
+  if (!p.c) place(p);
+  save();
   drawPane(p);
   poll(p);
 }
@@ -475,8 +521,10 @@ function drawPane(p) {
   ta.onkeydown = (e) => {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
   };
-  wireDrag(p, el);
-  wireResize(p, el);
+  el.querySelector('header').classList.add('grip');
+  wireHandles(p, el);
+  el.onpointerdown = () => raise(el);
+  fit(p);
   applyGeom(p);
 }
 

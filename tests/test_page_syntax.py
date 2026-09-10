@@ -26,4 +26,4 @@ def test_page_script_parses(tmp_path):
 def test_page_has_both_halves():
     """Разбор по тегам молча отдал бы пустую строку, и проверка выше стала бы холостой."""
     assert "function drawPane" in slice_out("script")
-    assert "grid-auto-flow:dense" in slice_out("style")
+    assert "grid-column:var(--c,1)" in slice_out("style")
