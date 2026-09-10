@@ -222,6 +222,35 @@ def _heavy(project: str, session_id: str) -> str:
     return f"{size / HEAVY:.1f} МБ" if size >= HEAVY else ""
 
 
+# Порог в днях. Пол — половина суток: `days=0` снесло бы всё, включая сегодняшнюю
+# работу, а «удалить всё» — это не то же самое, что «удалить старое».
+MIN_DAYS = 0.5
+DEFAULT_DAYS = 2.0
+
+
+def _days(raw) -> float:
+    try:
+        return max(MIN_DAYS, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_DAYS
+
+
+async def run_purge(older: float) -> dict:
+    """Удаление файлов плюс снятие указателей. Одной функцией, потому что вызывают из
+    двух мест: кнопка в браузере и /purge в Telegram.
+
+    Файлы сносим в потоке, а `store` трогаем на event loop: соединение sqlite создано
+    в главном потоке, и обращение к нему из другого — ProgrammingError.
+
+    Указатели снимаются по списку из отчёта: заново их не найти, транскриптов уже нет.
+    Порядок именно такой — если удаление упадёт на середине, лишний указатель
+    безобиднее потерянного при живом транскрипте.
+    """
+    killed = await asyncio.to_thread(sessions.purge, older)
+    killed["pointers"] = store.forget_sessions(killed.pop("ids"))
+    return killed
+
+
 def _project(raw: str) -> str:
     """Проект из запроса. Только то, что реально примонтировано: строка уходит в `cwd`
     процесса claude, и `/etc` тут был бы полноценным рабочим каталогом."""
@@ -312,6 +341,21 @@ def build() -> web.Application:
             for sid, title, age, snip in found
         ])
 
+    async def api_purge(req: web.Request) -> web.Response:
+        """GET — предпросмотр, POST — удаление. Разными методами не ради красоты:
+        удаление необратимо, и промах адресной строкой не должен его запускать."""
+        days = _days(req.query.get("days") if req.method == "GET"
+                     else (await req.json()).get("days"))
+        older = days * 86400
+        if req.method == "GET":
+            doomed = await asyncio.to_thread(sessions.stale, older)
+            return web.json_response({"days": days, "sessions": doomed,
+                                      "bytes": sum(r["bytes"] for r in doomed)})
+
+        killed = await run_purge(older)
+        log.info("purge: старше %.1f дн, снесено %s", days, killed)
+        return web.json_response(killed)
+
     async def api_status(_: web.Request) -> web.Response:
         """Какие панели заняты и что упало. Занятость берётся из тех же `runner._runs`,
         что у Telegram, поэтому веб видит и чужие запуски, а не только свои."""
@@ -358,6 +402,8 @@ def build() -> web.Application:
         web.get("/api/projects", api_projects),
         web.get("/api/sessions", api_sessions),
         web.get("/api/search", api_search),
+        web.get("/api/purge", api_purge),
+        web.post("/api/purge", api_purge),
         web.get("/api/messages", api_messages),
         web.get("/api/status", api_status),
         web.post("/api/prompt", api_prompt),
@@ -504,6 +550,8 @@ textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   <button class=new id=new>+ новая сессия</button>
   <input id=find type=search placeholder="поиск по сессиям проекта">
   <input id=filter type=search placeholder="фильтр открытых панелей">
+  <button class=new id=purge title="удалить старые сессии во всех проектах">
+    очистить старше 2 дней</button>
   <div id=list></div>
 </aside>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
@@ -952,6 +1000,23 @@ async function tick() {
   // увидеть сам, а не после перезагрузки страницы.
   if (++ticks % 5 === 0 && !$('find').value.trim()) loadSessions().catch(() => {});
 }
+
+// Удаление необратимо, поэтому две ступени: сначала сервер говорит, что уйдёт, и
+// только подтверждение запускает. Порог фиксированный — число в кнопке и есть договор.
+$('purge').onclick = async () => {
+  const days = 2;
+  let plan;
+  try { plan = await get('api/purge?days=' + days); } catch (e) { return; }
+  if (!plan.sessions.length) return alert(`нет сессий старше ${days} дней`);
+  const mb = (plan.bytes / 1048576).toFixed(1);
+  const head = plan.sessions.slice(0, 12).map(s => `${s.ago} · ${s.title.slice(0, 44)}`);
+  const more = plan.sessions.length > 12 ? `\n…и ещё ${plan.sessions.length - 12}` : '';
+  if (!confirm(`Удалить безвозвратно ${plan.sessions.length} сессий (${mb} МБ)?\n\n` +
+               head.join('\n') + more)) return;
+  const killed = await post('api/purge', { days });
+  alert(`удалено ${killed.sessions} сессий, ${(killed.bytes / 1048576).toFixed(1)} МБ`);
+  loadSessions();
+};
 
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;

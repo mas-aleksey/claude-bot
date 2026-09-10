@@ -85,6 +85,7 @@ HELP = [
     ("clone", "<git-url> [name] — склонировать репозиторий в проекты"),
     ("sessions", "последние сессии проекта — переключиться"),
     ("new", "сбросить сессию текущего проекта"),
+    ("purge", "[дней] — удалить старые сессии; без yes только предпросмотр"),
     ("cancel", "убить активный запуск или прервать логин"),
     ("model", "[алиас|полный id] — показать или сменить модель"),
     ("mcp", "MCP-серверы: list, add, get, rm — как в claude mcp"),
@@ -210,6 +211,36 @@ async def cmd_cancel(msg: Message) -> None:
     await msg.answer(
         "остановлено" if await runner.cancel(scope(msg)) else "нечего останавливать"
     )
+
+
+@dp.message(Command("purge"))
+async def cmd_purge(msg: Message) -> None:
+    """Удаление старых сессий во всех проектах. Без `yes` — только предпросмотр:
+    действие необратимо, и одна опечатка в числе не должна ничего снести."""
+    args = (msg.text or "").split()[1:]
+    days = webui._days(args[0] if args and args[0] != "yes" else None)
+    older = days * 86400
+
+    doomed = await asyncio.to_thread(sessions.stale, older)
+    if not doomed:
+        await msg.answer(f"нет сессий старше {days:g} дн")
+        return
+
+    total = sum(r["bytes"] for r in doomed) / (1 << 20)
+    if "yes" not in args:
+        head = "\n".join(f"{r['ago']:>3} · {render.clip(r['title'] or r['id'], 38)}"
+                          for r in doomed[:10])
+        tail = f"\n…и ещё {len(doomed) - 10}" if len(doomed) > 10 else ""
+        await msg.answer(
+            f"старше {days:g} дн: {len(doomed)} сессий, {total:.1f} МБ\n\n{head}{tail}\n\n"
+            f"удалить безвозвратно: <code>/purge {days:g} yes</code>", parse_mode="HTML")
+        return
+
+    killed = await webui.run_purge(older)
+    await msg.answer(
+        f"удалено {killed['sessions']} сессий, {total:.1f} МБ\n"
+        f"окружений {killed['env']}, осиротевших {killed['orphans']}, "
+        f"строк истории {killed['history_lines']}, указателей {killed['pointers']}")
 
 
 @dp.message(Command("model"))

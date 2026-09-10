@@ -7,6 +7,7 @@ CLI листинга не даёт (`claude project` — про state, не пр
 import json
 import os
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -57,6 +58,119 @@ def ago(seconds: float) -> str:
             return f"{int(seconds)}{suffix}"
         seconds /= div
     return f"{int(seconds)}г"
+
+
+# Следы сессии лежат не только в транскрипте. Пересчитано на живом инстансе:
+# session-env — каталог на сессию (41 из 85 уже осиротел), file-history — по одному
+# файлу, history.jsonl — строки с sessionId (78 из 84 наши). Каталоги sessions/,
+# shell-snapshots/ и paste-cache/ к сессиям не привязаны, их не трогаем.
+UUID_RE = re.compile(r"\A[0-9a-fA-F-]{32,40}\Z")
+
+
+def _home() -> Path:
+    """Каталог claude — рядом с транскриптами. Считается на вызове, а не на импорте:
+    иначе тест, подменивший TRANSCRIPTS на временный путь, удалял бы настоящие файлы."""
+    return TRANSCRIPTS.parent
+
+
+def stale(older_than: float) -> list[dict]:
+    """Сессии всех проектов старше `older_than` секунд, свежие сверху.
+
+    Возраст — `mtime` транскрипта. Это же и защита: у работающей сессии он обновляется
+    постоянно, поэтому под порог она не попадает и удалить её из-под claude нельзя.
+    """
+    now = time.time()
+    out = []
+    for path in TRANSCRIPTS.rglob("*.jsonl"):
+        age = now - path.stat().st_mtime
+        if age <= older_than:
+            continue
+        out.append({
+            "id": path.stem,
+            "project": path.parent.name,
+            "title": title(path),
+            "ago": ago(age),
+            "age": age,
+            "bytes": path.stat().st_size,
+        })
+    # По секундам, а не по строке `ago`: лексикографически «5ч» больше «15д», и список
+    # выглядел бы перемешанным ровно там, где на него смотрят перед удалением.
+    return sorted(out, key=lambda r: r["age"])
+
+
+def purge(older_than: float) -> dict:
+    """Удалить старые сессии со всеми следами. Возвращает отчёт о том, что снесено.
+
+    Осиротевшие `session-env` подчищаются тем же проходом, но только если сами старше
+    порога: у только что начатой сессии транскрипта может ещё не быть, и без этой
+    оговорки мы снесли бы окружение живого запуска.
+    """
+    doomed = stale(older_than)
+    ids = {r["id"] for r in doomed}
+    freed = sum(r["bytes"] for r in doomed)
+    # `ids` в отчёте не для красоты: по ним вызывающий снимает указатели в store, а
+    # после удаления файлов пересчитать их уже нельзя — искать будет нечего.
+    killed = {"sessions": len(doomed), "bytes": freed, "env": 0, "file_history": 0,
+              "history_lines": 0, "orphans": 0, "ids": sorted(ids)}
+
+    for r in doomed:
+        (TRANSCRIPTS / r["project"] / f"{r['id']}.jsonl").unlink(missing_ok=True)
+
+    now = time.time()
+    alive = {p.stem for p in TRANSCRIPTS.rglob("*.jsonl")}
+    for path in _dir("session-env"):
+        if not UUID_RE.match(path.name):
+            continue
+        if path.name in ids:
+            killed["env"] += 1
+        elif path.name not in alive and now - path.stat().st_mtime > older_than:
+            killed["orphans"] += 1
+        else:
+            continue
+        shutil.rmtree(path, ignore_errors=True)
+
+    for path in _dir("file-history"):
+        if path.name not in ids:
+            continue
+        killed["file_history"] += 1
+        if path.is_dir():
+            shutil.rmtree(path, ignore_errors=True)
+        else:
+            path.unlink(missing_ok=True)
+
+    killed["history_lines"] = _clean_history(ids)
+    return killed
+
+
+def _dir(name: str) -> list[Path]:
+    path = _home() / name
+    return list(path.iterdir()) if path.is_dir() else []
+
+
+def _clean_history(ids: set[str]) -> int:
+    """Выбросить из history.jsonl строки удалённых сессий. Иначе стрелка вверх в CLI
+    показывает промпты из того, чего уже нет. Пишем через временный файл и подмену:
+    файл читает работающий claude, и обрезанный на середине он бы испортил."""
+    path = _home() / "history.jsonl"
+    if not path.is_file():
+        return 0
+    kept, dropped = [], 0
+    for line in path.read_text("utf-8", "replace").splitlines():
+        try:
+            row = json.loads(line)
+        except ValueError:
+            row = None
+        # Не-объект тоже возможен, и `.get` на нём падал бы посреди удаления, оставив
+        # его наполовину сделанным. Непонятную строку сохраняем как есть.
+        if isinstance(row, dict) and row.get("sessionId") in ids:
+            dropped += 1
+            continue
+        kept.append(line)
+    if dropped:
+        tmp = path.with_suffix(".jsonl.tmp")
+        tmp.write_text("\n".join(kept) + ("\n" if kept else ""), encoding="utf-8")
+        tmp.replace(path)
+    return dropped
 
 
 def search(cwd: str, query: str, limit: int = 20) -> list[tuple[str, str, float, str]]:

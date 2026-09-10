@@ -78,6 +78,16 @@ def drop_session(scope: str, project: str) -> None:
     conn().execute("DELETE FROM sessions WHERE project = ?", (_key(scope, project),))
 
 
+def forget_sessions(ids: list[str]) -> int:
+    """Снять указатели на удалённые сессии. Без этого `/sessions` в топике предложит
+    мёртвый id, а `--resume` по нему падает с «No conversation found with session ID»."""
+    if not ids:
+        return 0
+    marks = ",".join("?" * len(ids))
+    cur = conn().execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", tuple(ids))
+    return cur.rowcount
+
+
 def live_keys() -> list[tuple[str, str]]:
     """Указатели на живые «⏳»-сообщения, по одному на скоуп. Нужны после рестарта."""
     return conn().execute("SELECT key, value FROM state WHERE key LIKE '%:live'").fetchall()

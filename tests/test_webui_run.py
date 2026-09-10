@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import time
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -242,3 +243,50 @@ async def test_session_list_shows_size_only_for_heavy(client, tmp_path, monkeypa
             await (await client.get("/api/sessions", params={"project": str(cwd)})).json()}
     assert rows["aaaaaaaa"] == ""
     assert rows["bbbbbbbb"].endswith("МБ")
+
+
+@pytest.fixture
+def stale_home(tmp_path, monkeypatch):
+    """Одна старая сессия и одна свежая, как в test_purge, но через эндпоинт."""
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "projects")
+    proj = tmp_path / "projects" / "-projects-proj"
+    proj.mkdir(parents=True)
+    line = json.dumps({"type": "user", "message": {"role": "user", "content": "тест"}},
+                      ensure_ascii=False) + "\n"
+    for sid, age in (("aaaaaaaa-1111-4111-8111-111111111111", 5 * 86400),
+                     ("bbbbbbbb-2222-4222-8222-222222222222", 60)):
+        path = proj / f"{sid}.jsonl"
+        path.write_text(line, encoding="utf-8")
+        os.utime(path, (time.time() - age, time.time() - age))
+    return tmp_path
+
+
+async def test_purge_preview_does_not_delete(client, stale_home):
+    r = await client.get("/api/purge", params={"days": "2"})
+    plan = await r.json()
+    assert [s["id"][:8] for s in plan["sessions"]] == ["aaaaaaaa"]
+    assert plan["bytes"] > 0
+    # Файл на месте: GET обязан быть безопасным.
+    assert (stale_home / "projects" / "-projects-proj" /
+            "aaaaaaaa-1111-4111-8111-111111111111.jsonl").exists()
+
+
+async def test_purge_post_deletes_and_clears_pointers(client, stale_home, monkeypatch):
+    monkeypatch.setattr(store, "DB_PATH", str(stale_home / "bot.db"))
+    monkeypatch.setattr(store, "_conn", None)
+    store.save_session("0", "/projects/proj", "aaaaaaaa-1111-4111-8111-111111111111")
+
+    killed = await (await client.post("/api/purge", json={"days": 2})).json()
+    assert killed["sessions"] == 1
+    assert killed["pointers"] == 1
+    assert store.session_of("0", "/projects/proj") is None
+    assert (stale_home / "projects" / "-projects-proj" /
+            "bbbbbbbb-2222-4222-8222-222222222222.jsonl").exists()
+
+
+@pytest.mark.parametrize("raw,want", [("2", 2.0), ("0", 0.5), ("-9", 0.5),
+                                      ("абв", 2.0), (None, 2.0), ("7.5", 7.5)])
+def test_days_has_a_floor(raw, want):
+    """days=0 снесло бы и сегодняшнюю работу. «Удалить всё» — не то же самое, что
+    «удалить старое»."""
+    assert webui._days(raw) == want
