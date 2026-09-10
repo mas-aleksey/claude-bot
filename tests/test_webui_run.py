@@ -8,6 +8,7 @@ import asyncio
 import json
 import os
 import time
+from pathlib import Path
 
 import pytest
 from aiohttp.test_utils import TestClient, TestServer
@@ -39,7 +40,8 @@ def fake_run(monkeypatch):
     calls = []
 
     async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
-        calls.append({"prompt": prompt, "cwd": cwd, "session_id": session_id, "scope": scope})
+        calls.append({"prompt": prompt, "cwd": cwd, "session_id": session_id,
+                      "scope": scope, "model": model})
         yield {"type": "system", "subtype": "init", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "result", "result": "готово"}
 
@@ -347,3 +349,81 @@ async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
         assert runner.active()[0]["session"] == "sess-new"  # тег появился сразу
 
     assert seen[0]["session_id"] == "sess-new"
+
+
+async def test_prompt_passes_pane_model(client, fake_run, tmp_path):
+    """Модель панели важнее глобальной из бота: две панели на разных моделях — ровно то,
+    ради чего делалась параллельность."""
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x", "model": "haiku"})
+    await asyncio.sleep(0)
+    assert fake_run[0]["model"] == "haiku"
+
+
+async def test_prompt_falls_back_to_global_model(client, fake_run, tmp_path, monkeypatch):
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store, "_conn", None)
+    store.put("model", "opus")
+
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+    assert fake_run[0]["model"] == "opus"
+
+
+@pytest.mark.parametrize("model", ["../etc", "a b", "модель;rm -rf", "x" * 200])
+async def test_prompt_rejects_bad_model(client, fake_run, tmp_path, model):
+    r = await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x", "model": model})
+    assert r.status == 400
+    assert fake_run == []
+
+
+async def test_upload_saves_file_and_returns_path(client, tmp_path, monkeypatch):
+    monkeypatch.setattr(webui, "INBOX", tmp_path / "inbox")
+    form = {"file": ("привет".encode(), "note.txt")}
+
+    import aiohttp
+    data = aiohttp.FormData()
+    data.add_field("file", "привет".encode(), filename="note.txt")
+    r = await client.post("/api/upload", data=data)
+
+    path = Path((await r.json())["path"])
+    assert path.parent == tmp_path / "inbox"
+    assert path.name.endswith("-note.txt")
+    assert path.read_text(encoding="utf-8") == "привет"
+    assert form  # чтобы линтер не ругался на неиспользованное
+
+
+async def test_upload_strips_directories_from_name(client, tmp_path, monkeypatch):
+    """`../` в имени увёл бы файл из inbox."""
+    monkeypatch.setattr(webui, "INBOX", tmp_path / "inbox")
+    import aiohttp
+    data = aiohttp.FormData()
+    data.add_field("file", b"x", filename="../../etc/passwd")
+    r = await client.post("/api/upload", data=data)
+
+    path = Path((await r.json())["path"])
+    assert path.parent == tmp_path / "inbox"
+    # aiohttp прислал имя percent-кодированным, поэтому раскодируем до отрезания пути.
+    assert path.name.endswith("-passwd")
+
+
+async def test_upload_without_file_is_400(client):
+    r = await client.post("/api/upload", data={"note": "нет файла"})
+    assert r.status == 400
+
+
+@pytest.mark.parametrize("raw,want", [
+    ("note.txt", "note.txt"),
+    ("../../etc/passwd", "passwd"),
+    ("..%2F..%2Fetc%2Fpasswd", "passwd"),      # так присылает aiohttp
+    ("/absolute/path/file.log", "file.log"),
+    ("отчёт за май.pdf", "отчёт_за_май.pdf"),
+    ("", "file"),
+    (None, "file"),
+    ("...", "file"),
+    ("a" * 200 + ".txt", ("a" * 80)),
+])
+def test_upload_filename_is_cleaned(raw, want):
+    assert webui._filename(raw) == want

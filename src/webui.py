@@ -22,6 +22,8 @@ import json
 import logging
 import os
 import re
+import time
+import urllib.parse
 from pathlib import Path
 
 from aiohttp import web
@@ -208,6 +210,19 @@ def _int(value: str | None) -> int:
         return 0
 
 
+# Каталог для файлов из браузера — тот же, что у файлов из Telegram: бот кладёт их
+# сюда же и подставляет путь в промпт. Значение читают и app.py, и этот модуль, поэтому
+# живёт в одном месте.
+INBOX = Path(os.environ.get("INBOX_DIR", "/data/inbox"))
+# Предел на запрос. Больше двадцати пяти мегабайт в промпт всё равно не имеет смысла:
+# claude читает файл сам, а место в песочнице не бесконечное.
+MAX_UPLOAD = 25 << 20
+# Только форма имени: значение уходит в argv через create_subprocess_exec, без шелла,
+# поэтому это гигиена, а не защита. Неизвестное имя модели отвергнет сам claude, и
+# теперь его текст видно в панели.
+MODEL_RE = re.compile(r"[a-zA-Z0-9._-]{2,64}\Z")
+
+
 # Ниже этого размера цифра в списке — шум: у большинства сессий она одинаково мелкая.
 # Выше — предупреждение, что панель будет открываться заметно дольше.
 HEAVY = 1 << 20
@@ -251,6 +266,19 @@ async def run_purge(older: float) -> dict:
     return killed
 
 
+def _filename(raw: str | None) -> str:
+    """Безопасное имя для файла из браузера.
+
+    Сначала раскодируем, потом отрезаем каталоги: клиент может прислать имя
+    percent-кодированным (aiohttp так и делает), и `..%2F..%2Fetc%2Fpasswd` без
+    раскодирования осталось бы одним длинным именем — не побег, но и не имя.
+    Дальше оставляем только буквы, цифры, точку и дефис.
+    """
+    name = Path(urllib.parse.unquote(raw or "")).name
+    name = re.sub(r"[^\w.\-]+", "_", name, flags=re.UNICODE).strip("._")
+    return name[:80] or "file"
+
+
 def _project(raw: str) -> str:
     """Проект из запроса. Только то, что реально примонтировано: строка уходит в `cwd`
     процесса claude, и `/etc` тут был бы полноценным рабочим каталогом."""
@@ -260,7 +288,7 @@ def _project(raw: str) -> str:
 
 
 async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
-                 got: asyncio.Future) -> None:
+                 got: asyncio.Future, model: str | None = None) -> None:
     """Довести запуск до конца, ничего не рендеря: вывод claude сам пишет в транскрипт,
     а панель его тейлит. Наружу отдаём только первый session_id — панели нужно знать,
     какой файл читать, особенно когда сессия новая и id придумал claude.
@@ -269,7 +297,9 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     try:
-        async for ev in runner.run(prompt, project, session_id, store.get("model"),
+        # Модель панели, а иначе глобальная из бота: две панели на разных моделях —
+        # ровно то, ради чего делалась параллельность.
+        async for ev in runner.run(prompt, project, session_id, model or store.get("model"),
                                    scope=scope):
             if not got.done() and (sid := ev.get("session_id") or sid):
                 got.set_result(sid)
@@ -356,6 +386,25 @@ def build() -> web.Application:
         log.info("purge: старше %.1f дн, снесено %s", days, killed)
         return web.json_response(killed)
 
+    async def api_upload(req: web.Request) -> web.Response:
+        """Файл из браузера — на диск, наружу только путь. Дальше он уходит в промпт
+        текстом, как это делает бот с файлами из Telegram: claude читает файл сам, и
+        содержимое через нас гонять не надо.
+
+        Размер режет сам aiohttp по client_max_size ниже — до нашего кода такой запрос
+        не доходит вовсе.
+        """
+        data = await req.post()
+        field = data.get("file")
+        if not hasattr(field, "filename"):
+            raise web.HTTPBadRequest(text="нужен файл в поле file")
+        name = _filename(field.filename)
+        INBOX.mkdir(parents=True, exist_ok=True)
+        dest = INBOX / f"{int(time.time())}-{name}"
+        await asyncio.to_thread(dest.write_bytes, field.file.read())
+        log.info("upload: %s (%d байт)", dest, dest.stat().st_size)
+        return web.json_response({"path": str(dest)})
+
     async def api_status(_: web.Request) -> web.Response:
         """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
         что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
@@ -371,6 +420,9 @@ def build() -> web.Application:
             raise web.HTTPBadRequest(text="нужны prompt и pane")
         if session_id and not SESSION_RE.match(session_id):
             raise web.HTTPBadRequest(text="плохой id сессии")
+        model = (data.get("model") or "").strip() or None
+        if model and not MODEL_RE.match(model):
+            raise web.HTTPBadRequest(text="плохое имя модели")
         project = _project(data.get("project") or "")
 
         scope = f"web:{pane}"
@@ -380,7 +432,7 @@ def build() -> web.Application:
         got: asyncio.Future = asyncio.get_running_loop().create_future()
         # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
         # продолжается в фоне и виден ей через транскрипт.
-        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got))
+        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
         try:
@@ -396,7 +448,9 @@ def build() -> web.Application:
             raise web.HTTPBadRequest(text="нужен pane")
         return web.json_response({"stopped": await runner.cancel(f"web:{pane}")})
 
-    app = web.Application()
+    # client_max_size — предел на тело запроса. По умолчанию у aiohttp мегабайт, и
+    # загрузка файла падала бы с 413 раньше нашего кода.
+    app = web.Application(client_max_size=MAX_UPLOAD)
     app.add_routes([
         web.get("/", index),
         web.get("/api/peers", api_peers),
@@ -408,6 +462,7 @@ def build() -> web.Application:
         web.get("/api/messages", api_messages),
         web.get("/api/status", api_status),
         web.post("/api/prompt", api_prompt),
+        web.post("/api/upload", api_upload),
         web.post("/api/cancel", api_cancel),
     ])
     return app
@@ -553,6 +608,10 @@ header .hits { font-size:11px; opacity:.6; flex:none }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
 form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #8884 }
+form .model { flex:none; width:74px; font:inherit; font-size:12px; align-self:flex-start;
+  background:none; color:inherit; border:1px solid #8884; border-radius:4px; padding:2px }
+/* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
+section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
 textarea { flex:1; resize:none; min-height:52px; max-height:240px; padding:6px;
   font:inherit; background:none; color:inherit; border:1px solid #8884; border-radius:4px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
@@ -854,7 +913,14 @@ function drawPane(p) {
       <button class=close title="закрыть панель">×</button>
     </header>
     <div class=log></div>
-    <form><textarea placeholder="промпт, Ctrl+Enter — отправить"></textarea><button>→</button></form>`;
+    <form>
+      <select class=model title="модель этой панели">
+        <option value="">модель</option>
+        <option>opus</option><option>sonnet</option><option>haiku</option>
+      </select>
+      <textarea placeholder="промпт, Ctrl+Enter — отправить; файл можно перетащить"></textarea>
+      <button>→</button>
+    </form>`;
   $('panes').append(el);
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
@@ -866,6 +932,23 @@ function drawPane(p) {
     if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
   };
   ta.oninput = () => grow(ta);
+
+  const model = el.querySelector('.model');
+  model.value = p.model || '';
+  model.onchange = () => { p.model = model.value; save(); };
+
+  // Файл: перетащить на панель или вставить из буфера. Наружу уходит путь, а не
+  // содержимое — claude читает файл сам, ровно как с файлами из Telegram.
+  el.ondragover = (e) => { e.preventDefault(); el.classList.add('drop'); };
+  el.ondragleave = () => el.classList.remove('drop');
+  el.ondrop = (e) => {
+    e.preventDefault();
+    el.classList.remove('drop');
+    attach(p, ta, e.dataTransfer?.files);
+  };
+  ta.onpaste = (e) => {
+    if (e.clipboardData?.files?.length) attach(p, ta, e.clipboardData.files);
+  };
   el.style.setProperty('--hue', p.hue ?? HUES[0]);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
@@ -918,6 +1001,25 @@ function wireCopy(box) {
   }
 }
 
+// Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
+// поле ввода. Отдельной строкой, чтобы промпт остался читаемым.
+async function attach(p, ta, files) {
+  for (const file of files || []) {
+    const form = new FormData();
+    form.append('file', file);
+    try {
+      const r = await fetch('api/upload', { method: 'POST', body: form });
+      if (!r.ok) throw new Error(await r.text());
+      const { path } = await r.json();
+      ta.value = (ta.value ? ta.value.replace(/\s*$/, '\n') : '') + path + '\n';
+      grow(ta);
+      ta.focus();
+    } catch (e) {
+      log(p, `<div class="msg err">файл не загрузился: ${esc(String(e).slice(0, 200))}</div>`);
+    }
+  }
+}
+
 function log(p, html) {
   document.querySelector('#pane-' + p.pane + ' .log').insertAdjacentHTML('beforeend', html);
 }
@@ -935,8 +1037,8 @@ async function send(p, ta) {
   echoes.set(p.pane, prompt);
   log(p, `<div class="msg user"><span class=role>ты</span>${esc(prompt)}</div>`);
   try {
-    const r = await post('api/prompt',
-      { pane: p.pane, project: p.project, session: p.session || null, prompt });
+    const r = await post('api/prompt', { pane: p.pane, project: p.project,
+      session: p.session || null, prompt, model: p.model || null });
     if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
     if (!p.session) {
       // Новая сессия: id придумал claude, панель дочитывает уже созданный транскрипт.

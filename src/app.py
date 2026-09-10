@@ -35,7 +35,7 @@ TOKEN = os.environ["TG_BOT_TOKEN"]
 ALLOWED = {int(x) for x in os.environ.get("TG_ALLOWED_USER_ID", "").split(",") if x.strip()}
 PROJECTS_DIR = sessions.PROJECTS_DIR
 AUDIT = Path(os.environ.get("AUDIT_LOG", "/data/audit.log"))
-INBOX = Path(os.environ.get("INBOX_DIR", "/data/inbox"))
+INBOX = webui.INBOX  # один каталог для файлов из Telegram и из браузера
 # Пусто — рабочее пространство в браузере не поднимается. Порт нужен не всем инстансам:
 # ассистенту он ни к чему, песочнице — только если её пробросили через Traefik.
 WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
