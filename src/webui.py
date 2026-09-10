@@ -258,7 +258,9 @@ async def start(port: int) -> None:
     log.info("webui на :%d", port)
 
 
-PAGE = """<!doctype html>
+# Строка сырая: в скрипте страницы теперь есть регулярки, и питон иначе съедает их
+# обратные слеши — `/\n/g` превратился бы в перевод строки внутри литерала регулярки.
+PAGE = r"""<!doctype html>
 <html lang="ru"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>claude</title>
@@ -283,38 +285,63 @@ aside select, aside button.new { margin:8px 8px 0; padding:6px }
    --rowh дублирует ROWH в скрипте: значение нужно и вёрстке, и расчёту клетки. */
 #panes { flex:1; overflow:auto; display:grid; gap:8px; padding:8px; align-content:start;
   grid-template-columns:repeat(var(--cols,6), minmax(0,1fr));
-  grid-auto-rows:var(--rowh,160px) }
+  grid-auto-rows:var(--rowh,80px) }
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
   min-width:0; min-height:0; border:1px solid #8884; border-radius:6px; background:Canvas;
-  grid-column:var(--c,1) / span var(--w,2); grid-row:var(--r,1) / span var(--h,2) }
+  grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
 section.act { z-index:5; box-shadow:0 6px 24px #0005; border-color:#8ab }
 /* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
    и pointermove до нас не доходит. */
-.grip { cursor:grab; user-select:none; touch-action:none }
+.grip, .h { touch-action:none }   /* иначе жест уходит прокрутке, pointermove не придёт */
+.grip { cursor:grab; user-select:none }
 .grip.moving { cursor:grabbing }
-.h { position:absolute; touch-action:none }
-.h-n { top:-3px; left:10px; right:10px; height:9px; cursor:ns-resize }
-.h-s { bottom:-3px; left:10px; right:10px; height:9px; cursor:ns-resize }
-.h-w { left:-3px; top:10px; bottom:10px; width:9px; cursor:ew-resize }
-.h-e { right:-3px; top:10px; bottom:10px; width:9px; cursor:ew-resize }
-.h-nw { left:-3px; top:-3px; width:13px; height:13px; cursor:nwse-resize }
-.h-ne { right:-3px; top:-3px; width:13px; height:13px; cursor:nesw-resize }
-.h-sw { left:-3px; bottom:-3px; width:13px; height:13px; cursor:nesw-resize }
-.h-se { right:-3px; bottom:-3px; width:13px; height:13px; cursor:nwse-resize }
-section.act .h-se { background:linear-gradient(135deg, transparent 50%, #8ab 50%) }
-header { display:flex; gap:6px; align-items:center; padding:6px 10px; border-bottom:1px solid #8884 }
+/* Ручки внутри панели, а не на 3px снаружи: у section стоит overflow:hidden, и он
+   обрезает абсолютно позиционированных потомков — снаружи оставалась прозрачная полоска
+   в считанные пиксели, по которой было не попасть. Перетаскивание работало, потому что
+   заголовок — большая непрозрачная область.
+   Углы видны всегда, а не только у активной панели: невидимую ручку не найти. */
+.h { position:absolute; z-index:2 }
+.h:hover { background:#8ab6 }
+.h-n { top:0; left:16px; right:16px; height:12px; cursor:ns-resize }
+.h-s { bottom:0; left:16px; right:16px; height:12px; cursor:ns-resize }
+.h-w { left:0; top:16px; bottom:16px; width:12px; cursor:ew-resize }
+.h-e { right:0; top:16px; bottom:16px; width:12px; cursor:ew-resize }
+.h-nw { left:0; top:0; width:16px; height:16px; cursor:nwse-resize }
+.h-ne { right:0; top:0; width:16px; height:16px; cursor:nesw-resize }
+.h-sw { left:0; bottom:0; width:16px; height:16px; cursor:nesw-resize }
+.h-se { right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
+  background:linear-gradient(135deg, transparent 45%, #8887 45%) }
+.h-se:hover { background:linear-gradient(135deg, transparent 45%, #8ab 45%) }
+/* Отступы по 20px — под угловые ручки: иначе .h-ne накрыл бы кнопку «×», и панель
+   стало бы нечем закрыть. Верхние 12px заголовка отданы ручке .h-n, ниже — перенос,
+   как у обычного окна. */
+header { display:flex; gap:6px; align-items:center; padding:6px 22px 6px 20px;
+  border-bottom:1px solid #8884 }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
 header .dot { width:8px; height:8px; border-radius:50%; background:#8886; flex:none }
 header .dot.busy { background:#e90 }
 .log { flex:1; overflow:auto; padding:12px 14px }
-.msg { margin:0 0 12px; white-space:pre-wrap; overflow-wrap:anywhere }
+.msg { margin:0 0 12px; overflow-wrap:anywhere }
+.user, .tool { white-space:pre-wrap }
+.body > :first-child { margin-top:0 }
+.body > :last-child { margin-bottom:0 }
+.body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin:.6em 0 .3em; font-size:1em }
+.body h1, .body h2 { font-size:1.08em }
+.body ul, .body ol { margin:.3em 0; padding-left:1.4em }
+.body pre { margin:.4em 0; padding:8px; overflow:auto; background:#8881; border-radius:4px }
+.body code { font-family:ui-monospace,monospace; font-size:.92em }
+.body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
+.body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }
+.body th, .body td { border:1px solid #8884; padding:2px 6px; text-align:left }
+.body a { color:#7ad }
+.body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
 .user { border-left:3px solid #4a9; padding-left:10px }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
-form { display:flex; gap:6px; padding:8px; border-top:1px solid #8884 }
+form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #8884 }
 textarea { flex:1; resize:none; height:52px; padding:6px; font:inherit;
   background:none; color:inherit; border:1px solid #8884; border-radius:4px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
@@ -369,7 +396,7 @@ async function loadSessions() {
 
 // Клетка сетки. CELL — целевая ширина колонки, ROWH обязан совпадать с --rowh в стилях,
 // иначе перетаскивание будет считать шаг не по той сетке, что рисует браузер.
-const CELL = 200, ROWH = 160, GAP = 8, PAD = 8, MAXCOLS = 8, MAXH = 8, ROWS = 60;
+const CELL = 100, ROWH = 80, GAP = 8, PAD = 8, MAXCOLS = 16, MAXH = 16, ROWS = 120;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 const cols = () => +($('panes').style.getPropertyValue('--cols') || 6);
 const colStep = () => {
@@ -385,8 +412,8 @@ function setCols() {
 
 // Сетка сузилась (окно, телефон) — подрезаем прямоугольник, а не рвём вёрстку.
 function fit(p) {
-  p.w = clamp(p.w || 2, 1, cols());
-  p.h = clamp(p.h || 2, 1, MAXH);
+  p.w = clamp(p.w || 4, 1, cols());
+  p.h = clamp(p.h || 4, 1, MAXH);
   p.c = clamp(p.c || 1, 1, cols() - p.w + 1);
   p.r = Math.max(1, p.r || 1);
 }
@@ -483,7 +510,7 @@ function wireHandles(p, el) {
 
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
-  p.w = p.w || 2; p.h = p.h || 2;
+  p.w = p.w || 4; p.h = p.h || 4;
   panes.push(p);
   if (!p.c) place(p);
   save();
@@ -553,12 +580,92 @@ async function send(p, ta) {
   }
 }
 
+// Маркеры md:begin/md:end нужны tests/test_markdown.py: скрипт целиком в node не
+// запустить, он с первой строки лезет в document и localStorage. Поэтому маркер стоит
+// на своей строке — всё, что после него, уходит в тест как есть.
+// --- md:begin ---
+// Подмножество markdown своими руками. Библиотеку не тянем: сорок строк регулярок
+// закрывают то, чем claude на самом деле пишет, а marked.js — это сорок килобайт в образ
+// плюс версия, которую надо обновлять.
+//
+// Порядок обязателен: сначала вынимаем блоки кода в ящик, потом экранируем, и только
+// потом правила разметки. Экранирование ДО вставки своих тегов — единственная тут защита:
+// текст пришёл от claude и может содержать что угодно, включая теги скриптов.
+// (Слово «script» в угловых скобках тут не пишем: страница режется по нему в тестах.)
+//
+// Разделитель ящика — символ из приватной зоны Unicode: в обычном тексте его не бывает,
+// в отличие от любой печатной пары вроде @@.
+//
+// ponytail: таблицы только простые, вложенных списков нет. Начнёт калечить вывод —
+// вендорить marked.js в образ, а не наращивать регулярки.
+const BOX = '\uE000';
+
+function md(src) {
+  const box = [];
+  const stash = (html) => BOX + (box.push(html) - 1) + BOX;
+
+  let t = String(src).replace(/```[^\n]*\n?([\s\S]*?)```/g,
+    (_, body) => stash('<pre><code>' + esc(body.replace(/\n+$/, '')) + '</code></pre>'));
+  t = esc(t);
+
+  // Таблица: строка заголовка, строка-разделитель, дальше данные.
+  t = t.replace(/^\|(.+)\|[ \t]*\n\|[ \t:|-]+\|[ \t]*\n((?:\|.*\|[ \t]*\n?)*)/gm,
+    (_, head, rows) => {
+      const cells = (line, tag) => line.split('|').slice(1, -1)
+        .map(c => `<${tag}>${inline(c.trim())}</${tag}>`).join('');
+      const body = rows.trimEnd().split('\n').filter(Boolean)
+        .map(r => `<tr>${cells(r, 'td')}</tr>`).join('');
+      return stash(`<table><tr>${cells('|' + head + '|', 'th')}</tr>${body}</table>`);
+    });
+
+  t = t.replace(/^(#{1,6}) +(.*)$/gm,
+    (_, h, txt) => `<h${h.length}>${inline(txt)}</h${h.length}>`);
+  t = t.replace(/^&gt; ?(.*)$/gm, (_, txt) => `<blockquote>${inline(txt)}</blockquote>`);
+
+  // Список — подряд идущие строки одного вида. Вложенность не поддерживается.
+  t = t.replace(/(?:^[-*] +.*(?:\n|$))+/gm, (m) => list(m, /^[-*] +/, 'ul'));
+  t = t.replace(/(?:^\d+[.)] +.*(?:\n|$))+/gm, (m) => list(m, /^\d+[.)] +/, 'ol'));
+
+  t = inline(t);
+
+  // Одиночный перевод строки — перенос. Вокруг блочных тегов переносы убираем, иначе
+  // между списком и текстом зияет пустая строка.
+  t = t.replace(/\n/g, '<br>')
+    .replace(/<br>(?=<(?:h\d|ul|ol|table|blockquote)\b)/g, '')
+    .replace(/(<\/(?:h\d|ul|ol|table|blockquote)>)<br>/g, '$1');
+
+  // Ящик распаковываем последним: внутри него готовый HTML, правила его не касались.
+  return t.replace(new RegExp(BOX + '(\\d+)' + BOX, 'g'), (_, i) => box[+i]);
+}
+
+function list(block, marker, tag) {
+  const li = block.trimEnd().split('\n').filter(Boolean)
+    .map(l => `<li>${inline(l.replace(marker, ''))}</li>`).join('');
+  return `<${tag}>${li}</${tag}>`;
+}
+
+function inline(t) {
+  return t
+    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+    .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
+    .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<i>$2</i>')
+    .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
+             '<a href="$2" target="_blank" rel="noopener">$1</a>');
+}
+
+// --- md:end ---
+
 function renderItem(it) {
   if (it.role === 'tool') {
     return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${esc(it.text)}</div>`;
   }
-  const who = it.role === 'user' ? 'ты' : 'claude';
-  return `<div class="msg ${it.role}"><span class=role>${who}</span>${esc(it.text)}</div>`;
+  // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
+  // должна оказаться курсивом. Разметку рисуем только у ответа.
+  if (it.role === 'user') {
+    return `<div class="msg user"><span class=role>ты</span>${esc(it.text)}</div>`;
+  }
+  return `<div class="msg assistant"><span class=role>claude</span>` +
+         `<div class=body>${md(it.text)}</div></div>`;
 }
 
 async function poll(p) {
