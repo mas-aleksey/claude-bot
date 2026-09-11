@@ -20,7 +20,7 @@ services:
   example-bot:
     build: .
     image: claude-example:latest
-    container_name: claude-example
+    container_name: claude-example-bot
     depends_on: [example-dind]
     # A shared network namespace with dind: ports published by sandbox containers show up
     # on the bot's localhost, while 2375 never reaches the compose network. The price: the
@@ -65,7 +65,10 @@ services:
 
   example-dind:
     image: docker:28-dind
-    container_name: claude-example-dind
+    # The short name belongs to dind, not to the bot: dind owns the network stack, so it
+    # is the only one of the two that docker DNS knows. A reverse proxy therefore points
+    # at `claude-example:<port>` even though the process listening there is the bot.
+    container_name: claude-example
     privileged: true                            # unavoidable for DinD
     environment:
       DOCKER_TLS_CERTDIR: ""                    # TLS off — 2375 never leaves the netns
