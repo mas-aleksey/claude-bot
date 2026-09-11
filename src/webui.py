@@ -484,6 +484,13 @@ PAGE = r"""<!doctype html>
 <style>
 :root { color-scheme: dark light }
 * { box-sizing: border-box }
+/* Кнопки не залиты: фон свой, родительский, выделена только рамка. Иначе серая плашка
+   по умолчанию спорила и с тёмной темой, и с оттенком панели.
+   `#list button` и `.copy` бьют это правило своей специфичностью — список не набор
+   кнопок, а «копировать» лежит поверх кода и обязана быть непрозрачной. */
+button, .clip { font:inherit; color:inherit; background:none; cursor:pointer;
+  border:1px solid #888a; border-radius:4px; padding:4px 8px }
+button:hover, .clip:hover { border-color:#8ad }
 body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; height:100vh }
 aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
 #peers { display:flex; gap:2px; padding:8px 8px 0 }
@@ -529,27 +536,14 @@ section.act { z-index:5; box-shadow:0 6px 24px #0005;
 .grip, .h { touch-action:none }   /* иначе жест уходит прокрутке, pointermove не придёт */
 .grip { cursor:grab; user-select:none }
 .grip.moving { cursor:grabbing }
-/* Ручки внутри панели, а не на 3px снаружи: у section стоит overflow:hidden, и он
+/* Ручка внутри панели, а не на 3px снаружи: у section стоит overflow:hidden, и он
    обрезает абсолютно позиционированных потомков — снаружи оставалась прозрачная полоска
-   в считанные пиксели, по которой было не попасть. Перетаскивание работало, потому что
-   заголовок — большая непрозрачная область.
-   Углы видны всегда, а не только у активной панели: невидимую ручку не найти. */
+   в считанные пиксели, по которой было не попасть.
+   Уголок виден всегда, а не только у активной панели: невидимую ручку не найти. */
 .h { position:absolute; z-index:2 }
-.h:hover { background:#8ab6 }
-.h-n { top:0; left:16px; right:16px; height:12px; cursor:ns-resize }
-.h-s { bottom:0; left:16px; right:16px; height:12px; cursor:ns-resize }
-.h-w { left:0; top:16px; bottom:16px; width:12px; cursor:ew-resize }
-.h-e { right:0; top:16px; bottom:16px; width:12px; cursor:ew-resize }
-.h-nw { left:0; top:0; width:16px; height:16px; cursor:nwse-resize }
-.h-ne { right:0; top:0; width:16px; height:16px; cursor:nesw-resize }
-.h-sw { left:0; bottom:0; width:16px; height:16px; cursor:nesw-resize }
 .h-se { right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
   background:linear-gradient(135deg, transparent 45%, #8887 45%) }
-.h-se:hover { background:linear-gradient(135deg, transparent 45%, #8ab 45%) }
-/* Отступы по 20px — под угловые ручки: иначе .h-ne накрыл бы кнопку «×», и панель
-   стало бы нечем закрыть. Верхние 12px заголовка отданы ручке .h-n, ниже — перенос,
-   как у обычного окна. */
-header { display:flex; gap:6px; align-items:center; padding:6px 22px 6px 20px;
+header { display:flex; gap:6px; align-items:center; padding:6px 10px;
   border-bottom:1px solid oklch(0.62 0.16 var(--hue,250) / .4);
   background:oklch(0.62 0.18 var(--hue,250) / .30) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
@@ -574,6 +568,7 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
 }
 header .hits { font-size:11px; opacity:.6; flex:none }
+header button { padding:1px 6px; line-height:1.2 }
 /* Оба цвета заданы явно: подсветка должна читаться и в тёмной теме, и в светлой. */
 ::highlight(find) { background:#fd0; color:#000 }
 .log { flex:1; overflow:auto; padding:12px 14px }
@@ -583,6 +578,7 @@ header .hits { font-size:11px; opacity:.6; flex:none }
    «где я говорил» первым делом. Полупрозрачный oklch читается и в тёмной теме, и в
    светлой — страница живёт под color-scheme: dark light. */
 .user { background:oklch(0.62 0.10 165 / .20); padding:8px 10px; border-radius:6px }
+.body p { margin:.5em 0 }
 .body > :first-child { margin-top:0 }
 .body > :last-child { margin-bottom:0 }
 .body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin:.6em 0 .3em; font-size:1em }
@@ -607,13 +603,38 @@ header .hits { font-size:11px; opacity:.6; flex:none }
 .note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
-form { display:flex; gap:6px; padding:8px 20px 8px 8px; border-top:1px solid #8884 }
-form .model { flex:none; width:74px; font:inherit; font-size:12px; align-self:flex-start;
-  background:none; color:inherit; border:1px solid #8884; border-radius:4px; padding:2px }
+/* Композер: рамка одна на всё, поле внутри без своей, под ним ряд управления. Раньше
+   тут стояли в ряд три рамки разной высоты — селект, скрепка и поле.
+   Правый отступ 20px — под ручку .h-se: она лежит в том же углу, и кнопка отправки
+   вплотную к краю её бы накрыла. */
+form { display:flex; flex-direction:column; gap:4px; margin:8px 20px 8px 8px; padding:6px;
+  border:1px solid #8886; border-radius:12px;
+  background:oklch(0.62 0.16 var(--hue,250) / .05) }
+form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+textarea { resize:none; min-height:40px; max-height:240px; padding:4px 4px 0;
+  font:inherit; background:none; color:inherit; border:0; outline:none }
+.bar { display:flex; gap:4px; align-items:center }
+/* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
+.bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
+  border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
+.bar .model { appearance:none; width:auto }
+/* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
+.bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
+  border-radius:50%; font-size:18px; line-height:1 }
+.bar .clip:hover, .bar .model:hover { background:#8882; opacity:1 }
+.bar .clip input { display:none }
+/* Правый угол ряда: пока запуск идёт, вместо «отправить» стоит «стоп». Переключает
+   класс `busy` на секции, его же ставит tick() — своего состояния в JS не нужно. */
+.bar .send, .bar .stop { margin-left:auto; width:28px; height:28px; padding:0; flex:none;
+  place-items:center; border:0; border-radius:8px; font-size:13px; line-height:1 }
+.bar .send { display:grid; background:oklch(0.62 0.16 var(--hue,250)); color:#fff }
+.bar .send:hover { background:oklch(0.68 0.20 var(--hue,250)) }
+/* Пустое поле — бледная кнопка, без JS: `:placeholder-shown` и есть признак пустоты. */
+textarea:placeholder-shown ~ .bar .send { opacity:.35 }
+.bar .stop, section.busy .bar .send { display:none }
+section.busy .bar .stop { display:grid; background:#e90; color:#000 }
 /* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
 section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
-textarea { flex:1; resize:none; min-height:52px; max-height:240px; padding:6px;
-  font:inherit; background:none; color:inherit; border:1px solid #8884; border-radius:4px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
 /* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
    отключаем ручки — тянуть тут всё равно нечего. */
@@ -726,50 +747,99 @@ async function runFind() {
 //
 // Подсветка через CSS Custom Highlight API: диапазоны регистрируются в CSS.highlights,
 // DOM не мутируется вообще. Это принципиально — внутри .body лежит готовый HTML
-// разметки, и вставка <mark> его бы порвала. Снятие тоже бесплатное, восстанавливать
-// исходный HTML не нужно. В браузере без этого API останется счётчик без жёлтого.
-function textNodes(root) {
-  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT, {
-    // Подписи «ты» и «claude» не текст беседы: попадание в них было бы шумом.
-    acceptNode: (n) => n.parentElement?.closest('.role')
+// разметки, и вставка <mark> его бы порвала. В браузере без этого API останется
+// счётчик без жёлтого.
+//
+// Объект Highlight один на всё время жизни страницы, и меняется его содержимое, а не
+// запись в реестре: после `CSS.highlights.delete` Safari оставлял жёлтое на экране до
+// следующего рефлоу, то есть подсветка переживала очистку поля.
+const HL = 'highlights' in CSS ? new Highlight() : null;
+if (HL) CSS.highlights.set('find', HL);
+
+// Инлайновые теги текст не разрывают: «функция » и «linkify» из <code> идут подряд и
+// склеиваются обратно в одну строку. Всё остальное — граница строки, иначе конец
+// одного сообщения слипся бы с началом следующего в несуществующее слово.
+const INLINE = new Set(['A', 'B', 'CODE', 'EM', 'I', 'S', 'SPAN', 'STRONG', 'SUB', 'SUP', 'U']);
+
+// Плоский текст панели и карта «смещение → узел». Поиск по каждому узлу отдельно не
+// находил ничего, что пересекает границу тега или перевод строки, — а разметка ответа
+// режет текст на узлы буквально по каждому <br>, <b> и `коду`.
+//
+// ponytail: карта строится на каждое нажатие клавиши и на каждую вставку в панель.
+// На десятках тысяч строк начнёт подтормаживать — тогда кешировать по узлу .log и
+// сбрасывать кеш в poll().
+function flatten(root) {
+  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
+    // Подписи «ты»/«claude» и кнопка «копировать» — не текст беседы, попадание в них
+    // было бы шумом. REJECT на элементе отсекает его вместе с содержимым.
+    acceptNode: (n) => n.nodeType === 1 && (n.classList.contains('role') ||
+                                            n.classList.contains('copy'))
       ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
   });
-  const out = [];
-  for (let n = walk.nextNode(); n; n = walk.nextNode()) out.push(n);
-  return out;
+  let text = '';
+  const map = [];
+  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
+    if (n.nodeType === 1) {
+      if (!INLINE.has(n.tagName) && !text.endsWith('\n')) text += '\n';
+    } else {
+      map.push({ node: n, at: text.length, len: n.data.length });
+      text += n.data;
+    }
+  }
+  return { text, map };
 }
 
-function applyFilter() {
-  const q = $('filter').value.trim().toLowerCase();
-  const has = 'highlights' in CSS;
-  if (has) CSS.highlights.delete('find');
-  if (!q) {
-    for (const p of panes) {
-      const box = document.getElementById('pane-' + p.pane)?.querySelector('.hits');
-      if (box) box.textContent = '';
-    }
-    return;
-  }
+// Диапазон по смещениям в плоском тексте: начало и конец могут оказаться в разных
+// узлах — именно ради этого всё и затевалось. Смещение, попавшее на вставленный
+// разделитель строк, прижимается к границе ближайшего узла: на экране его всё равно нет.
+function rangeFor(map, from, to) {
+  const spot = (off, end) => {
+    for (const m of map)
+      if (end ? off <= m.at + m.len : off < m.at + m.len)
+        return [m.node, clamp(off - m.at, 0, m.len)];
+    return null;
+  };
+  const a = spot(from, false), b = spot(to, true);
+  if (!a || !b) return null;
+  const r = new Range();
+  r.setStart(a[0], a[1]);
+  r.setEnd(b[0], b[1]);
+  return r;
+}
 
-  const all = [];
+// --- find:begin ---
+// Совпадения в плоском тексте. Пробел в запросе матчит любой пробельный кусок, включая
+// перевод строки между сообщениями, — иначе фраза, разорванная переносом, не находится.
+// Остальное экранируется: в запросе бывают точки, скобки и звёздочки из кода.
+function hits(text, q) {
+  const pat = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
+  if (!pat) return [];
+  const re = new RegExp(pat, 'gi');
+  const out = [];
+  for (let m = re.exec(text); m; m = re.exec(text)) out.push([m.index, m.index + m[0].length]);
+  return out;
+}
+// --- find:end ---
+
+function applyFilter() {
+  const q = $('filter').value.trim();
+  HL?.clear();
   for (const p of panes) {
     const el = document.getElementById('pane-' + p.pane);
     if (!el) continue;
-    let hits = 0;
-    for (const node of textNodes(el)) {
-      const text = node.data.toLowerCase();
-      for (let i = text.indexOf(q); i >= 0; i = text.indexOf(q, i + q.length)) {
-        const range = new Range();
-        range.setStart(node, i);
-        range.setEnd(node, i + q.length);
-        all.push(range);
-        hits++;
+    let found = 0;
+    if (q) {
+      // Ищем только по выводу: в заголовке и в композере искать нечего, а варианты
+      // селекта моделей давали ложные попадания.
+      const { text, map } = flatten(el.querySelector('.log'));
+      for (const [from, to] of hits(text, q)) {
+        const r = rangeFor(map, from, to);
+        if (r) { HL?.add(r); found++; }
       }
     }
     const box = el.querySelector('.hits');
-    if (box) box.textContent = hits || '—';
+    if (box) box.textContent = q ? (found || '—') : '';
   }
-  if (has && all.length) CSS.highlights.set('find', new Highlight(...all));
 }
 
 // Сетка фиксированного размера в клетках: 12 на 8. Клетка — доля области, а не пиксели,
@@ -843,21 +913,8 @@ function wireGrab(p, el, node, edge) {
         p.c = clamp(from.c + dc, 1, COLS - p.w + 1);
         p.r = clamp(from.r + dr, 1, ROWS - p.h + 1);
       } else {
-        // Тянем за восточную или южную — двигается только размер. За западную или
-        // северную — вместе с размером сдвигается начало, поэтому противоположная
-        // сторона остаётся на месте.
         if (edge.includes('e')) p.w = clamp(from.w + dc, 1, COLS - p.c + 1);
         if (edge.includes('s')) p.h = clamp(from.h + dr, 1, ROWS - p.r + 1);
-        if (edge.includes('w')) {
-          const c = clamp(from.c + dc, 1, from.c + from.w - 1);
-          p.w = from.w + (from.c - c);
-          p.c = c;
-        }
-        if (edge.includes('n')) {
-          const r = clamp(from.r + dr, 1, from.r + from.h - 1);
-          p.h = from.h + (from.r - r);
-          p.r = r;
-        }
       }
       applyGeom(p);  // панель переставляется по клеткам сразу, а не после отпускания
     };
@@ -870,7 +927,9 @@ function wireGrab(p, el, node, edge) {
   };
 }
 
-const EDGES = ['n', 's', 'w', 'e', 'nw', 'ne', 'sw', 'se'];
+// Один угол вместо восьми ручек: остальные стороны ловили курсор на пути к тексту и
+// к кнопкам, а тянуть панель хватает и правого нижнего угла.
+const EDGES = ['se'];
 
 function wireHandles(p, el) {
   wireGrab(p, el, el.querySelector('header'), '');
@@ -909,17 +968,21 @@ function drawPane(p) {
       <span class=who></span>
       <span class=timer></span>
       <span class=hits></span>
-      <button class=stop title="остановить">стоп</button>
       <button class=close title="закрыть панель">×</button>
     </header>
     <div class=log></div>
     <form>
-      <select class=model title="модель этой панели">
-        <option value="">модель</option>
-        <option>opus</option><option>sonnet</option><option>haiku</option>
-      </select>
-      <textarea placeholder="промпт, Ctrl+Enter — отправить; файл можно перетащить"></textarea>
-      <button>→</button>
+      <textarea placeholder="промпт"
+        title="Enter — отправить, Shift+Enter — перенос строки"></textarea>
+      <div class=bar>
+        <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
+        <select class=model title="модель этой панели">
+          <option value="">модель</option>
+          <option>opus</option><option>sonnet</option><option>haiku</option>
+        </select>
+        <button class=send title="отправить">↑</button>
+        <button class=stop type=button title="остановить">■</button>
+      </div>
     </form>`;
   $('panes').append(el);
   setWho(p, el);
@@ -927,9 +990,15 @@ function drawPane(p) {
   el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane }).catch(() => {});
   const form = el.querySelector('form');
   const ta = el.querySelector('textarea');
+  // Выбор файлов — тот же путь, что у перетаскивания. `value = ''` нужен, чтобы второй
+  // выбор того же файла тоже дал событие.
+  const pick = el.querySelector('.clip input');
+  pick.onchange = () => { attach(p, ta, pick.files); pick.value = ''; };
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
+  // Enter отправляет, перенос строки — с Shift или Alt. Ctrl/Cmd+Enter оставлен: он
+  // работал раньше, и пальцы помнят.
   ta.onkeydown = (e) => {
-    if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); send(p, ta); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); send(p, ta); }
   };
   ta.oninput = () => grow(ta);
 
@@ -1020,8 +1089,14 @@ async function attach(p, ta, files) {
   }
 }
 
+// Вставка мимо poll(): свой промпт и красные строки. Прокрутка тут обязательна —
+// без неё длинный промпт уезжал за нижний край, и poll() дальше считал панель
+// «отлистанной вверх» и переставал доводить до низа уже и ответ.
 function log(p, html) {
-  document.querySelector('#pane-' + p.pane + ' .log').insertAdjacentHTML('beforeend', html);
+  const box = document.querySelector('#pane-' + p.pane + ' .log');
+  if (!box) return;
+  box.insertAdjacentHTML('beforeend', html);
+  box.scrollTop = 1e9;
 }
 
 async function send(p, ta) {
@@ -1035,7 +1110,7 @@ async function send(p, ta) {
     Notification.requestPermission().catch(() => {});
   }
   echoes.set(p.pane, prompt);
-  log(p, `<div class="msg user"><span class=role>ты</span>${esc(prompt)}</div>`);
+  log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   try {
     const r = await post('api/prompt', { pane: p.pane, project: p.project,
       session: p.session || null, prompt, model: p.model || null });
@@ -1103,11 +1178,19 @@ function md(src) {
 
   t = inline(t);
 
-  // Одиночный перевод строки — перенос. Вокруг блочных тегов переносы убираем, иначе
-  // между списком и текстом зияет пустая строка.
-  t = t.replace(/\n/g, '<br>')
-    .replace(/<br>(?=<(?:h\d|ul|ol|table|blockquote)\b)/g, '')
-    .replace(/(<\/(?:h\d|ul|ol|table|blockquote)>)<br>/g, '$1');
+  // Одиночный перевод строки — перенос, а текст между блоками заворачивается в <p>.
+  // Абзац тут не про отступы: голый текстовый узел рядом с блочным соседом (список,
+  // таблица) образует анонимный блок, а WebKit в таком блоке не красит ::highlight —
+  // ровно одно попадание поиска оставалось неподсвеченным при верном счётчике.
+  // Заодно уходят переносы вокруг блоков: пустая строка между списком и текстом
+  // раньше убиралась отдельной парой регулярок, теперь её просто нечему создать.
+  t = t.replace(/\n/g, '<br>');
+  t = t.split(/(<(?:h[1-6]|ul|ol|blockquote)\b[\s\S]*?<\/(?:h[1-6]|ul|ol|blockquote)>|\uE000\d+\uE000)/)
+    .map((part, i) => {
+      if (i % 2) return part;                              // сам блок, как есть
+      const run = part.replace(/^(?:<br>)+|(?:<br>)+$/g, '');
+      return run ? '<p>' + run + '</p>' : '';
+    }).join('');
 
   // Ящик распаковываем последним: внутри него готовый HTML, правила его не касались.
   return t.replace(new RegExp(BOX + '(\\d+)' + BOX, 'g'), (_, i) => box[+i]);
@@ -1120,12 +1203,23 @@ function list(block, marker, tag) {
 }
 
 function inline(t) {
-  return t
+  return linkify(t
     .replace(/`([^`\n]+)`/g, '<code>$1</code>')
     .replace(/\*\*([^*\n]+)\*\*/g, '<b>$1</b>')
     .replace(/(^|[\s(])\*([^*\n]+)\*/g, '$1<i>$2</i>')
     .replace(/\[([^\]\n]+)\]\((https?:\/\/[^)\s]+)\)/g,
-             '<a href="$2" target="_blank" rel="noopener">$1</a>');
+             '<a href="$2" target="_blank" rel="noopener">$1</a>'));
+}
+
+// Голый url в тексте тоже ссылка: claude пишет их чаще, чем `[текст](url)`.
+// Идёт последним и только после пробела, скобки или начала строки — url внутри уже
+// готового `href="..."` или между `>` и `</a>` под это не подпадает и не заворачивается
+// повторно. Хвостовая пунктуация в ссылку не входит: точка в конце предложения — точка.
+// Вызывается и на тексте без разметки (промпт человека, строка инструмента), поэтому
+// принимает уже экранированную строку и ничего больше с ней не делает.
+function linkify(t) {
+  return t.replace(/(^|[\s(])(https?:\/\/[^\s<]*[^\s<.,;:!?)\]'"])/g,
+                   '$1<a href="$2" target="_blank" rel="noopener">$2</a>');
 }
 
 // --- md:end ---
@@ -1136,12 +1230,12 @@ function renderItem(it) {
     return `<div class="msg note">↳ ${esc(it.text)}</div>`;
   }
   if (it.role === 'tool') {
-    return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${esc(it.text)}</div>`;
+    return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${linkify(esc(it.text))}</div>`;
   }
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
   if (it.role === 'user') {
-    return `<div class="msg user"><span class=role>ты</span>${esc(it.text)}</div>`;
+    return `<div class="msg user"><span class=role>ты</span>${linkify(esc(it.text))}</div>`;
   }
   return `<div class="msg assistant"><span class=role>claude</span>` +
          `<div class=body>${md(it.text)}</div></div>`;

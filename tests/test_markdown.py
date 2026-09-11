@@ -46,7 +46,7 @@ def test_script_tag_appears_once_in_page():
 def test_headings_bold_and_code(render):
     got = render("## Итог", "текст **жирный** и `код`")
     assert got[0] == "<h2>Итог</h2>"
-    assert got[1] == "текст <b>жирный</b> и <code>код</code>"
+    assert got[1] == "<p>текст <b>жирный</b> и <code>код</code></p>"
 
 
 def test_lists(render):
@@ -58,8 +58,8 @@ def test_lists(render):
 def test_fenced_code_keeps_text_and_escapes_it(render):
     (got,) = render("до\n```python\nif a < b:\n    print('<b>')\n```\nпосле")
     assert "<pre><code>if a &lt; b:\n    print('&lt;b&gt;')</code></pre>" in got
-    assert got.startswith("до")
-    assert got.endswith("после")
+    assert got.startswith("<p>до</p>")
+    assert got.endswith("<p>после</p>")
 
 
 def test_table(render):
@@ -69,7 +69,7 @@ def test_table(render):
 
 def test_link_gets_noopener(render):
     (got,) = render("[док](https://example.org/x)")
-    assert got == '<a href="https://example.org/x" target="_blank" rel="noopener">док</a>'
+    assert got == '<p><a href="https://example.org/x" target="_blank" rel="noopener">док</a></p>'
 
 
 @pytest.mark.parametrize("src,forbidden", [
@@ -86,4 +86,26 @@ def test_html_from_claude_never_survives(render, src, forbidden):
 
 def test_plain_text_survives_untouched(render):
     (got,) = render("обычная строка без разметки")
-    assert got == "обычная строка без разметки"
+    assert got == "<p>обычная строка без разметки</p>"
+
+
+def test_bare_url_becomes_link(render):
+    got = render("см. https://example.org/x, дальше текст",
+                 "[док](https://example.org/x)",
+                 "`https://example.org/x`")
+    assert got[0] == ('<p>см. <a href="https://example.org/x" target="_blank" rel="noopener">'
+                      'https://example.org/x</a>, дальше текст</p>')
+    # Готовая ссылка из markdown не заворачивается второй раз, а url в `коде` остаётся
+    # кодом — он там как текст команды, а не как адрес.
+    assert got[1].count("<a href=") == 1
+    assert got[2] == "<p><code>https://example.org/x</code></p>"
+
+
+def test_loose_text_next_to_block_is_wrapped(render):
+    """Голый текстовый узел рядом со списком образует анонимный блок, а WebKit в нём не
+    красит ::highlight — попадание поиска оставалось невидимым при верном счётчике."""
+    (got,) = render("итог первой строкой\n\nдальше:\n- раз\n- два\n\nхвост")
+    # Пустая строка внутри абзаца остаётся переносом: вид тот же, что был, меняется
+    # только то, что голого текста прямо в .body больше нет.
+    assert got == ("<p>итог первой строкой<br><br>дальше:</p><ul><li>раз</li><li>два</li></ul>"
+                   "<p>хвост</p>")
