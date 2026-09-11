@@ -16,10 +16,12 @@ things it does not, so check them by hand:
 - the published ssh port (`127.0.0.1:2222`) — one per sandbox, bump it for the next;
 - the `Dockerfile`, which is where this project's own tooling goes.
 
-Container names follow one rule: `claude-<name>` is **dind**, `claude-<name>-bot` is the
-bot, `claude-<name>-vpn` is the tunnel. The bot shares dind's network namespace and has no
-name of its own in DNS, so anything connecting from outside — a reverse proxy, say —
-addresses `claude-<name>`, while `docker exec` and `docker logs` want `claude-<name>-bot`.
+Naming follows one rule. Containers are named for what they are — `claude-<name>-bot`,
+`claude-<name>-dind`, `claude-<name>-vpn` — and the short `claude-<name>` is a **network
+alias** on whichever container owns the network stack (dind here; the bot itself in an
+instance that has no dind). The bot shares dind's namespace and has no name of its own in
+DNS, so anything connecting from outside — a reverse proxy, say — addresses
+`claude-<name>`, while `docker exec` and `docker logs` want `claude-<name>-bot`.
 
 The base image has to be built first — see the repository README.
 

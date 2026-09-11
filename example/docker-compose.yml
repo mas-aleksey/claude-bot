@@ -65,10 +65,13 @@ services:
 
   example-dind:
     image: docker:28-dind
-    # The short name belongs to dind, not to the bot: dind owns the network stack, so it
-    # is the only one of the two that docker DNS knows. A reverse proxy therefore points
-    # at `claude-example:<port>` even though the process listening there is the bot.
-    container_name: claude-example
+    container_name: claude-example-dind
+    # `claude-example` is a network alias, not a container name: the bot borrows this
+    # container's network stack and therefore has no name of its own in docker DNS.
+    # A reverse proxy points at `claude-example:<port>`; the process listening is the bot.
+    networks:
+      default:
+        aliases: [claude-example]
     privileged: true                            # unavoidable for DinD
     environment:
       DOCKER_TLS_CERTDIR: ""                    # TLS off — 2375 never leaves the netns
