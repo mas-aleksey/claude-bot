@@ -126,3 +126,25 @@ def test_stale_sorted_by_real_age_not_by_label(home, tmp_path):
     got = sessions.stale(2 * DAY)
     assert [r["age"] for r in got] == sorted(r["age"] for r in got)
     assert got[-1]["ago"] == "15д"
+
+
+def test_subagents_are_not_sessions_and_go_with_the_parent(home, tmp_path):
+    """Транскрипты субагентов лежат глубже, имени не имеют и отдельными сессиями не
+    считаются. Раньше они приезжали в список безымянными строками, а `unlink` собирал
+    путь из имени каталога `subagents` — промах, молчаливый по `missing_ok`, и те же
+    строки возвращались на каждом открытии диалога."""
+    proj = tmp_path / "projects" / "-projects-rp"
+    kids = proj / SID_OLD / "subagents"
+    kids.mkdir(parents=True)
+    agent = kids / "agent-ae086adb8d50985fa.jsonl"
+    agent.write_text('{"type":"user"}\n', encoding="utf-8")
+    stamp = time.time() - 10 * DAY
+    os.utime(agent, (stamp, stamp))
+
+    doomed = sessions.stale(2 * DAY)
+    assert [r["id"] for r in doomed] == [SID_OLD], "субагент попал в список сессий"
+
+    sessions.purge(2 * DAY)
+    assert not agent.exists(), "субагент пережил удаление родителя"
+    assert not (proj / SID_OLD).exists()
+    assert (proj / f"{SID_NEW}.jsonl").exists(), "снесли свежую сессию"

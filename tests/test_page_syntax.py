@@ -108,3 +108,38 @@ console.log(JSON.stringify([
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [True, False, False, True]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_open_sessions_are_marked_in_the_list_and_unmarked_on_close(tmp_path):
+    """Список слева перерисовывается целиком каждый пятый тик, поэтому метки накладывает
+    отдельный проход. Он же обязан их снимать: закрытая панель, оставившая свой цвет в
+    строке, врёт про то, что сессия открыта."""
+    body = slice_out("script").split("// --- mark:begin ---")[1].split("// --- mark:end ---")[0]
+    js = tmp_path / "mark.js"
+    js.write_text("""
+function btn(id) {
+  const cls = new Set(), vars = {};
+  return { dataset: { id }, cls, vars,
+    classList: { toggle: (k, on) => { on ? cls.add(k) : cls.delete(k); } },
+    style: { setProperty: (k, v) => { vars[k] = v; },
+             removeProperty: (k) => { delete vars[k]; } } };
+}
+const rows = [btn('busy-one'), btn('idle-one'), btn('not-open')];
+const document = { querySelectorAll: () => rows };
+const HUES = [250];
+let panes = [{ session: 'busy-one', hue: 25 }, { session: 'idle-one', hue: 145 }];
+""" + body + """
+busySessions.add('busy-one');
+markList();
+const open = rows.map(r => [[...r.cls].sort(), r.vars['--hue'] ?? null]);
+panes = [];                       // обе панели закрыли
+markList();
+const closed = rows.map(r => [...r.cls].concat(Object.keys(r.vars)));
+console.log(JSON.stringify([open, closed]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    open_, closed = json.loads(done.stdout)
+    assert open_ == [[["busy", "open"], 25], [["open"], 145], [[], None]]
+    assert closed == [[], [], []]

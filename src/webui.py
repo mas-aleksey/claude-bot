@@ -563,8 +563,17 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
   overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
 #list { overflow:auto; flex:1; margin-top:8px }
 #list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
-  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
+  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer;
+  border-left:3px solid transparent }
 #list button:hover { background:#8882 }
+/* Открытая сессия носит цвет своей панели полоской на левом краю строки. Прозрачная
+   полоска стоит на всех строках, иначе открытая дёргалась бы вправо на три пикселя.
+   Красить фон нельзя: правило той же специфичности перебило бы `:hover` выше, и строка
+   перестала бы отзываться на курсор. Мигает та же полоска, угасая и возвращаясь, —
+   оттенок при этом не меняется, потому что в списке важнее, КАКАЯ сессия занята. */
+#list button.open { border-left-color:oklch(0.62 0.20 var(--hue,250)) }
+#list button.busy { animation:edge 1.2s ease-in-out infinite }
+@keyframes edge { 50% { border-left-color:oklch(0.62 0.20 var(--hue,250) / .15) } }
 #list .ago { opacity:.6; font-size:12px }
 #list .size { float:right; opacity:.5; font-size:11px }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
@@ -622,6 +631,7 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
 /* Без движения подсказка обязана остаться: раньше правило просто убирало анимацию, и
    занятость становилась совсем невидимой. Теперь заголовок просто горит ярко. */
 @media (prefers-reduced-motion: reduce) {
+  #list button.busy { animation:none; border-left-width:6px }
   header .dot.busy { animation:none }
   section.busy header { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
@@ -818,7 +828,25 @@ function fillList(project, rows, empty) {
     b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0,
                                 title: b.dataset.title });
   }
+  markList();
 }
+
+// --- mark:begin ---
+// Открытые сессии видно в списке слева: строка носит цвет своей панели и мигает, пока та
+// занята. Метки кладём отдельным проходом, а не в разметку строки в `fillList`: список
+// перерисовывается целиком каждый пятый тик, и вписанное в разметку живёт до него.
+const busySessions = new Set();
+
+function markList() {
+  for (const b of document.querySelectorAll('#list button')) {
+    const p = panes.find(x => x.session === b.dataset.id);
+    b.classList.toggle('open', !!p);
+    b.classList.toggle('busy', !!p && busySessions.has(p.session));
+    if (p) b.style.setProperty('--hue', p.hue ?? HUES[0]);
+    else b.style.removeProperty('--hue');
+  }
+}
+// --- mark:end ---
 
 async function loadSessions() {
   const project = $('proj').value;
@@ -1053,12 +1081,14 @@ function addPane(p) {
   if (!p.c) place(p);
   save();
   drawPane(p);
+  markList();
   poll(p);
 }
 
 function closePane(p) {
   panes = panes.filter(x => x.pane !== p.pane); save();
   document.getElementById('pane-' + p.pane)?.remove();
+  markList();
   $('empty').hidden = panes.length > 0;
 }
 
@@ -1437,6 +1467,7 @@ async function tick() {
       (r) => r.scope === scope || (p.session && r.session === p.session));
     const busy = !!mine;
     if (busy) running++;
+    if (p.session) busySessions[busy ? 'add' : 'delete'](p.session);
 
     el?.classList.toggle('busy', busy);
     el?.querySelector('.dot')?.classList.toggle('busy', busy);
@@ -1470,6 +1501,7 @@ async function tick() {
 
     await poll(p);
   }
+  markList();
   // Число работающих панелей в заголовке вкладки: видно, даже когда браузер свёрнут.
   document.title = running ? `● ${running} · claude` : 'claude';
 

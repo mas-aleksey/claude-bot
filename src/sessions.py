@@ -81,7 +81,14 @@ def stale(older_than: float) -> list[dict]:
     """
     now = time.time()
     out = []
-    for path in TRANSCRIPTS.rglob("*.jsonl"):
+    # Ровно один уровень: `<slug>/<id>.jsonl`. Глубже лежат транскрипты субагентов
+    # (`<slug>/<id>/subagents/agent-*.jsonl`), и сессиями они не являются — имени у них
+    # нет, а живут они ровно столько, сколько родитель. Раньше тут стоял `rglob`, и они
+    # приезжали в диалог удаления безымянными строками, которые не удалялись никогда:
+    # путь для `unlink` собирается из `project` и `id`, то есть из `subagents` и имени
+    # агента, а такого файла не существует. `missing_ok=True` глотал промах молча,
+    # отчёт рапортовал об удалении, и те же строки возвращались на следующем открытии.
+    for path in TRANSCRIPTS.glob("*/*.jsonl"):
         age = now - path.stat().st_mtime
         if age <= older_than:
             continue
@@ -114,10 +121,15 @@ def purge(older_than: float) -> dict:
               "history_lines": 0, "orphans": 0, "ids": sorted(ids)}
 
     for r in doomed:
-        (TRANSCRIPTS / r["project"] / f"{r['id']}.jsonl").unlink(missing_ok=True)
+        base = TRANSCRIPTS / r["project"] / r["id"]
+        base.with_suffix(".jsonl").unlink(missing_ok=True)
+        # Субагенты лежат в каталоге имени родителя и своей жизни не имеют. Отдельно
+        # под порог они не попадают — в список сессий их больше не берут, — поэтому
+        # уходят только здесь, вместе с той сессией, которой принадлежали.
+        shutil.rmtree(base, ignore_errors=True)
 
     now = time.time()
-    alive = {p.stem for p in TRANSCRIPTS.rglob("*.jsonl")}
+    alive = {p.stem for p in TRANSCRIPTS.glob("*/*.jsonl")}
     for path in _dir("session-env"):
         if not UUID_RE.match(path.name):
             continue
