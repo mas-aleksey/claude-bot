@@ -58,3 +58,35 @@ console.log(JSON.stringify([
     assert done.returncode == 0, done.stderr
     got = json.loads(done.stdout)
     assert got == [[[0, 15]], [[7, 18]], [[5, 18]], [[0, 5], [8, 13]], []]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_polling_stops_after_a_run_of_failures(tmp_path):
+    """Вкладка без сессии SSO молотила вечно: каждый запрос — редирект на вход и новая
+    кука состояния там. Серия отказов обязана останавливать опрос, а один отказ при
+    живом сервере — нет."""
+    body = slice_out("script").split("// --- dead:begin ---")[1].split("// --- dead:end ---")[0]
+    js = tmp_path / "dead.js"
+    js.write_text("""
+let banner = true, title = '';
+const $ = () => ({ set hidden(v) { banner = v; } });
+const document = { set title(v) { title = v; } };
+let answer = 'fail';
+const fetch = () => answer === 'ok' ? Promise.resolve({ ok: true, json: () => 42 })
+                                    : Promise.reject(new TypeError('failed to fetch'));
+""" + body + """
+const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
+
+(async () => {
+  for (let i = 0; i < DEAD - 1; i++) await hit('fail');
+  const beforeLimit = dead;         // серия ещё не добрана — опрос жив
+  await hit('ok');                  // успех сбрасывает серию
+  for (let i = 0; i < DEAD - 1; i++) await hit('fail');
+  const afterReset = dead;          // значит до предела снова не хватает одного
+  for (let i = 0; i < 1; i++) await hit('fail');
+  console.log(JSON.stringify([beforeLimit, afterReset, dead, banner, title]));
+})();
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [False, False, True, False, "⚠ claude"]

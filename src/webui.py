@@ -687,6 +687,15 @@ section.busy .bar .stop { display:grid; background:#e90; color:#000 }
 /* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
 section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
 #empty { grid-column:1/-1; margin:auto; opacity:.5 }
+/* Поверх всего и по центру верха: опрос встал, и пока человек не обновит страницу,
+   ничего живого в панелях больше не появится. */
+#dead { position:fixed; z-index:50; top:12px; left:50%; transform:translateX(-50%);
+  display:flex; gap:10px; align-items:center; padding:10px 14px; border-radius:8px;
+  background:#e5533a; color:#fff; box-shadow:0 6px 24px #0006 }
+/* Своё `display` перебивает `hidden` из стилей браузера — без этой строки баннер
+   висел бы на экране с самого открытия страницы. */
+#dead[hidden] { display:none }
+#dead button { border-color:#fff8 }
 /* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
    отключаем ручки — тянуть тут всё равно нечего. */
 @media (max-width: 700px) {
@@ -707,9 +716,37 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   <div id=list></div>
 </aside>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
+<div id=dead hidden>бот не отвечает или кончилась сессия входа
+  <button id=reload>обновить страницу</button></div>
 <script>
 const $ = (id) => document.getElementById(id);
-const get = (u) => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status));
+
+// Опрос идёт вечно, и хуже всего это выглядит при истёкшей сессии SSO: каждый запрос
+// уходит редиректом на вход и выписывает там куку состояния. Три секунды на круг,
+// по запросу на панель — в логах авторизации это сотни неудачных попыток в сутки.
+// Довести вход из XHR всё равно нельзя: OIDC требует перехода верхнего уровня, то есть
+// перезагрузки страницы. Поэтому после серии отказов опрос встаёт и зовёт человека.
+//
+// Счётчик в `get`, а не в `tick`: через него ходят и опрос, и список сессий, и поиск,
+// и любой из них одинаково молотит впустую. Успех любого запроса сбрасывает серию —
+// одиночный таймаут при живом сервере вкладку не роняет.
+// --- dead:begin ---
+const DEAD = 5;  // подряд неудачных запросов, примерно пятнадцать секунд
+let fails = 0;
+let dead = false;
+
+const get = (u) => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status))
+  .then((v) => { fails = 0; return v; },
+        (e) => { if (++fails >= DEAD && !dead) offline(); throw e; });
+
+// Кнопка, а не автоматическая перезагрузка: панель могла быть не пуста, а перезагрузка
+// посреди набранного промпта — потеря работы.
+function offline() {
+  dead = true;
+  document.title = '⚠ claude';
+  $('dead').hidden = false;
+}
+// --- dead:end ---
 const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(r.status));
 const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
@@ -1365,6 +1402,7 @@ function notifyDone(p, seconds) {
 let ticks = 0;
 
 async function tick() {
+  if (dead) return;
   let st = { runs: [], errors: {} };
   try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
   let running = 0;
@@ -1436,6 +1474,7 @@ $('purge').onclick = async () => {
   loadSessions();
 };
 
+$('reload').onclick = () => location.reload();
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
 $('filter').oninput = applyFilter;

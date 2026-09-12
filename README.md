@@ -57,7 +57,7 @@ as reference material:
 
 ```
 claude/output-styles/conclusion-first.md   the style itself
-claude/settings.json                      {"outputStyle": "conclusion-first"}
+claude/settings.json                      {"outputStyle": ..., "model": "opus"}
         ↓ COPY, then --settings /opt/claude/settings.json
 system prompt
 ```

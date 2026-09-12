@@ -1,3 +1,4 @@
 {
-  "outputStyle": "conclusion-first"
+  "outputStyle": "conclusion-first",
+  "model": "opus"
 }
