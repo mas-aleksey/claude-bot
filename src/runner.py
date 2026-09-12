@@ -34,6 +34,24 @@ URL_RE = re.compile(r"https://\S+/oauth/\S+")
 # словарями, — так они не разъедутся.
 _runs: dict[str, tuple[asyncio.subprocess.Process, float, str | None]] = {}
 
+# Очередь скоупа. Занятая панель (или топик) не отказывает, а копит: следующий промпт
+# ждёт своего места и уходит в claude, как только предыдущий прогон закончился.
+# Порядок даёт сам asyncio.Lock — он будит ожидающих в порядке постановки, поэтому
+# своего deque не нужно, нужен только счётчик ждущих для интерфейса.
+_slots: dict[str, asyncio.Lock] = {}
+_waiting: dict[str, int] = {}
+# Поколение очереди: `cancel` его двигает, и ожидающие, проснувшись, понимают, что их
+# отбросили. Разбудить их иначе нечем — они висят на том же локе, который держит
+# текущий прогон, и просыпаются только после его смерти.
+_epoch: dict[str, int] = {}
+# Последняя сессия скоупа. Промпт, вставший в очередь к новой сессии, её id ещё не знает:
+# claude придумает его в предыдущем прогоне, уже после постановки.
+_last: dict[str, str] = {}
+
+
+class Dropped(Exception):
+    """Промпт выкинули из очереди отменой: прогона не было и не будет."""
+
 
 def busy(scope: str) -> bool:
     entry = _runs.get(scope)
@@ -48,10 +66,58 @@ def active() -> list[dict]:
             for scope, (proc, started, sid) in _runs.items() if proc.returncode is None]
 
 
+def ahead(scope: str) -> int:
+    """Сколько промптов уйдут в claude раньше нового: занятый слот плюс ожидающие.
+
+    Считаем по локу, а не по `busy`: держатель слота попадает в `_runs` только когда
+    доберётся до первого события claude, и в этом зазоре очередь бы отвечала «свободно».
+    """
+    lock = _slots.get(scope)
+    return (1 if lock and lock.locked() else 0) + _waiting.get(scope, 0)
+
+
+def waiting() -> dict[str, int]:
+    """Непустые очереди по скоупам — панели, чтобы показать глубину после перезагрузки."""
+    return {scope: n for scope, n in _waiting.items() if n}
+
+
+def last_session(scope: str) -> str | None:
+    return _last.get(scope)
+
+
+@contextlib.asynccontextmanager
+async def slot(scope: str) -> AsyncIterator[None]:
+    """Место в очереди скоупа: под `async with` внутри одновременно только один прогон.
+
+    Счётчик ждущих растёт до `acquire`, поэтому вызывающий должен спросить `ahead`
+    ДО входа сюда — иначе он посчитает в очереди сам себя.
+    """
+    lock = _slots.setdefault(scope, asyncio.Lock())
+    epoch = _epoch.get(scope, 0)
+    _waiting[scope] = _waiting.get(scope, 0) + 1
+    try:
+        await lock.acquire()
+    finally:
+        _waiting[scope] -= 1
+    try:
+        if _epoch.get(scope, 0) != epoch:
+            raise Dropped
+        yield
+    finally:
+        lock.release()
+        # Пусто — выкидываем состояние скоупа целиком: панелей за месяцы заводят много,
+        # а живут они по одному промпту. Ждущих нет, значит на этот лок никто не смотрит.
+        if not _waiting.get(scope):
+            _slots.pop(scope, None)
+            _waiting.pop(scope, None)
+            _epoch.pop(scope, None)
+
+
 def _tag(scope: str, session_id: str) -> None:
     """Запомнить сессию запуска. У новой сессии id придумывает claude, поэтому он
     появляется только из первого события — вызывается изнутри `run`, чтобы ни один
     вызывающий не смог об этом забыть."""
+    _last[scope] = session_id
     if entry := _runs.get(scope):
         _runs[scope] = (entry[0], entry[1], session_id)
 
@@ -175,19 +241,27 @@ async def run(
             del _runs[scope]
 
 
-async def cancel(scope: str) -> bool:
-    """SIGTERM группе, через 2 с — SIGKILL. proc.kill() оставил бы живых детей."""
+async def cancel(scope: str) -> tuple[bool, int]:
+    """SIGTERM группе, через 2 с — SIGKILL. proc.kill() оставил бы живых детей.
+
+    Отмена гасит и очередь: «стоп» — это про всё, что человек сюда накидал, иначе
+    следом сама собой поедет следующая задача. Возвращает (убит ли прогон, сколько
+    промптов отброшено).
+    """
+    dropped = _waiting.get(scope, 0)
+    if dropped:
+        _epoch[scope] = _epoch.get(scope, 0) + 1
     entry = _runs.get(scope)
     proc = entry[0] if entry else None
     if proc is None or proc.returncode is not None:
-        return False
+        return False, dropped
     pgid = os.getpgid(proc.pid)
     os.killpg(pgid, signal.SIGTERM)
     try:
         await asyncio.wait_for(proc.wait(), 2)
     except TimeoutError:
         os.killpg(pgid, signal.SIGKILL)
-    return True
+    return True, dropped
 
 
 async def cli(*args: str, cwd: str | None = None, timeout: float = 60) -> tuple[int, str]:

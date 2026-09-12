@@ -22,6 +22,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # poppler-utils — pdftotext: a pdf arrives as an attachment often enough, and without it
 # the only way to read one is a python library installed on the spot, every time.
 # vim — edits over ssh from inside the container; the slim image has not even vi.
+# tmux — the browser terminal attaches to a named session instead of spawning a shell per
+# page load, which is the only reason a reload does not kill whatever was running.
 # iproute2/iputils-ping/dnsutils — inspecting a network path from inside the container:
 # whether an interface exists, whether an address answers, whether a name resolves. The
 # slim image has none of the three, so the first question after a tunnel comes up ("is
@@ -32,7 +34,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 # instance's compose file, see example/docker-compose.yml.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git openssh-client openssh-server \
-        jq postgresql-client poppler-utils vim iproute2 iputils-ping dnsutils \
+        jq postgresql-client poppler-utils vim tmux iproute2 iputils-ping dnsutils \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -68,6 +70,14 @@ RUN curl -fsSLo /usr/local/bin/kubectl \
         "https://dl.k8s.io/release/${KUBECTL_VERSION}/bin/linux/amd64/kubectl" \
     && chmod +x /usr/local/bin/kubectl \
     && kubectl version --client=true --output=yaml | grep -q "gitVersion: ${KUBECTL_VERSION}"
+
+# ttyd serves a terminal over http; Traefik gives it /term on the same host as the
+# workspace, so the panel embeds it without a second login. Not in the bookworm
+# repositories (`apt-cache policy ttyd` answers `Candidate: (none)`), hence a pinned
+# static build from the releases — same reasoning as kubectl above.
+ARG TTYD_VERSION=1.7.7
+ADD https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64 /usr/local/bin/ttyd
+RUN chmod +x /usr/local/bin/ttyd && ttyd --version | grep -q "${TTYD_VERSION}"
 
 # /run/sshd — without it sshd dies with "Missing privilege separation directory".
 # sshd_config.d/ is picked up by the image's default config through Include.

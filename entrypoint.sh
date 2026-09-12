@@ -110,4 +110,14 @@ else
     echo "entrypoint: /etc/ssh/keys is not mounted — sshd not started" >&2
 fi
 
+# The browser terminal. Traefik routes /term of the same host here, so the page embeds it
+# without a second login; -b tells ttyd to build its own urls from that prefix. The shell
+# lives in a tmux session with a fixed name, which is what makes a page reload return the
+# same screen instead of a fresh shell. No binary — the panel simply has no terminal.
+if command -v ttyd >/dev/null 2>&1; then
+    ttyd -W -p 7681 -b /term -w /projects -d 3 tmux new -A -s web &
+else
+    echo "entrypoint: ttyd not found — web terminal not started" >&2
+fi
+
 exec "$@"

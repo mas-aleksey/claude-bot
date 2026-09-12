@@ -35,6 +35,14 @@ async def client(tmp_path, monkeypatch):
     await c.close()
 
 
+@pytest.fixture(autouse=True)
+def clean_scopes():
+    """Очередь и `_last` живут в модуле, а скоуп `web:pane-1` во всех тестах один."""
+    yield
+    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs):
+        d.clear()
+
+
 @pytest.fixture
 def fake_run(monkeypatch):
     """runner.run → поток из двух событий. Настоящий поднимал бы claude."""
@@ -88,12 +96,41 @@ async def test_prompt_rejects_bad_input(client, fake_run, tmp_path, body):
     assert fake_run == []  # ни одного запуска не поднялось
 
 
-async def test_prompt_conflicts_when_pane_busy(client, fake_run, monkeypatch, tmp_path):
-    monkeypatch.setattr(runner, "busy", lambda scope: scope == "web:pane-1")
-    r = await client.post("/api/prompt", json={
-        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
-    assert r.status == 409
-    assert fake_run == []
+async def test_second_prompt_queues_and_continues_first_session(client, monkeypatch, tmp_path):
+    """Занятая панель копит: второй промпт ждёт и уходит в сессию, начатую первым."""
+    sid = "11111111-2222-3333-4444-555555555555"
+    calls, release = [], asyncio.Event()
+
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        calls.append({"prompt": prompt, "session_id": session_id})
+        runner._tag(scope, sid)  # настоящий run запоминает сессию так же
+        yield {"type": "system", "subtype": "init", "session_id": sid}
+        if prompt == "первый":
+            await release.wait()
+        yield {"type": "result", "result": "готово"}
+
+    monkeypatch.setattr(runner, "run", fake)
+    body = {"pane": "pane-1", "project": str(tmp_path / "proj")}
+
+    first = await client.post("/api/prompt", json={**body, "prompt": "первый"})
+    assert (await first.json())["session"] == sid
+
+    second = await client.post("/api/prompt", json={**body, "prompt": "второй"})
+    assert second.status == 200
+    assert (await second.json())["queued"] == 1  # не 409: промпт принят и ждёт
+    assert [c["prompt"] for c in calls] == ["первый"]  # пока идёт первый
+
+    release.set()
+    for _ in range(20):  # дать очереди дойти до второго
+        await asyncio.sleep(0)
+    assert [c["prompt"] for c in calls] == ["первый", "второй"]
+    # Сессии у второго в момент постановки не было — подобрал у первого, а не завёл свою.
+    assert calls[1]["session_id"] == sid
+
+
+async def test_status_reports_queue_depth(client, monkeypatch):
+    monkeypatch.setattr(runner, "waiting", lambda: {"web:pane-1": 2})
+    assert (await (await client.get("/api/status")).json())["queued"] == {"web:pane-1": 2}
 
 
 async def test_status_lists_runs(client, monkeypatch):
@@ -109,11 +146,12 @@ async def test_cancel_hits_own_scope(client, monkeypatch):
 
     async def fake_cancel(scope):
         seen.append(scope)
-        return True
+        return True, 2
 
     monkeypatch.setattr(runner, "cancel", fake_cancel)
     r = await client.post("/api/cancel", json={"pane": "pane-1"})
-    assert (await r.json())["stopped"] is True
+    # Отмена гасит и очередь — панель говорит человеку, сколько промптов отброшено.
+    assert await r.json() == {"stopped": True, "dropped": 2}
     assert seen == ["web:pane-1"]
 
 

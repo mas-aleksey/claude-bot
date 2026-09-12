@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -59,3 +60,51 @@ def test_patch_config_survives_broken_file(config):
 def test_trust_adds_cwd(config):
     runner.trust("/projects/new")
     assert read(config)["projects"]["/projects/new"]["hasTrustDialogAccepted"] is True
+
+
+# --- очередь на скоуп -------------------------------------------------------------
+
+
+async def test_slot_serializes_scope_and_keeps_order():
+    """Занятый скоуп копит: промпты идут по одному и в порядке постановки."""
+    order: list[int] = []
+    live: list[int] = []
+
+    async def worker(n):
+        async with runner.slot("s"):
+            live.append(n)
+            assert live == [n]  # одновременно в скоупе только один прогон
+            await asyncio.sleep(0)
+            order.append(n)
+            live.remove(n)
+
+    await asyncio.gather(*(worker(i) for i in range(3)))
+    assert order == [0, 1, 2]
+    assert runner.ahead("s") == 0  # состояние скоупа убрано за собой
+
+
+async def test_cancel_drops_queue():
+    """`/cancel` — это «стоп всему», иначе следом сама собой поедет следующая задача."""
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def holder():
+        async with runner.slot("s"):
+            started.set()
+            await release.wait()
+
+    async def waiter():
+        with pytest.raises(runner.Dropped):
+            async with runner.slot("s"):
+                pytest.fail("отброшенный промпт не должен стартовать")
+
+    first = asyncio.create_task(holder())
+    await started.wait()
+    second = asyncio.create_task(waiter())
+    await asyncio.sleep(0)  # дать второму встать в очередь
+    assert runner.ahead("s") == 2
+
+    # Процесса в _runs нет (claude тут не поднимали), но очередь обязана очиститься.
+    assert await runner.cancel("s") == (False, 1)
+    release.set()
+    await asyncio.gather(first, second)
+    assert runner.ahead("s") == 0

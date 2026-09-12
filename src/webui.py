@@ -12,7 +12,9 @@
 Вывод не стримится: транскрипт и есть поток. Claude пишет его по ходу, панель тейлит
 файл с оффсета, и запуск, начатый в Telegram, виден в браузере тем же механизмом.
 
-Один запуск на панель. Гонять одну сессию из двух мест одновременно никто не мешает —
+Один запуск на панель одновременно; промпт, присланный в занятую панель, встаёт в
+очередь `runner.slot` и уходит сам, когда освободится место.
+Гонять одну сессию из двух мест одновременно никто не мешает —
 проверки на это нет сознательно, два claude в одном транскрипте просто перемешают
 записи. Понадобится защита — сравнивать session_id активных запусков в `runner`.
 """
@@ -329,36 +331,45 @@ def _project(raw: str) -> str:
 
 
 async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
-                 got: asyncio.Future, model: str | None = None) -> None:
+                 got: asyncio.Future, model: str | None = None, adopt: bool = False) -> None:
     """Довести запуск до конца, ничего не рендеря: вывод claude сам пишет в транскрипт,
     а панель его тейлит. Наружу отдаём только первый session_id — панели нужно знать,
     какой файл читать, особенно когда сессия новая и id придумал claude.
+
+    `adopt` ставит промпт, который ждал очереди без сессии, в сессию предыдущего
+    прогона. Без него два промпта подряд в пустую панель открыли бы две разные сессии
+    вместо продолжения разговора.
     """
     sid = session_id
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     try:
-        # Модель панели, а иначе глобальная из бота: две панели на разных моделях —
-        # ровно то, ради чего делалась параллельность.
-        async for ev in runner.run(prompt, project, session_id, model or store.get("model"),
-                                   scope=scope):
-            if not got.done() and (sid := ev.get("session_id") or sid):
-                got.set_result(sid)
-            # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
-            # отказ модели, недоступный проект — всё это claude пишет в stdout и
-            # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
-            if ev.get("type") == "result" and ev.get("is_error"):
-                err = (ev.get("result") or "").strip()[:2000]
-            if ev.get("type") == "_bot" and ev.get("kind") == "error":
-                rc = ev.get("rc")
-                stderr = (ev.get("text") or "").strip()
-                # Текст вперёд, код в скобках: читают ошибку, а не номер. Если текста
-                # нет ни в result, ни в stderr — говорим это словами, потому что голое
-                # `rc=1` не подсказывает даже, куда смотреть.
-                err = err or (f"{stderr[:2000]} (rc={rc})" if stderr else
-                              f"claude вышел с кодом {rc} и ничего не сообщил — "
-                              f"причина, если она есть, в последнем ответе выше")
-                log.warning("scope=%s rc=%s %s", scope, rc, stderr[:300])
+        async with runner.slot(scope):
+            if adopt:
+                sid = session_id = runner.last_session(scope) or session_id
+            # Модель панели, а иначе глобальная из бота: две панели на разных моделях —
+            # ровно то, ради чего делалась параллельность.
+            async for ev in runner.run(prompt, project, session_id,
+                                       model or store.get("model"), scope=scope):
+                if not got.done() and (sid := ev.get("session_id") or sid):
+                    got.set_result(sid)
+                # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
+                # отказ модели, недоступный проект — всё это claude пишет в stdout и
+                # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
+                if ev.get("type") == "result" and ev.get("is_error"):
+                    err = (ev.get("result") or "").strip()[:2000]
+                if ev.get("type") == "_bot" and ev.get("kind") == "error":
+                    rc = ev.get("rc")
+                    stderr = (ev.get("text") or "").strip()
+                    # Текст вперёд, код в скобках: читают ошибку, а не номер. Если текста
+                    # нет ни в result, ни в stderr — говорим это словами, потому что голое
+                    # `rc=1` не подсказывает даже, куда смотреть.
+                    err = err or (f"{stderr[:2000]} (rc={rc})" if stderr else
+                                  f"claude вышел с кодом {rc} и ничего не сообщил — "
+                                  f"причина, если она есть, в последнем ответе выше")
+                    log.warning("scope=%s rc=%s %s", scope, rc, stderr[:300])
+    except runner.Dropped:
+        log.info("промпт отброшен из очереди: scope=%s", scope)
     except Exception as e:
         err = f"{type(e).__name__}: {e}"
         log.exception("прогон из веба упал: scope=%s", scope)
@@ -373,7 +384,11 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
 
 def build() -> web.Application:
     async def index(_: web.Request) -> web.Response:
-        return web.Response(text=PAGE, content_type="text/html")
+        # no-store: страница целиком лежит в образе, и после раскатки вкладка обязана
+        # взять новую. Валидаторов у ответа нет, поэтому без этого заголовка браузер
+        # вправе отдать свою копию, и человек сидит на прошлой версии панели.
+        return web.Response(text=PAGE, content_type="text/html",
+                            headers={"Cache-Control": "no-store"})
 
     async def api_peers(_: web.Request) -> web.Response:
         return web.json_response(peers())
@@ -459,6 +474,7 @@ def build() -> web.Application:
         из панели было не видно.
         """
         return web.json_response({"runs": runner.active(), "errors": _errors,
+                                  "queued": runner.waiting(),
                                   "model": store.get("model") or "default"})
 
     async def api_prompt(req: web.Request) -> web.Response:
@@ -476,15 +492,19 @@ def build() -> web.Application:
         project = _project(data.get("project") or "")
 
         scope = f"web:{pane}"
-        if runner.busy(scope):
-            raise web.HTTPConflict(text="панель занята")
+        queued = runner.ahead(scope)
 
         got: asyncio.Future = asyncio.get_running_loop().create_future()
         # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
         # продолжается в фоне и виден ей через транскрипт.
-        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model))
+        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model,
+                                          adopt=bool(queued) and session_id is None))
         _tasks.add(task)
         task.add_done_callback(_tasks.discard)
+        if queued:
+            # Ждать нечего: прогон начнётся после предыдущего, а id новой сессии панель
+            # подберёт из /api/status по своему скоупу — в том числе после F5.
+            return web.json_response({"queued": queued, "session": session_id})
         try:
             sid = await asyncio.wait_for(asyncio.shield(got), INIT_TIMEOUT)
         except TimeoutError:
@@ -496,7 +516,8 @@ def build() -> web.Application:
         pane = data.get("pane") or ""
         if not PANE_RE.match(pane):
             raise web.HTTPBadRequest(text="нужен pane")
-        return web.json_response({"stopped": await runner.cancel(f"web:{pane}")})
+        stopped, dropped = await runner.cancel(f"web:{pane}")
+        return web.json_response({"stopped": stopped, "dropped": dropped})
 
     # client_max_size — предел на тело запроса. По умолчанию у aiohttp мегабайт, и
     # загрузка файла падала бы с 413 раньше нашего кода.
@@ -541,7 +562,11 @@ PAGE = r"""<!doctype html>
 button, .clip { font:inherit; color:inherit; background:none; cursor:pointer;
   border:1px solid #888a; border-radius:4px; padding:4px 8px }
 button:hover, .clip:hover { border-color:#8ad }
-body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; height:100vh }
+body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; flex-direction:column;
+  height:100vh }
+/* Верхний ряд: список, его полоска и поле панелей. Отдельной обёрткой, потому что под
+   ним теперь живёт ящик терминала, и делить высоту им надо колонкой. */
+#top { flex:1; min-height:0; display:flex }
 aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
 body.folded aside { display:none }
 /* Полоса на левом краю области панелей. Видна всегда, в том числе когда сайдбар убран:
@@ -552,6 +577,18 @@ body.folded aside { display:none }
 #fold:hover { opacity:1; background:#8882 }
 #fold::before { content:'\2039' }
 body.folded #fold::before { content:'\203A' }
+/* Терминал — ящик у нижнего края, полоска над ним устроена как `#fold` слева: клик
+   открывает и закрывает, а если её потянуть, ящик растёт вверх или вниз. Высота лежит
+   в `--th` на самом ящике, поэтому её двигает один стиль, без перерисовки. */
+#termbar { flex:none; width:100%; height:14px; padding:0; border:0;
+  border-top:1px solid #8884; border-radius:0; opacity:.45; font-size:11px;
+  cursor:ns-resize; touch-action:none }
+#termbar:hover { opacity:1; background:#8882 }
+#termbar::before { content:'\2303' }
+body.term #termbar::before { content:'\2304' }
+#term { flex:none; height:var(--th,40vh); min-height:0 }
+body:not(.term) #term { display:none }
+#term iframe { display:block; width:100%; height:100%; border:0 }
 #peers { display:flex; gap:2px; padding:8px 8px 0 }
 #peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
   text-decoration:none; color:inherit; font-size:13px }
@@ -695,6 +732,10 @@ form { display:flex; flex-direction:column; gap:4px; margin:8px 20px 8px 8px; pa
   border:1px solid #8886; border-radius:12px;
   background:oklch(0.62 0.16 var(--hue,250) / .05) }
 form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Композер сворачивается кнопкой в заголовке: в четырёх панелях он отнимает у лога
+   полторы сотни пикселей на каждую, но прятать его самому по фокусу оказалось хуже —
+   поле исчезало из-под руки. Решает человек, состояние живёт в панели. */
+section.noinput form { display:none }
 textarea { resize:none; min-height:40px; max-height:240px; padding:4px 4px 0;
   font:inherit; background:none; color:inherit; border:0; outline:none }
 .bar { display:flex; gap:4px; align-items:center }
@@ -738,6 +779,7 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   .h { display:none }
 }
 </style></head><body>
+<div id=top>
 <aside>
   <nav id=peers></nav>
   <select id=proj></select>
@@ -750,6 +792,10 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
 </aside>
 <button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
+</div>
+<button id=termbar title="терминал: клик открывает и закрывает, потянуть — высота"
+  aria-label="терминал"></button>
+<div id=term></div>
 <div id=dead hidden>бот не отвечает или кончилась сессия входа
   <button id=reload>обновить страницу</button></div>
 <script>
@@ -1185,6 +1231,7 @@ function drawPane(p) {
       <span class=who></span>
       <span class=timer></span>
       <span class=hits></span>
+      <button class=foldbar title="скрыть поле ввода">▾</button>
       <button class=close title="закрыть панель">×</button>
       <i class=ctx></i>
     </header>
@@ -1205,7 +1252,19 @@ function drawPane(p) {
   $('panes').append(el);
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
-  el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane }).catch(() => {});
+  const fold = el.querySelector('header .foldbar');
+  const drawFold = () => {
+    el.classList.toggle('noinput', !!p.fold);
+    fold.textContent = p.fold ? '▴' : '▾';
+    fold.title = p.fold ? 'показать поле ввода' : 'скрыть поле ввода';
+  };
+  // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
+  // остаётся свёрнутой и после F5, как остаётся её место в сетке.
+  fold.onclick = () => { p.fold = !p.fold; save(); drawFold(); };
+  drawFold();
+  el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane })
+    .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
+    .catch(() => {});
   const form = el.querySelector('form');
   const ta = el.querySelector('textarea');
   // Выбор файлов — тот же путь, что у перетаскивания. `value = ''` нужен, чтобы второй
@@ -1337,11 +1396,14 @@ async function send(p, ta) {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
-  echoes.set(p.pane, prompt);
+  echoes.set(p.pane, [...(echoes.get(p.pane) || []), prompt]);
   log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   try {
     const r = await post('api/prompt', { pane: p.pane, project: p.project,
       session: p.session || null, prompt, model: p.model || null });
+    // Панель занята: промпт принят и ждёт. Сессию, если она ещё не заведена, панель
+    // подберёт в tick() из /api/status — к ответу на отправку её просто нет.
+    if (r.queued) { log(p, `<div class="msg note">в очереди: впереди ${r.queued}</div>`); return; }
     if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
     if (!p.session) {
       // Новая сессия: id придумал claude, панель дочитывает уже созданный транскрипт.
@@ -1481,17 +1543,15 @@ async function poll(p) {
   if (!box) return;
   const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
   // Свой же промпт, уже напечатанный локально, из транскрипта не берём — иначе он
-  // стоит в панели дважды. Снимаем ровно одно совпадение: тот же текст мог быть
-  // отправлен и раньше, в истории он законный.
-  const echo = echoes.get(p.pane);
-  let taken = false;
-  const shown = echo
-    ? data.items.filter(it => {
-        if (!taken && it.role === 'user' && it.text === echo) { taken = true; return false; }
-        return true;
-      })
-    : data.items;
-  if (taken) echoes.delete(p.pane);
+  // стоит в панели дважды. Снимаем по одному совпадению на отправку: тот же текст мог
+  // быть отправлен и раньше, в истории он законный. Список, а не одна строка — в
+  // очереди панели ждут несколько промптов, и каждый вернётся из транскрипта своим.
+  const queue = echoes.get(p.pane) || [];
+  const shown = data.items.filter(it => {
+    if (it.role === 'user' && queue.length && it.text === queue[0]) { queue.shift(); return false; }
+    return true;
+  });
+  if (!queue.length) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
   wireCopy(box);
   // Дописанное при активном поиске тоже надо подсветить. Встроенный Ctrl+F на каждой
@@ -1552,12 +1612,26 @@ async function tick() {
     const busy = !!mine;
     if (busy) running++;
 
+    // Промпт вставал в очередь без сессии, claude придумал её уже в этом прогоне.
+    // Ответ на отправку её не содержал, зато содержит статус — отсюда и берём.
+    if (!p.session && mine && mine.scope === scope && mine.session) {
+      p.session = mine.session;
+      p.next = 0;
+      save();
+      setWho(p);
+      loadSessions().catch(() => {});
+    }
+
     el?.classList.toggle('busy', busy);
     el?.querySelector('.dot')?.classList.toggle('busy', busy);
     const timer = el?.querySelector('.timer');
     if (timer) {
       const foreign = busy && mine.scope !== scope;
-      timer.textContent = busy ? (foreign ? '↗ ' : '') + fmt(mine.secs) : '';
+      // «+2» рядом с таймером: сколько промптов ждут своей очереди в этой панели.
+      // Строка в логе о них тоже есть, но она не переживает перезагрузку страницы.
+      const queued = (st.queued || {})[scope] || 0;
+      timer.textContent = (busy ? (foreign ? '↗ ' : '') + fmt(mine.secs) : '')
+                        + (queued ? ` +${queued}` : '');
       timer.title = foreign ? 'запуск начат не из этой панели' : '';
     }
 
@@ -1625,6 +1699,42 @@ $('fold').onclick = () => {
   const on = !document.body.classList.contains('folded');
   document.body.classList.toggle('folded', on);
   localStorage.setItem('folded', on ? '1' : '0');
+};
+
+// Терминал. iframe создаётся при первом открытии и дальше только прячется: скрытый
+// держит и websocket, и экран tmux, а новый начинал бы с пустого места. Сессия tmux
+// одна и с постоянным именем, поэтому F5 возвращает тот же экран.
+const term = $('term');
+const showTerm = (on) => {
+  document.body.classList.toggle('term', on);
+  localStorage.setItem('term', on ? '1' : '0');
+  if (on && !term.firstChild) term.innerHTML = '<iframe src="term/" title="терминал"></iframe>';
+};
+term.style.setProperty('--th', (localStorage.getItem('termh') || Math.round(innerHeight * 0.4)) + 'px');
+if (localStorage.getItem('term') === '1') showTerm(true);
+
+// Полоска и переключает, и тянет — разводим по расстоянию: сдвиг до четырёх пикселей
+// считаем кликом, дальше начинается высота. Порог нужен пальцу, мышь и так точна.
+$('termbar').onpointerdown = (e) => {
+  if (e.button) return;
+  e.preventDefault();
+  const bar = $('termbar');
+  bar.setPointerCapture(e.pointerId);
+  const y0 = e.clientY, h0 = term.getBoundingClientRect().height || innerHeight * 0.4;
+  let dragged = false;
+  bar.onpointermove = (ev) => {
+    if (!dragged && Math.abs(ev.clientY - y0) < 4) return;
+    dragged = true;
+    if (!document.body.classList.contains('term')) showTerm(true);
+    // Пределы: ниже 60px от терминала нет толку, выше окна минус 80px исчезают панели.
+    const h = Math.min(innerHeight - 80, Math.max(60, h0 + (y0 - ev.clientY)));
+    term.style.setProperty('--th', h + 'px');
+    localStorage.setItem('termh', Math.round(h));
+  };
+  bar.onpointerup = bar.onpointercancel = () => {
+    bar.onpointermove = null;
+    if (!dragged) showTerm(!document.body.classList.contains('term'));
+  };
 };
 
 $('reload').onclick = () => location.reload();

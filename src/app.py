@@ -127,13 +127,14 @@ async def cmd_status(msg: Message) -> None:
     here = cwd(sc)
     auth = await runner.auth_status()
     sid = store.session_of(sc, here)
+    queued = runner.waiting().get(sc, 0)
     await msg.answer(
         f"проект: {Path(here).name} ({here})\n"
         f"модель: {store.get('model', 'default')}\n"
         f"сессия: {sid or 'новая'}\n"
         f"контекст: {_context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
-        f"занят: {runner.busy(sc)}\n"
+        f"занят: {runner.busy(sc)}{f', в очереди {queued}' if queued else ''}\n"
         f"\n/help — команды"
     )
 
@@ -235,9 +236,11 @@ async def cmd_cancel(msg: Message) -> None:
         login = None
         await msg.answer("логин отменён")
         return
-    await msg.answer(
-        "остановлено" if await runner.cancel(scope(msg)) else "нечего останавливать"
-    )
+    stopped, dropped = await runner.cancel(scope(msg))
+    said = ["остановлено"] if stopped else []
+    if dropped:
+        said.append(f"очередь очищена: {dropped}")
+    await msg.answer(", ".join(said) or "нечего останавливать")
 
 
 @dp.message(Command("purge"))
@@ -454,7 +457,11 @@ async def on_file(msg: Message) -> None:
 
 
 async def handle(msg: Message, prompt: str) -> None:
-    """Промпт в текущий проект: живое сообщение с прогрессом, потом итог."""
+    """Промпт в текущий проект: живое сообщение с прогрессом, потом итог.
+
+    Занятый скоуп не отказывает, а копит: промпт ждёт очереди и уходит в claude сам,
+    как только предыдущий прогон закончился.
+    """
     # `!refine текст` → слеш-команда Claude `/refine текст`. Только первый символ,
     # однократно: `почини баг!` и `git commit -m "fix!"` уходят в промпт как есть.
     # Telegram отдаёт `/` своему автокомплиту, поэтому `/` — боту, `!` — Claude.
@@ -464,10 +471,30 @@ async def handle(msg: Message, prompt: str) -> None:
         return
 
     sc = scope(msg)
-    if runner.busy(sc):
-        await msg.answer("занят. /cancel — остановить текущий")
-        return
+    live = None
+    if ahead := runner.ahead(sc):
+        live = await send(msg, f"⏳ в очереди, впереди {ahead}")
+        # Ключ «⏳» ставим уже сейчас: иначе рестарт оставит это сообщение висеть
+        # навсегда, mark_orphan знает только записанное.
+        # ponytail: ключ один на скоуп, из нескольких ждущих пометку получит последний.
+        store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
+    try:
+        async with runner.slot(sc):
+            await _run(msg, prompt, sc, live)
+    except runner.Dropped:
+        store.put(f"{sc}:live", None)
+        gone = "⏹ отброшено: очередь очистил /cancel"
+        # live есть почти всегда: без очереди промпт не ждал бы. Почти — потому что
+        # слот мог занять соседнее сообщение из этого же топика, пока мы его считали.
+        if live:
+            await edit(live, gone)
+        else:
+            await msg.answer(gone)
 
+
+async def _run(msg: Message, prompt: str, sc: str, live: Message | None) -> None:
+    # Проект и сессию читаем после очереди, а не при постановке: пока промпт ждал,
+    # мог смениться проект через /cd, а сессию мог завести предыдущий прогон.
     project = cwd(sc)
 
     with AUDIT.open("a") as f:
@@ -475,7 +502,10 @@ async def handle(msg: Message, prompt: str) -> None:
                 f"{prompt.replace(chr(10), ' ')}\n")
 
     run = render.Run(prompt, Path(project).name)
-    live = await send(msg, run.text())
+    if live:
+        await edit(live, run.text())
+    else:
+        live = await send(msg, run.text())
     last_text, last_edit = run.text(), 0.0
     # Для дорисовки после рестарта. Ключ со скоупом — у каждого топика своё «⏳».
     store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")

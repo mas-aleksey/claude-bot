@@ -16,7 +16,7 @@ user ids — everyone else is ignored.
 | `/clone <git-url> [name]` | clone a repository into the projects directory |
 | `/sessions`, `/new` | switch to a recent session, or start a fresh one |
 | `/model [alias\|id]` | show or change the model |
-| `/cancel` | kill the running invocation |
+| `/cancel` | kill the running invocation and drop whatever is queued behind it |
 | `/mcp`, `/plugin` | MCP servers and plugins, passed through to the CLI |
 | `/login`, `/logout` | authenticate against a Claude subscription |
 
@@ -25,6 +25,10 @@ is most of what makes a phone-sized answer readable.
 
 Plain text is a prompt. Text prefixed with `!` becomes a Claude slash command
 (`!refine x` → `/refine x`), because Telegram keeps `/` for its own autocomplete.
+
+A prompt sent while that chat, topic or browser pane is busy is queued, not refused:
+it waits its turn and starts on its own when the previous run finishes. The queue
+lives in the bot process, so a restart drops it.
 
 Photos and documents are saved under `/data/inbox` and their path is appended to the
 prompt, so a caption and its file arrive as one message — the CLI reads the file itself.
