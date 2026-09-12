@@ -90,3 +90,21 @@ const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [False, False, True, False, "⚠ claude"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_sidebar_start_state(tmp_path):
+    """Первый заход решается шириной экрана, дальше — сохранённым выбором. Ловушка тут
+    в строке '0': она истинна, и проверка на истинность прятала бы открытый сайдбар."""
+    body = slice_out("script").split("// --- fold:begin ---")[1].split("// --- fold:end ---")[0]
+    js = tmp_path / "fold.js"
+    js.write_text(body + """
+console.log(JSON.stringify([
+  foldedAtStart(null, true),    // первый заход с телефона — прячем
+  foldedAtStart(null, false),   // первый заход с большого экрана — показываем
+  foldedAtStart('0', true),     // человек открыл его сам, узкий экран не спорит
+  foldedAtStart('1', false),
+]));""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [True, False, False, True]

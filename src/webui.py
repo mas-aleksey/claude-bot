@@ -543,6 +543,15 @@ button, .clip { font:inherit; color:inherit; background:none; cursor:pointer;
 button:hover, .clip:hover { border-color:#8ad }
 body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; height:100vh }
 aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
+body.folded aside { display:none }
+/* Полоса на левом краю области панелей. Видна всегда, в том числе когда сайдбар убран:
+   иначе его нечем было бы вернуть. Стрелка — через `content`, чтобы состояние рисовал
+   CSS, а не переписывал скрипт. */
+#fold { flex:none; width:14px; padding:0; border:0; border-right:1px solid #8884;
+  border-radius:0; opacity:.45; font-size:11px }
+#fold:hover { opacity:1; background:#8882 }
+#fold::before { content:'\2039' }
+body.folded #fold::before { content:'\203A' }
 #peers { display:flex; gap:2px; padding:8px 8px 0 }
 #peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
   text-decoration:none; color:inherit; font-size:13px }
@@ -721,6 +730,7 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
     очистить старше 2 дней</button>
   <div id=list></div>
 </aside>
+<button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
 <div id=dead hidden>бот не отвечает или кончилась сессия входа
   <button id=reload>обновить страницу</button></div>
@@ -1483,6 +1493,23 @@ $('purge').onclick = async () => {
   const killed = await post('api/purge', { days });
   alert(`удалено ${killed.sessions} сессий, ${(killed.bytes / 1048576).toFixed(1)} МБ`);
   loadSessions();
+};
+
+// Сайдбар: состояние переживает перезагрузку, но записывается только по клику. Первый
+// заход решается шириной экрана — на телефоне 280 пикселей из 390 забирал список сессий,
+// и на панель оставалось меньше трети. Записывай мы и этот выбор, один заход с телефона
+// оставил бы сайдбар скрытым и на большом экране.
+// --- fold:begin ---
+// Сравнение со строкой, а не проверка на истинность: сохранённый '0' истинен сам по
+// себе, и «показать» превратилось бы в «спрятать» на первой же перезагрузке.
+const foldedAtStart = (saved, narrow) => saved === null ? narrow : saved === '1';
+// --- fold:end ---
+document.body.classList.toggle('folded',
+  foldedAtStart(localStorage.getItem('folded'), matchMedia('(max-width: 700px)').matches));
+$('fold').onclick = () => {
+  const on = !document.body.classList.contains('folded');
+  document.body.classList.toggle('folded', on);
+  localStorage.setItem('folded', on ? '1' : '0');
 };
 
 $('reload').onclick = () => location.reload();
