@@ -452,8 +452,14 @@ def build() -> web.Application:
     async def api_status(_: web.Request) -> web.Response:
         """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
         что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
-        его гоняют из топика под другим скоупом."""
-        return web.json_response({"runs": runner.active(), "errors": _errors})
+        его гоняют из топика под другим скоупом.
+
+        Общая модель — оттуда же, откуда её берёт `_drive` при пустом выборе в панели.
+        Без неё в селекте стояло безымянное «модель», и что именно поедет в claude,
+        из панели было не видно.
+        """
+        return web.json_response({"runs": runner.active(), "errors": _errors,
+                                  "model": store.get("model") or "default"})
 
     async def api_prompt(req: web.Request) -> web.Response:
         data = await req.json()
@@ -1405,6 +1411,11 @@ async function tick() {
   if (dead) return;
   let st = { runs: [], errors: {} };
   try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
+  // Пустой выбор в панели означает «общая модель бота». Подписываем его именем этой
+  // модели: иначе в селекте стоит слово «модель» и что поедет в claude — загадка.
+  if (st.model)
+    for (const o of document.querySelectorAll('.model option[value=""]'))
+      o.textContent = st.model;
   let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
