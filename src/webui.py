@@ -563,17 +563,24 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
   overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
 #list { overflow:auto; flex:1; margin-top:8px }
 #list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
-  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer;
-  border-left:3px solid transparent }
+  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
 #list button:hover { background:#8882 }
-/* Открытая сессия носит цвет своей панели полоской на левом краю строки. Прозрачная
-   полоска стоит на всех строках, иначе открытая дёргалась бы вправо на три пикселя.
-   Красить фон нельзя: правило той же специфичности перебило бы `:hover` выше, и строка
-   перестала бы отзываться на курсор. Мигает та же полоска, угасая и возвращаясь, —
-   оттенок при этом не меняется, потому что в списке важнее, КАКАЯ сессия занята. */
-#list button.open { border-left-color:oklch(0.62 0.20 var(--hue,250)) }
-#list button.busy { animation:edge 1.2s ease-in-out infinite }
-@keyframes edge { 50% { border-left-color:oklch(0.62 0.20 var(--hue,250) / .15) } }
+/* Открытая сессия залита цветом своей панели ровно как её заголовок, теми же числами,
+   и мигает теми же кадрами `blink`. Строка слева и заголовок наверху — одно и то же
+   окно, разный цвет заливки развёл бы их по ощущению.
+   Заливка перебивает `:hover` выше, специфичность та же, а правило ниже. Поэтому у
+   открытой строки свой ховер: тот же оттенок, гуще. Иначе она перестала бы отзываться
+   на курсор, а серая подсветка поверх цвета панели всё равно врала бы про него. */
+#list button.open { background:oklch(0.62 0.18 var(--hue,250) / .30) }
+#list button.open:hover { background:oklch(0.62 0.18 var(--hue,250) / .45) }
+#list button.busy { animation:blink 1.2s ease-in-out infinite }
+/* Закрытая сессия мигает от прозрачного к цвету, открытая — внутри своей заливки: один
+   и тот же `blink`, разная нижняя точка. Поэтому «идёт работа» и «вот это на экране»
+   читаются порознь, без второго цвета и второй анимации.
+   Точка — ответ пришёл в закрытое окно. Уплывает вправо следом за размером сессии и
+   гаснет, как только сессию открыли. */
+#list button.done::after { content:'\25CF'; float:right; margin-left:6px; font-size:10px;
+  color:oklch(0.62 0.20 var(--hue,250)) }
 #list .ago { opacity:.6; font-size:12px }
 #list .size { float:right; opacity:.5; font-size:11px }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
@@ -631,7 +638,8 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
 /* Без движения подсказка обязана остаться: раньше правило просто убирало анимацию, и
    занятость становилась совсем невидимой. Теперь заголовок просто горит ярко. */
 @media (prefers-reduced-motion: reduce) {
-  #list button.busy { animation:none; border-left-width:6px }
+  #list button.busy { animation:none;
+    background:oklch(0.68 0.21 var(--hue,250) / .70) }
   header .dot.busy { animation:none }
   section.busy header { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
@@ -785,7 +793,7 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random(
 // поэтому панели отличаются только тоном и выглядят одной семьёй.
 const HUES = [250, 25, 145, 305, 195, 60];
 const freeHue = () => {
-  const used = new Set(panes.map(x => x.hue));
+  const used = new Set([...panes.map(x => x.hue), ...Object.values(hues)]);
   return HUES.find(h => !used.has(h)) ?? HUES[panes.length % HUES.length];
 };
 
@@ -829,22 +837,79 @@ function fillList(project, rows, empty) {
                                 title: b.dataset.title });
   }
   markList();
+  syncTitles();
 }
 
 // --- mark:begin ---
-// Открытые сессии видно в списке слева: строка носит цвет своей панели и мигает, пока та
-// занята. Метки кладём отдельным проходом, а не в разметку строки в `fillList`: список
+// Строка сессии в списке слева несёт три разных вещи, и они складываются:
+//   заливка   — эта сессия открыта в панели, вот она на экране;
+//   мигание   — над сессией идёт запуск, чей угодно: панели, закрытой панели, Telegram;
+//   точка     — запуск кончился, а окна не было, то есть ответ никто не видел.
+// Метки кладём отдельным проходом, а не в разметку строки в `fillList`: список
 // перерисовывается целиком каждый пятый тик, и вписанное в разметку живёт до него.
 const busySessions = new Set();
+// Цвет переживает панель: закрыли окно, а строка обязана мигать тем же оттенком. Карта
+// маленькая по построению — цвет держим ровно пока он нужен, чистка в `trackRuns`.
+const hues = JSON.parse(localStorage.getItem('hues') || '{}');
+// Непросмотренные ответы переживают F5: метку снимает только открытие сессии.
+const done = new Set(JSON.parse(localStorage.getItem('done') || '[]'));
+const saveMarks = () => {
+  localStorage.setItem('hues', JSON.stringify(hues));
+  localStorage.setItem('done', JSON.stringify([...done]));
+};
+
+// Живые запуски сервер отдаёт целиком, с id сессии у каждого. Панели тут не при чём:
+// сопоставление с ними ничего не даёт, а мигать должна любая занятая сессия.
+function trackRuns(runs) {
+  const live = new Set(runs.map(r => r.session).filter(Boolean));
+  for (const id of live) {
+    done.delete(id);                       // снова работает — прошлый ответ уже неважен
+    if (!(id in hues)) hues[id] = freeHue();
+  }
+  // Занятость пропала, а окна нет: ответ пришёл в пустоту, о нём и сообщает точка.
+  for (const id of busySessions)
+    if (!live.has(id) && !panes.some(x => x.session === id)) done.add(id);
+  busySessions.clear();
+  for (const id of live) busySessions.add(id);
+  // Цвет забываем, как только он перестал быть нужен. Иначе карта растёт, а `freeHue`
+  // видит все шесть оттенков занятыми и начинает выдавать совпадающие.
+  for (const id of Object.keys(hues))
+    if (!live.has(id) && !done.has(id) && !panes.some(x => x.session === id)) delete hues[id];
+  saveMarks();
+}
 
 function markList() {
   for (const b of document.querySelectorAll('#list button')) {
-    const p = panes.find(x => x.session === b.dataset.id);
+    const id = b.dataset.id;
+    const p = panes.find(x => x.session === id);
+    const hue = p ? (p.hue ?? HUES[0]) : hues[id];
     b.classList.toggle('open', !!p);
-    b.classList.toggle('busy', !!p && busySessions.has(p.session));
-    if (p) b.style.setProperty('--hue', p.hue ?? HUES[0]);
+    b.classList.toggle('busy', busySessions.has(id));
+    b.classList.toggle('done', done.has(id));
+    b.title = done.has(id) ? 'ответ пришёл, пока окно было закрыто' : '';
+    if (hue !== undefined) b.style.setProperty('--hue', hue);
     else b.style.removeProperty('--hue');
   }
+}
+
+// Заголовок панели был снимком на момент её открытия, а имя сессии живое: сервер берёт
+// его из последнего промпта в транскрипте. Отсюда расхождение — строка слева менялась
+// после каждого промпта, в панели висел текст, с которым её открыли.
+//
+// Догоняем на том же обновлении списка: другого источника свежего имени у панели нет,
+// а список и так перечитывается с сервера каждый пятый тик. Отдельным проходом, а не
+// внутри `markList`: тот кладёт метки на строки, а это обратное направление — из списка
+// в панель.
+function syncTitles() {
+  let changed = false;
+  for (const b of document.querySelectorAll('#list button')) {
+    const p = panes.find(x => x.session === b.dataset.id);
+    if (!p || !b.dataset.title || p.title === b.dataset.title) continue;
+    p.title = b.dataset.title;
+    setWho(p);
+    changed = true;
+  }
+  if (changed) save();  // один раз на проход: `panes` уезжает в localStorage целиком
 }
 // --- mark:end ---
 
@@ -1075,6 +1140,7 @@ function wireHandles(p, el) {
 
 function addPane(p) {
   if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
+  if (p.session) { done.delete(p.session); saveMarks(); }
   p.w = p.w || W; p.h = p.h || H;
   p.hue = p.hue ?? freeHue();
   panes.push(p);
@@ -1086,6 +1152,8 @@ function addPane(p) {
 }
 
 function closePane(p) {
+  // Цвет отдаём строке: панели больше нет, а мигать закрытая сессия обязана тем же.
+  if (p.session) { hues[p.session] = p.hue ?? HUES[0]; saveMarks(); }
   panes = panes.filter(x => x.pane !== p.pane); save();
   document.getElementById('pane-' + p.pane)?.remove();
   markList();
@@ -1456,6 +1524,7 @@ async function tick() {
   if (st.model)
     for (const o of document.querySelectorAll('.model option[value=""]'))
       o.textContent = st.model;
+  trackRuns(st.runs || []);
   let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
@@ -1467,7 +1536,6 @@ async function tick() {
       (r) => r.scope === scope || (p.session && r.session === p.session));
     const busy = !!mine;
     if (busy) running++;
-    if (p.session) busySessions[busy ? 'add' : 'delete'](p.session);
 
     el?.classList.toggle('busy', busy);
     el?.querySelector('.dot')?.classList.toggle('busy', busy);

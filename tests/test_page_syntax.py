@@ -111,35 +111,88 @@ console.log(JSON.stringify([
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_open_sessions_are_marked_in_the_list_and_unmarked_on_close(tmp_path):
-    """Список слева перерисовывается целиком каждый пятый тик, поэтому метки накладывает
-    отдельный проход. Он же обязан их снимать: закрытая панель, оставившая свой цвет в
-    строке, врёт про то, что сессия открыта."""
+def test_list_marks_follow_runs_not_panes(tmp_path):
+    """Три состояния строки складываются из разных источников: заливка от панели,
+    мигание от живого запуска, точка от запуска, кончившегося без окна. Проверяем весь
+    путь: запуск при закрытом окне, ответ в пустоту, открытие, забывание цвета."""
     body = slice_out("script").split("// --- mark:begin ---")[1].split("// --- mark:end ---")[0]
     js = tmp_path / "mark.js"
     js.write_text("""
 function btn(id) {
   const cls = new Set(), vars = {};
-  return { dataset: { id }, cls, vars,
+  return { dataset: { id }, cls, vars, title: '',
     classList: { toggle: (k, on) => { on ? cls.add(k) : cls.delete(k); } },
     style: { setProperty: (k, v) => { vars[k] = v; },
              removeProperty: (k) => { delete vars[k]; } } };
 }
-const rows = [btn('busy-one'), btn('idle-one'), btn('not-open')];
+const rows = [btn('a'), btn('b')];
 const document = { querySelectorAll: () => rows };
+const store = {};
+const localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
 const HUES = [250];
-let panes = [{ session: 'busy-one', hue: 25 }, { session: 'idle-one', hue: 145 }];
+const freeHue = () => 25;
+let panes = [];
+// syncTitles живёт в том же блоке и трогает панель — заглушки, чтобы блок исполнился.
+const setWho = () => {};
+const save = () => {};
 """ + body + """
-busySessions.add('busy-one');
-markList();
-const open = rows.map(r => [[...r.cls].sort(), r.vars['--hue'] ?? null]);
-panes = [];                       // обе панели закрыли
-markList();
-const closed = rows.map(r => [...r.cls].concat(Object.keys(r.vars)));
-console.log(JSON.stringify([open, closed]));
+const state = () => rows.map(r => [[...r.cls].sort(), r.vars['--hue'] ?? null]);
+const seen = [];
+
+trackRuns([{ session: 'a' }]);            // запуск при закрытом окне
+markList(); seen.push(state());
+
+trackRuns([]);                            // кончился, окна так и не было
+markList(); seen.push(state());
+seen.push(JSON.parse(store.done));        // метка легла в localStorage
+
+panes = [{ session: 'a', hue: 25 }];      // открыли сессию
+done.delete('a');
+markList(); seen.push(state());
+
+panes = [];                               // закрыли, ничего не идёт
+trackRuns([]);
+markList(); seen.push(state());
+console.log(JSON.stringify(seen));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    open_, closed = json.loads(done.stdout)
-    assert open_ == [[["busy", "open"], 25], [["open"], 145], [[], None]]
-    assert closed == [[], [], []]
+    running, finished, stored, opened, forgotten = json.loads(done.stdout)
+    assert running == [[["busy"], 25], [[], None]]      # мигает, но не залита
+    assert finished == [[["done"], 25], [[], None]]     # точка, цвет тот же
+    assert stored == ["a"]                              # переживёт F5
+    assert opened == [[["open"], 25], [[], None]]       # заливка, точка снята
+    assert forgotten == [[[], None], [[], None]]        # цвет забыт, карта не растёт
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_pane_title_follows_the_list(tmp_path):
+    """Имя сессии на сервере — последний промпт, поэтому оно меняется по ходу разговора.
+    Заголовок панели рисовался один раз при открытии и отставал навсегда."""
+    body = slice_out("script").split("// --- mark:begin ---")[1].split("// --- mark:end ---")[0]
+    js = tmp_path / "titles.js"
+    js.write_text("""
+const row = (id, title) => ({ dataset: { id, title }, classList: { toggle: () => {} },
+  style: { setProperty: () => {}, removeProperty: () => {} }, title: '' });
+const rows = [row('a', 'новое имя'), row('b', ''), row('c', 'чужая сессия')];
+const document = { querySelectorAll: () => rows };
+const store = {};
+const localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
+const HUES = [250];
+const drawn = [];
+const setWho = (p) => drawn.push(p.session);
+let saves = 0;
+const save = () => { saves++; };
+let panes = [{ session: 'a', title: 'старое имя' }, { session: 'b', title: 'было' }];
+""" + body + """
+syncTitles();
+const first = [panes.map(p => p.title), drawn.slice(), saves];
+syncTitles();                       // второй проход — менять нечего
+console.log(JSON.stringify([first, drawn.length, saves]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    (titles, drawn, saves), drawn_after, saves_after = json.loads(done.stdout)
+    assert titles == ["новое имя", "было"]   # пустое имя из списка не затирает своё
+    assert drawn == ["a"] and saves == 1     # перерисована одна панель, запись одна
+    assert drawn_after == 1 and saves_after == 1  # повтор не трогает ни панель, ни диск
