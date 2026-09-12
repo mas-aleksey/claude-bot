@@ -60,3 +60,28 @@ def test_title_prefers_ai_title_over_prompt(transcripts, tmp_path):
     d = transcripts / sessions._slug(str(cwd))
     write(d, "s", {"type": "last-prompt", "lastPrompt": "промпт"})
     assert sessions.title(d / "s.jsonl") == "промпт"
+
+
+def msg(role, *blocks):
+    return {"type": role, "message": {"content": list(blocks)}}
+
+
+def test_last_message_takes_last_assistant_text(transcripts, tmp_path):
+    # Последний ответ, а не последнее событие: сессия часто обрывается на инструменте,
+    # и тогда показываем предыдущий текст, а не пустоту.
+    d = transcripts / "p"
+    write(
+        d, "s",
+        msg("assistant", {"type": "text", "text": "первый"}),
+        msg("user", {"type": "text", "text": "вопрос"}),
+        msg("assistant", {"type": "thinking", "thinking": "мысли"},
+            {"type": "text", "text": "второй"}),
+        msg("assistant", {"type": "tool_use", "name": "Bash", "input": {}}),
+    )
+    assert sessions.last_message(d / "s.jsonl") == "второй"
+
+
+def test_last_message_empty_session(transcripts, tmp_path):
+    d = transcripts / "p"
+    write(d, "s", {"type": "user", "message": {"content": "привет"}})
+    assert sessions.last_message(d / "s.jsonl") == ""

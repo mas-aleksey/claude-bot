@@ -2,17 +2,22 @@
 
 import os
 import sqlite3
+import threading
 import time
 
 DB_PATH = os.environ.get("BOT_DB", "/data/bot.db")
 
-_conn: sqlite3.Connection | None = None
+# Коннект на поток, а не один на процесс: sqlite запрещает трогать соединение из чужого
+# потока, а часть работы уезжает в `asyncio.to_thread` (чтение транскриптов в webui).
+# Раньше это ловилось только в бою — `ProgrammingError` в ответе панели, 500 на
+# /api/messages и пустое окно.
+_local = threading.local()
 
 
 def conn() -> sqlite3.Connection:
-    global _conn
+    _conn = getattr(_local, "conn", None)
     if _conn is None:
-        _conn = sqlite3.connect(DB_PATH, isolation_level=None)
+        _conn = _local.conn = sqlite3.connect(DB_PATH, isolation_level=None)
         _conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS sessions (

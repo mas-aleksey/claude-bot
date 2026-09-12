@@ -44,6 +44,9 @@ PANE_RE = re.compile(r"[0-9a-zA-Z-]{4,64}\Z")
 # Строк за один ответ. Транскрипт бывает на десятки тысяч строк, а страница должна
 # отрисоваться сразу — остальное доедет следующими опросами по тому же оффсету.
 CHUNK = 3000
+# Окно контекста, пока claude не назвал своё: столько у haiku и sonnet, у opus больше.
+# Значение временное — после первого же прогона модели в `store` ложится настоящее.
+DEFAULT_WINDOW = 200_000
 # Столько ждём `session_id` от claude, прежде чем ответить панели «не завелось».
 # Первое событие приходит за пару секунд, но на холодном старте бывает дольше.
 INIT_TIMEOUT = 90
@@ -158,6 +161,44 @@ def items(path: Path, start: int) -> tuple[int, list[dict]]:
             if len(out) >= CHUNK:
                 break
     return seen, out
+
+
+def ctx_of(path: Path) -> dict | None:
+    """Занятый контекст сессии: `{used, window}` в токенах, либо None.
+
+    Занято — сумма по последнему событию `assistant`: свежий ввод, записанный кэш,
+    прочитанный кэш и ответ. Суммировать по всей сессии нельзя — контекст не растёт
+    линейно, после `/compact` он падает, и последнее событие единственное честное.
+
+    Размер окна в транскрипт не пишется: его отдаёт `result` в конце прогона, откуда
+    `runner` кладёт его в `store` по имени модели. Пока модель ни разу не отвечала в
+    этом контейнере, берём 200k и помечаем оценкой.
+
+    ponytail: свой проход по файлу, а рядом такой же делает `items()`. Файл в
+    страничном кэше, на десятках мегабайт станет заметно — тогда считать одним
+    проходом и отдавать из `items()`.
+    """
+    used = model = None
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"usage"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            msg = ev.get("message") or {}
+            if ev.get("type") != "assistant" or not (u := msg.get("usage")):
+                continue
+            used = sum(int(u.get(k) or 0) for k in (
+                "input_tokens", "cache_creation_input_tokens",
+                "cache_read_input_tokens", "output_tokens"))
+            model = msg.get("model") or model
+    if not used:
+        return None
+    window = store.get(f"ctxwin:{model}")
+    return {"used": used, "window": int(window) if window else DEFAULT_WINDOW,
+            "guess": not window}
 
 
 def _prompt(text: str) -> dict:
@@ -359,7 +400,10 @@ def build() -> web.Application:
         if not path.is_file():
             return web.json_response({"next": start, "items": []})
         seen, found = await asyncio.to_thread(items, path, start)
-        return web.json_response({"next": seen, "items": found})
+        # Занятость контекста едет с каждым ответом: панель хранит последнее значение,
+        # и опрос без новых событий её не гасит.
+        ctx = await asyncio.to_thread(ctx_of, path)
+        return web.json_response({"next": seen, "items": found, "ctx": ctx})
 
     async def api_search(req: web.Request) -> web.Response:
         """Поиск по сессиям проекта. Диск в потоке: скан всех транскриптов проекта —
@@ -543,7 +587,7 @@ section.act { z-index:5; box-shadow:0 6px 24px #0005;
 .h { position:absolute; z-index:2 }
 .h-se { right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
   background:linear-gradient(135deg, transparent 45%, #8887 45%) }
-header { display:flex; gap:6px; align-items:center; padding:6px 10px;
+header { position:relative; display:flex; gap:6px; align-items:center; padding:6px 10px;
   border-bottom:1px solid oklch(0.62 0.16 var(--hue,250) / .4);
   background:oklch(0.62 0.18 var(--hue,250) / .30) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
@@ -566,8 +610,17 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
   header .dot.busy { animation:none }
   section.busy header { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
+  /* Запись остаётся красной — исчезает только мигание. */
+  .bar .mic.on { animation:none }
 }
 header .hits { font-size:11px; opacity:.6; flex:none }
+/* Занятый контекст — полоска в нижней кромке заголовка: места не занимает, а через всю
+   сетку видно, какая панель подошла к пределу. Без чисел и подсказки: текст в узкой
+   панели вытеснил бы название сессии, а title на полоске в два пикселя недостижим —
+   имя сессии растянуто на всю ширину и перекрывает его своим, даже пустым. */
+header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
+  background:oklch(0.62 0.18 var(--hue,250)) }
+header .ctx.full { background:#e55 }
 header button { padding:1px 6px; line-height:1.2 }
 /* Оба цвета заданы явно: подсветка должна читаться и в тёмной теме, и в светлой. */
 ::highlight(find) { background:#fd0; color:#000 }
@@ -614,15 +667,21 @@ form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
 textarea { resize:none; min-height:40px; max-height:240px; padding:4px 4px 0;
   font:inherit; background:none; color:inherit; border:0; outline:none }
 .bar { display:flex; gap:4px; align-items:center }
-/* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
-.bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
+/* «Плюс», микрофон и модель — призраки: рамка тут уже есть, своя каждой кнопке
+   дробила бы ряд. */
+.bar .clip, .bar .mic, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
   border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
 .bar .model { appearance:none; width:auto }
 /* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
-.bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
+.bar .clip, .bar .mic { display:grid; place-items:center; width:26px; height:26px; padding:0;
   border-radius:50%; font-size:18px; line-height:1 }
-.bar .clip:hover, .bar .model:hover { background:#8882; opacity:1 }
+.bar .mic { font-size:15px }
+.bar .clip:hover, .bar .mic:hover, .bar .model:hover { background:#8882; opacity:1 }
 .bar .clip input { display:none }
+/* Идёт запись: красный кружок и пульс. Тот же кадр, что у занятой панели, — другого
+   значения у мигания на странице нет. */
+.bar .mic.on { opacity:1; background:#e5533a; color:#fff;
+  animation:pulse 1.1s ease-in-out infinite }
 /* Правый угол ряда: пока запуск идёт, вместо «отправить» стоит «стоп». Переключает
    класс `busy` на секции, его же ставит tick() — своего состояния в JS не нужно. */
 .bar .send, .bar .stop { margin-left:auto; width:28px; height:28px; padding:0; flex:none;
@@ -969,6 +1028,7 @@ function drawPane(p) {
       <span class=timer></span>
       <span class=hits></span>
       <button class=close title="закрыть панель">×</button>
+      <i class=ctx></i>
     </header>
     <div class=log></div>
     <form>
@@ -976,6 +1036,7 @@ function drawPane(p) {
         title="Enter — отправить, Shift+Enter — перенос строки"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
+        <button class=mic type=button title="диктовать">&#127908;</button>
         <select class=model title="модель этой панели">
           <option value="">модель</option>
           <option>opus</option><option>sonnet</option><option>haiku</option>
@@ -1001,6 +1062,9 @@ function drawPane(p) {
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); send(p, ta); }
   };
   ta.oninput = () => grow(ta);
+
+  const mic = el.querySelector('.mic');
+  if (SR) wireMic(p, ta, mic); else mic.remove();
 
   const model = el.querySelector('.model');
   model.value = p.model || '';
@@ -1070,6 +1134,46 @@ function wireCopy(box) {
   }
 }
 
+// Диктовка: распознаёт браузер, своего движка в образе не нужно. Готового текста ждём
+// от него же — сюда приезжает уже строка, а не звук, поэтому на сервере не меняется
+// ничего. В Firefox объекта нет, и кнопка там не рисуется вовсе.
+//
+// Распознанное только дописывается в поле: отправляет человек, как и набранное руками.
+// Автоотправка по паузе выглядит заманчиво, но ошибка распознавания уходила бы в
+// песочницу с обойдёнными правами раньше, чем её видно глазами.
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+function wireMic(p, ta, btn) {
+  let rec = null;
+  btn.onclick = () => {
+    if (rec) { rec.stop(); return; }  // второй клик — закончить
+    rec = new SR();
+    rec.lang = 'ru-RU';
+    rec.continuous = true;
+    rec.interimResults = true;  // текст виден по ходу речи, а не после паузы
+    // То, что было в поле до диктовки. `e.results` приезжает целиком заново на каждом
+    // событии, поэтому без базы набранное руками затиралось бы первым же словом.
+    const base = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
+    rec.onresult = (e) => {
+      let text = '';
+      for (const r of e.results) text += r[0].transcript;
+      ta.value = base + text;
+      grow(ta);
+    };
+    // Тишина и остановка кнопкой — не ошибки, о них сообщать нечего. Всё остальное
+    // (отказ в микрофоне, нет сети) молча выглядело бы как сломанная кнопка.
+    rec.onerror = (e) => {
+      if (e.error !== 'no-speech' && e.error !== 'aborted')
+        log(p, `<div class="msg err">микрофон: ${esc(e.error)}</div>`);
+    };
+    // Браузер завершает распознавание и сам, по длинной паузе. Состояние кнопки
+    // снимаем здесь, а не в обработчике клика, — иначе она осталась бы «в записи».
+    rec.onend = () => { rec = null; btn.classList.remove('on'); ta.focus(); };
+    rec.start();
+    btn.classList.add('on');
+  };
+}
+
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
 // поле ввода. Отдельной строкой, чтобы промпт остался читаемым.
 async function attach(p, ta, files) {
@@ -1092,6 +1196,16 @@ async function attach(p, ta, files) {
 // Вставка мимо poll(): свой промпт и красные строки. Прокрутка тут обязательна —
 // без неё длинный промпт уезжал за нижний край, и poll() дальше считал панель
 // «отлистанной вверх» и переставал доводить до низа уже и ответ.
+// Полоска контекста. Значение живёт в панели: опрос без новых событий его не присылает,
+// а контекст без событий и не меняется.
+function setCtx(p, ctx) {
+  const bar = document.getElementById('pane-' + p.pane)?.querySelector('.ctx');
+  if (!bar || !ctx) return;
+  const share = Math.min(1, ctx.used / ctx.window);
+  bar.style.width = (share * 100).toFixed(1) + '%';
+  bar.classList.toggle('full', share >= 0.9);
+}
+
 function log(p, html) {
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return;
@@ -1247,6 +1361,7 @@ async function poll(p) {
   let data; try { data = await get('api/messages?' + q); } catch (e) { return; }
   const first = p.next === 0;
   p.next = data.next; save();
+  setCtx(p, data.ctx);
   if (!data.items.length) return;
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return;

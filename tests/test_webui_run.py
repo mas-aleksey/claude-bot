@@ -7,6 +7,7 @@
 import asyncio
 import json
 import os
+import threading
 import time
 from pathlib import Path
 
@@ -27,7 +28,7 @@ async def client(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions, "PROJECTS_DIR", tmp_path)
     monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "transcripts")
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
     c = TestClient(TestServer(webui.build()))
     await c.start_server()
     yield c
@@ -289,7 +290,7 @@ async def test_purge_preview_does_not_delete(client, stale_home):
 
 async def test_purge_post_deletes_and_clears_pointers(client, stale_home, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", str(stale_home / "bot.db"))
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
     store.save_session("0", "/projects/proj", "aaaaaaaa-1111-4111-8111-111111111111")
 
     killed = await (await client.post("/api/purge", json={"days": 2})).json()
@@ -362,7 +363,7 @@ async def test_prompt_passes_pane_model(client, fake_run, tmp_path):
 
 async def test_prompt_falls_back_to_global_model(client, fake_run, tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
     store.put("model", "opus")
 
     await client.post("/api/prompt", json={
@@ -427,3 +428,12 @@ async def test_upload_without_file_is_400(client):
 ])
 def test_upload_filename_is_cleaned(raw, want):
     assert webui._filename(raw) == want
+
+
+async def test_store_survives_a_worker_thread(tmp_path, monkeypatch):
+    """Часть работы webui уезжает в asyncio.to_thread, а sqlite не отдаёт соединение
+    чужому потоку. Ловилось только в бою: 500 на /api/messages и пустая панель."""
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store, "_local", threading.local())
+    store.put("ctxwin:claude-opus-5", "1000000")
+    assert await asyncio.to_thread(store.get, "ctxwin:claude-opus-5") == "1000000"

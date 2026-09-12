@@ -200,3 +200,26 @@ def test_unknown_tag_stays_my_message(tmp_path):
           "content": "<important>посмотри вот это</important>"}})
     _, got = webui.items(path, 0)
     assert got == [{"role": "user", "text": "<important>посмотри вот это</important>"}]
+
+
+def test_ctx_of_takes_last_assistant_usage(tmp_path, monkeypatch):
+    """Контекст считается по последнему ответу, а не суммой по сессии: после /compact
+    он падает, и сумма показывала бы давно истёкший максимум."""
+    path = tmp_path / "s.jsonl"
+    def ev(read, out):
+        return json.dumps({"type": "assistant", "message": {
+            "model": "claude-opus-5", "content": [{"type": "text", "text": "x"}],
+            "usage": {"input_tokens": 2, "cache_creation_input_tokens": 8,
+                      "cache_read_input_tokens": read, "output_tokens": out}}})
+    path.write_text("\n".join([ev(90_000, 100), ev(1_000, 90)]) + "\n", encoding="utf-8")
+
+    monkeypatch.setattr(webui.store, "get", lambda key, default=None: None)
+    assert webui.ctx_of(path) == {"used": 1100, "window": webui.DEFAULT_WINDOW, "guess": True}
+
+    # Окно, записанное runner-ом после прогона, перебивает оценку.
+    monkeypatch.setattr(webui.store, "get", lambda key, default=None: "1000000")
+    assert webui.ctx_of(path) == {"used": 1100, "window": 1_000_000, "guess": False}
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert webui.ctx_of(empty) is None

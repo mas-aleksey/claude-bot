@@ -2,6 +2,7 @@
 промах в ключе означал бы, что две сессии молча пишут друг в друга."""
 
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -19,7 +20,7 @@ def msg(thread=None, topic=False):
 @pytest.fixture
 def db(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
     return store
 
 
@@ -73,12 +74,12 @@ def test_migrates_pre_topic_state(tmp_path, monkeypatch):
     old.close()
 
     monkeypatch.setattr(store, "DB_PATH", str(path))
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
 
     assert store.get("0:cwd") == "/projects/rp-ai"
     assert store.session_of("0", "/projects/rp-ai") == "sess-ai"
     assert store.get("model") == "opus"  # модель общая, скоуп ей не нужен
 
     # Повторный коннект не должен приписать второй префикс.
-    monkeypatch.setattr(store, "_conn", None)
+    monkeypatch.setattr(store, "_local", threading.local())
     assert store.get("0:cwd") == "/projects/rp-ai"

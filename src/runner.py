@@ -11,6 +11,7 @@ import subprocess
 import time
 from collections.abc import AsyncIterator
 
+import store
 from render import strip_ansi
 
 # --settings: путь, а не содержимое — файл лежит в образе и читается claude на каждом
@@ -156,6 +157,13 @@ async def run(
             # и первое событие — единственное место, где она становится известна всем.
             if sid := ev.get("session_id"):
                 _tag(scope, sid)
+            # Размер окна контекста знает только CLI, и говорит он его один раз, в
+            # `result`. В транскрипт это не попадает, поэтому запоминаем на модель —
+            # панель и /status считают проценты по этому числу.
+            if ev.get("type") == "result":
+                for name, info in (ev.get("modelUsage") or {}).items():
+                    if window := info.get("contextWindow"):
+                        store.put(f"ctxwin:{name}", str(window))
             yield ev
 
         rc = await proc.wait()

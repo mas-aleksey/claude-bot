@@ -126,14 +126,30 @@ async def cmd_status(msg: Message) -> None:
     sc = scope(msg)
     here = cwd(sc)
     auth = await runner.auth_status()
+    sid = store.session_of(sc, here)
     await msg.answer(
         f"проект: {Path(here).name} ({here})\n"
         f"модель: {store.get('model', 'default')}\n"
-        f"сессия: {store.session_of(sc, here) or 'новая'}\n"
+        f"сессия: {sid or 'новая'}\n"
+        f"контекст: {_context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
         f"занят: {runner.busy(sc)}\n"
         f"\n/help — команды"
     )
+
+
+def _context_line(project: str, session_id: str | None) -> str:
+    """Занятость контекста строкой. Полоски, как в панели браузера, в Telegram нет —
+    и числа тут смотрят реже, поэтому одна строка в /status, а не в каждом ответе."""
+    if not session_id:
+        return "—"
+    path = webui.transcript(project, session_id)
+    ctx = webui.ctx_of(path) if path.is_file() else None
+    if not ctx:
+        return "—"
+    k = round(ctx["used"] / 1000)
+    win = round(ctx["window"] / 1000)
+    return f"{k}k/{win}k{'?' if ctx['guess'] else ''} ({round(100 * ctx['used'] / ctx['window'])}%)"
 
 
 @dp.message(Command("projects"))
@@ -188,9 +204,20 @@ async def cmd_sessions(msg: Message) -> None:
 async def cb_resume(cb: CallbackQuery) -> None:
     sid = cb.data.removeprefix("rs:")
     sc = scope(cb.message)
-    store.save_session(sc, cwd(sc), sid)
+    here = cwd(sc)
+    store.save_session(sc, here, sid)
     await cb.answer("переключено")
     await cb.message.edit_text(f"сессия: {sid}")
+    # Хвост последнего ответа: иначе после переключения на экране один id, и о чём был
+    # разговор, видно только в читалке. Шлём последний кусок split — верх длинного
+    # ответа при возврате в сессию не нужен, нужен тот, на чём она остановилась.
+    path = webui.transcript(here, sid)
+    if not path.is_file():
+        return
+    last = await asyncio.to_thread(sessions.last_message, path)
+    if last:
+        chunks = render.split(last)
+        await send(cb.message, render.md(("…" if len(chunks) > 1 else "") + chunks[-1]))
 
 
 @dp.message(Command("new"))

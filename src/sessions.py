@@ -236,3 +236,30 @@ def recent(cwd: str, limit: int = 10) -> list[tuple[str, str, float]]:
     )
     now = time.time()
     return [(f.stem, title(f), now - f.stat().st_mtime) for f in files[:limit]]
+
+
+def last_message(path: Path) -> str:
+    """Последний текст claude в сессии. Пусто — если сессия оборвалась на инструменте.
+
+    Читаем построчно, а не целиком: транскрипт бывает на десятки мегабайт, а нужен
+    из него один блок. Дешёвый отсев по подстроке — как в `title`, json.loads на
+    каждой строке дороже самого чтения.
+    """
+    found = ""
+    with path.open(encoding="utf-8", errors="replace") as f:
+        for line in f:
+            if '"assistant"' not in line:
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") != "assistant":
+                continue
+            content = (ev.get("message") or {}).get("content")
+            if not isinstance(content, list):
+                continue
+            text = "\n".join(b.get("text", "") for b in content if b.get("type") == "text")
+            if text.strip():
+                found = text.strip()
+    return found
