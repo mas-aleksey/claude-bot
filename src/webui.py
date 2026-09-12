@@ -610,8 +610,6 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
   header .dot.busy { animation:none }
   section.busy header { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
-  /* Запись остаётся красной — исчезает только мигание. */
-  .bar .mic.on { animation:none }
 }
 header .hits { font-size:11px; opacity:.6; flex:none }
 /* Занятый контекст — полоска в нижней кромке заголовка: места не занимает, а через всю
@@ -667,21 +665,15 @@ form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
 textarea { resize:none; min-height:40px; max-height:240px; padding:4px 4px 0;
   font:inherit; background:none; color:inherit; border:0; outline:none }
 .bar { display:flex; gap:4px; align-items:center }
-/* «Плюс», микрофон и модель — призраки: рамка тут уже есть, своя каждой кнопке
-   дробила бы ряд. */
-.bar .clip, .bar .mic, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
+/* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
+.bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
   border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
 .bar .model { appearance:none; width:auto }
 /* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
-.bar .clip, .bar .mic { display:grid; place-items:center; width:26px; height:26px; padding:0;
+.bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
   border-radius:50%; font-size:18px; line-height:1 }
-.bar .mic { font-size:15px }
-.bar .clip:hover, .bar .mic:hover, .bar .model:hover { background:#8882; opacity:1 }
+.bar .clip:hover, .bar .model:hover { background:#8882; opacity:1 }
 .bar .clip input { display:none }
-/* Идёт запись: красный кружок и пульс. Тот же кадр, что у занятой панели, — другого
-   значения у мигания на странице нет. */
-.bar .mic.on { opacity:1; background:#e5533a; color:#fff;
-  animation:pulse 1.1s ease-in-out infinite }
 /* Правый угол ряда: пока запуск идёт, вместо «отправить» стоит «стоп». Переключает
    класс `busy` на секции, его же ставит tick() — своего состояния в JS не нужно. */
 .bar .send, .bar .stop { margin-left:auto; width:28px; height:28px; padding:0; flex:none;
@@ -1036,7 +1028,6 @@ function drawPane(p) {
         title="Enter — отправить, Shift+Enter — перенос строки"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
-        <button class=mic type=button title="диктовать">&#127908;</button>
         <select class=model title="модель этой панели">
           <option value="">модель</option>
           <option>opus</option><option>sonnet</option><option>haiku</option>
@@ -1062,9 +1053,6 @@ function drawPane(p) {
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); send(p, ta); }
   };
   ta.oninput = () => grow(ta);
-
-  const mic = el.querySelector('.mic');
-  if (SR) wireMic(p, ta, mic); else mic.remove();
 
   const model = el.querySelector('.model');
   model.value = p.model || '';
@@ -1132,46 +1120,6 @@ function wireCopy(box) {
     };
     pre.prepend(btn);
   }
-}
-
-// Диктовка: распознаёт браузер, своего движка в образе не нужно. Готового текста ждём
-// от него же — сюда приезжает уже строка, а не звук, поэтому на сервере не меняется
-// ничего. В Firefox объекта нет, и кнопка там не рисуется вовсе.
-//
-// Распознанное только дописывается в поле: отправляет человек, как и набранное руками.
-// Автоотправка по паузе выглядит заманчиво, но ошибка распознавания уходила бы в
-// песочницу с обойдёнными правами раньше, чем её видно глазами.
-const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
-
-function wireMic(p, ta, btn) {
-  let rec = null;
-  btn.onclick = () => {
-    if (rec) { rec.stop(); return; }  // второй клик — закончить
-    rec = new SR();
-    rec.lang = 'ru-RU';
-    rec.continuous = true;
-    rec.interimResults = true;  // текст виден по ходу речи, а не после паузы
-    // То, что было в поле до диктовки. `e.results` приезжает целиком заново на каждом
-    // событии, поэтому без базы набранное руками затиралось бы первым же словом.
-    const base = ta.value ? ta.value.replace(/\s*$/, ' ') : '';
-    rec.onresult = (e) => {
-      let text = '';
-      for (const r of e.results) text += r[0].transcript;
-      ta.value = base + text;
-      grow(ta);
-    };
-    // Тишина и остановка кнопкой — не ошибки, о них сообщать нечего. Всё остальное
-    // (отказ в микрофоне, нет сети) молча выглядело бы как сломанная кнопка.
-    rec.onerror = (e) => {
-      if (e.error !== 'no-speech' && e.error !== 'aborted')
-        log(p, `<div class="msg err">микрофон: ${esc(e.error)}</div>`);
-    };
-    // Браузер завершает распознавание и сам, по длинной паузе. Состояние кнопки
-    // снимаем здесь, а не в обработчике клика, — иначе она осталась бы «в записи».
-    rec.onend = () => { rec = null; btn.classList.remove('on'); ta.focus(); };
-    rec.start();
-    btn.classList.add('on');
-  };
 }
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
