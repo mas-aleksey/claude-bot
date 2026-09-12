@@ -126,7 +126,15 @@ function btn(id) {
              removeProperty: (k) => { delete vars[k]; } } };
 }
 const rows = [btn('a'), btn('b')];
-const document = { querySelectorAll: () => rows };
+rows[0].dataset.title = 'про сетку';
+const document = {
+  querySelectorAll: () => rows,
+  querySelector: (sel) => rows.find(r => sel.includes('"' + r.dataset.id + '"')) ?? null,
+};
+const sent = [];
+function Notification(title, opts) { sent.push([title, opts.body, opts.tag]); }
+Notification.permission = 'granted';
+const window = { Notification };
 const store = {};
 const localStorage = { getItem: (k) => store[k] ?? null, setItem: (k, v) => { store[k] = v; } };
 const HUES = [250];
@@ -150,19 +158,27 @@ panes = [{ session: 'a', hue: 25 }];      // открыли сессию
 done.delete('a');
 markList(); seen.push(state());
 
+panes = [{ session: 'a', hue: 25 }];      // прогон при открытом окне
+trackRuns([{ session: 'a' }]);
+trackRuns([]);                            // кончился на глазах — ни точки, ни звонка
+markList(); seen.push(state());
+
 panes = [];                               // закрыли, ничего не идёт
 trackRuns([]);
 markList(); seen.push(state());
-console.log(JSON.stringify(seen));
+console.log(JSON.stringify([...seen, sent]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    running, finished, stored, opened, forgotten = json.loads(done.stdout)
+    running, finished, stored, opened, watched, forgotten, sent = json.loads(done.stdout)
     assert running == [[["busy"], 25], [[], None]]      # мигает, но не залита
     assert finished == [[["done"], 25], [[], None]]     # точка, цвет тот же
     assert stored == ["a"]                              # переживёт F5
     assert opened == [[["open"], 25], [[], None]]       # заливка, точка снята
+    assert watched == [[["open"], 25], [[], None]]      # смотрели сами — точки нет
     assert forgotten == [[[], None], [[], None]]        # цвет забыт, карта не растёт
+    # звонок ровно один: про закрытое окно, с названием сессии из строки списка
+    assert sent == [["claude · ответ готов", "про сетку", "a"]]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")

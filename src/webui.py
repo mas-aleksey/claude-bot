@@ -858,6 +858,21 @@ const saveMarks = () => {
   localStorage.setItem('done', JSON.stringify([...done]));
 };
 
+const canNotify = () => 'Notification' in window && Notification.permission === 'granted';
+
+// Ответ пришёл в закрытое окно: на экране нет ни панели, ни таймера, только точка в
+// строке списка — а её легко не заметить и на видимой вкладке. Поэтому проверки
+// `document.hidden` тут нет, в отличие от `notifyDone` про открытые панели.
+// Заголовок берём из строки списка: проект и название ушли вместе с панелью, а строка
+// несёт своё название в `data-title`. Строки может не быть — выбран другой проект или
+// сессия не попала в тридцать свежих. Тогда сообщаем без названия.
+function notifyClosed(session) {
+  if (!canNotify()) return;
+  const row = document.querySelector('#list button[data-id="' + session + '"]');
+  new Notification('claude · ответ готов',
+    { body: row?.dataset.title?.slice(0, 80) || 'окно было закрыто', tag: session });
+}
+
 // Живые запуски сервер отдаёт целиком, с id сессии у каждого. Панели тут не при чём:
 // сопоставление с ними ничего не даёт, а мигать должна любая занятая сессия.
 function trackRuns(runs) {
@@ -868,7 +883,7 @@ function trackRuns(runs) {
   }
   // Занятость пропала, а окна нет: ответ пришёл в пустоту, о нём и сообщает точка.
   for (const id of busySessions)
-    if (!live.has(id) && !panes.some(x => x.session === id)) done.add(id);
+    if (!live.has(id) && !panes.some(x => x.session === id)) { done.add(id); notifyClosed(id); }
   busySessions.clear();
   for (const id of live) busySessions.add(id);
   // Цвет забываем, как только он перестал быть нужен. Иначе карта растёт, а `freeHue`
@@ -1506,7 +1521,7 @@ const lastElapsed = new Map();
 // Уведомление шлём только когда вкладки не видно: на экране пульсирующая рамка и так
 // заметна, а дубль поверх неё раздражает. tag сворачивает повторы по одной панели.
 function notifyDone(p, seconds) {
-  if (!('Notification' in window) || Notification.permission !== 'granted') return;
+  if (!canNotify()) return;
   if (!document.hidden) return;
   const where = p.project.split('/').pop();
   new Notification(`claude · ${where}`,
