@@ -83,6 +83,7 @@ RUN chmod +x /usr/local/bin/ttyd && ttyd --version | grep -q "${TTYD_VERSION}"
 # sshd_config.d/ is picked up by the image's default config through Include.
 RUN mkdir -p /run/sshd
 COPY sshd_config /etc/ssh/sshd_config.d/10-container.conf
+COPY tmux.conf /etc/tmux.conf
 COPY entrypoint.sh /entrypoint.sh
 
 # The answer style is part of the product, not per-instance configuration: it is the same

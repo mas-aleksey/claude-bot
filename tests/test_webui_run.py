@@ -39,7 +39,8 @@ async def client(tmp_path, monkeypatch):
 def clean_scopes():
     """Очередь и `_last` живут в модуле, а скоуп `web:pane-1` во всех тестах один."""
     yield
-    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs):
+    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs,
+              runner._cost):
         d.clear()
 
 
@@ -176,13 +177,69 @@ def test_active_reports_live_runs_with_elapsed_and_session(monkeypatch):
     assert 4.5 < got["secs"] < 60
 
 
-async def test_messages_empty_until_transcript_appears(client, tmp_path):
-    """Панель начинает опрос сразу после ответа /api/prompt, а файл появляется позже."""
-    q = {"project": str(tmp_path / "proj"), "id": "11111111-2222-3333-4444-555555555555",
-         "from": "7"}
-    r = await client.get("/api/messages", params=q)
+async def _frame(resp, timeout=3):
+    """Один кадр SSE: строки до пустой. Комментарии-пинги пропускаются сами."""
+    async def read():
+        sid = data = None
+        while True:
+            line = (await resp.content.readline()).decode().rstrip("\n")
+            if line.startswith("id: "):
+                sid = int(line[4:])
+            elif line.startswith("data: "):
+                data = json.loads(line[6:])
+            elif line == "" and data is not None:
+                return sid, data
+    return await asyncio.wait_for(read(), timeout)
+
+
+async def test_stream_waits_for_the_transcript_then_tails_it(client, tmp_path, monkeypatch):
+    """Панель подписывается сразу после ответа /api/prompt, а файл claude создаёт позже.
+    Поток обязан это пережить молча и догнать, а не ответить ошибкой."""
+    monkeypatch.setattr(webui, "TAIL_TICK", 0.02)
+    sid = "11111111-2222-3333-4444-555555555555"
+    r = await client.get("/api/stream",
+                         params={"project": str(tmp_path / "proj"), "id": sid, "from": "0"})
     assert r.status == 200
-    assert await r.json() == {"next": 7, "items": []}  # оффсет не сбрасывается
+    with pytest.raises(TimeoutError):
+        await _frame(r, 0.2)  # файла ещё нет — говорить нечего
+
+    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n",
+                    encoding="utf-8")
+    off, data = await _frame(r)
+    assert [i["text"] for i in data["items"]] == ["раз"]
+    # Оффсет едет и в `id:`, и в теле: из первого браузер соберёт Last-Event-ID при
+    # обрыве, второй панель кладёт себе, чтобы переоткрыть поток с места.
+    assert off == data["next"] == path.stat().st_size
+
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "assistant", "message": {"role": "assistant",
+                "content": [{"type": "text", "text": "два"}]}}) + "\n")
+    _, data = await _frame(r)
+    assert [i["text"] for i in data["items"]] == ["два"]
+    r.close()
+
+
+async def test_stream_resumes_from_last_event_id(client, tmp_path, monkeypatch):
+    """Переподключение браузер делает сам и по тому же адресу: `from` в нём давно
+    устарел. Без чтения Last-Event-ID панель получила бы всю историю второй раз."""
+    monkeypatch.setattr(webui, "TAIL_TICK", 0.02)
+    sid = "11111111-2222-3333-4444-555555555555"
+    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n",
+                    encoding="utf-8")
+    was = path.stat().st_size
+    with path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps({"type": "user", "message": {"content": "два"}}) + "\n")
+
+    r = await client.get("/api/stream",
+                         params={"project": str(tmp_path / "proj"), "id": sid, "from": "0"},
+                         headers={"Last-Event-ID": str(was)})
+    _, data = await _frame(r)
+    assert [i["text"] for i in data["items"]] == ["два"]
+    r.close()
 
 
 @pytest.fixture
@@ -475,3 +532,82 @@ async def test_store_survives_a_worker_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_local", threading.local())
     store.put("ctxwin:claude-opus-5", "1000000")
     assert await asyncio.to_thread(store.get, "ctxwin:claude-opus-5") == "1000000"
+
+
+async def test_run_cost_shows_up_in_status(client, monkeypatch, tmp_path):
+    """Цена прогона живёт только в событии `result` — в транскрипт она не пишется,
+    и без этого пути в панели её взять неоткуда."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "subtype": "init",
+               "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "result", "result": "готово", "total_cost_usd": 0.0123,
+               "usage": {"input_tokens": 100, "output_tokens": 20}}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_usage", {})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    usage = (await (await client.get("/api/status")).json())["usage"]
+    assert usage["web:pane-1"] == "$0.012 ↓100 ↑20"
+
+
+async def test_new_run_clears_previous_cost(client, fake_run, tmp_path, monkeypatch):
+    """Иначе цена прошлого прогона висела бы под новым ответом как его собственная."""
+    monkeypatch.setattr(webui, "_usage", {"web:pane-1": "$9.999"})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    usage = (await (await client.get("/api/status")).json())["usage"]
+    assert "web:pane-1" not in usage
+
+
+async def test_session_cost_accumulates_across_runs(monkeypatch, tmp_path):
+    """Цену говорит только `result`, и копить её надо в runner: через него идут оба
+    пути, и панель, и Telegram, поэтому счёт сессии не зависит от места запуска."""
+    class Proc:
+        returncode = None
+        pid = 1
+
+        def __init__(self, events):
+            self.stdout = events
+            self.stderr = self
+
+        async def wait(self):
+            self.returncode = 0
+            return 0
+
+        async def read(self):
+            return b""
+
+    async def run_once(cost):
+        async def lines():
+            yield json.dumps({"type": "system", "session_id": "sess-1"}).encode()
+            # Без `session_id`: в этом и подвох — локальная переменная тут обнулится,
+            # и сессию приходится брать из `_runs`.
+            yield json.dumps({"type": "result", "total_cost_usd": cost}).encode()
+
+        async def fake_exec(*a, **kw):
+            return Proc(lines())
+
+        monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", fake_exec)
+        async for _ in runner.run("промпт", str(tmp_path), scope="web:pane-1"):
+            pass
+
+    monkeypatch.setattr(runner, "trust", lambda cwd: None)
+    monkeypatch.setattr(runner, "_runs", {})
+    monkeypatch.setattr(runner, "_cost", {})
+    await run_once(0.01)
+    await run_once(0.02)
+
+    assert runner.spent() == pytest.approx({"sess-1": 0.03})
+
+
+async def test_status_reports_session_cost(client, monkeypatch):
+    """Панель берёт доллары отсюда: в транскрипте их нет, а поток о них не знает."""
+    monkeypatch.setattr(runner, "_cost", {"sess-1": 1.2345})
+    got = await (await client.get("/api/status")).json()
+    assert got["spent"] == {"sess-1": 1.2345}

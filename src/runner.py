@@ -40,6 +40,12 @@ _runs: dict[str, tuple[asyncio.subprocess.Process, float, str | None]] = {}
 # своего deque не нужно, нужен только счётчик ждущих для интерфейса.
 _slots: dict[str, asyncio.Lock] = {}
 _waiting: dict[str, int] = {}
+
+# Потрачено на сессию с момента старта бота, в долларах. Копится здесь, а не у вызывающих:
+# цену говорит только событие `result`, а через этот генератор идут оба пути — и панель,
+# и Telegram, поэтому счёт сессии не зависит от того, откуда её гоняли.
+# В транскрипт цена не пишется вовсе, так что после рестарта бота счёт начинается заново.
+_cost: dict[str, float] = {}
 # Поколение очереди: `cancel` его двигает, и ожидающие, проснувшись, понимают, что их
 # отбросили. Разбудить их иначе нечем — они висят на том же локе, который держит
 # текущий прогон, и просыпаются только после его смерти.
@@ -56,6 +62,16 @@ class Dropped(Exception):
 def busy(scope: str) -> bool:
     entry = _runs.get(scope)
     return entry is not None and entry[0].returncode is None
+
+
+def _session_of(scope: str) -> str | None:
+    entry = _runs.get(scope)
+    return entry[2] if entry else None
+
+
+def spent() -> dict[str, float]:
+    """Потрачено по сессиям с момента старта бота."""
+    return _cost
 
 
 def active() -> list[dict]:
@@ -230,6 +246,10 @@ async def run(
                 for name, info in (ev.get("modelUsage") or {}).items():
                     if window := info.get("contextWindow"):
                         store.put(f"ctxwin:{name}", str(window))
+                # Сессию берём из `_runs`, а не из локальной `sid`: её перезаписывает
+                # каждое событие, и `result` без `session_id` обнулил бы её.
+                if (spent := ev.get("total_cost_usd")) and (key := _session_of(scope)):
+                    _cost[key] = _cost.get(key, 0.0) + spent
             yield ev
 
         rc = await proc.wait()

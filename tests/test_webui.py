@@ -44,9 +44,9 @@ EVENTS = [
 def test_items_keeps_conversation_drops_noise(tmp_path):
     path = tmp_path / "s.jsonl"
     write(path, *EVENTS)
-    seen, got = webui.items(path, 0)
+    seen, got, _ = webui.items(path, 0)
 
-    assert seen == 6  # прочитаны все строки, оффсет для следующего опроса
+    assert seen == path.stat().st_size  # прочитан весь файл, оффсет для следующего кадра
     assert [i["role"] for i in got] == ["user", "tool", "assistant"]
     assert got[0]["text"] == "почини тесты"
     assert got[1]["name"] == "Bash" and "pytest -q" in got[1]["text"]
@@ -57,20 +57,35 @@ def test_items_reads_only_the_tail(tmp_path):
     """Опрос живого запуска: со старого оффсета отдаётся только новое."""
     path = tmp_path / "s.jsonl"
     write(path, *EVENTS)
-    seen, _ = webui.items(path, 0)
+    seen, _, _ = webui.items(path, 0)
 
     write(path, *EVENTS, {"type": "assistant", "message": {"role": "assistant",
           "content": [{"type": "text", "text": "и ещё"}]}})
-    seen2, tail = webui.items(path, seen)
+    seen2, tail, _ = webui.items(path, seen)
 
-    assert seen2 == 7
+    assert seen2 == path.stat().st_size
     assert [i["text"] for i in tail] == ["и ещё"]
+
+
+def test_items_waits_for_a_line_still_being_written(tmp_path):
+    """claude дописывает транскрипт, а поток смотрит на него раз в 300 мс. Прочитать
+    половину события и сдвинуть на неё оффсет — значит потерять событие целиком."""
+    path = tmp_path / "s.jsonl"
+    path.write_text('{"type": "user", "message": {"content": "\u0440\u0430\u0437"}}\n'
+                    '{"type": "user", "mes', encoding="utf-8")
+    off, got, _ = webui.items(path, 0)
+    assert [i["text"] for i in got] == ["раз"]
+
+    with path.open("a", encoding="utf-8") as f:
+        f.write('sage": {"content": "два"}}\n')
+    _, tail, _ = webui.items(path, off)
+    assert [i["text"] for i in tail] == ["два"]
 
 
 def test_items_survives_broken_line(tmp_path):
     path = tmp_path / "s.jsonl"
     path.write_text('{"type": "user", "message": {"content": "раз"}}\nне json\n')
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert [i["text"] for i in got] == ["раз"]
 
 
@@ -111,6 +126,43 @@ def test_peers_parsing(monkeypatch, raw, want):
     assert webui.peers() == want
 
 
+def skill(root, dirname, front=""):
+    path = root / dirname / "SKILL.md"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(f"---\n{front}\n---\n\nтело\n", encoding="utf-8")
+
+
+def test_skills_reads_frontmatter(tmp_path, monkeypatch):
+    """Имя идёт из frontmatter, а когда оно негодное — из каталога: набирают скилл
+    после слеша, и пробел в имени превратил бы команду в два слова."""
+    monkeypatch.setattr(webui, "SKILLS", tmp_path)
+    skill(tmp_path, "refine", "name: refine\ndescription: Разбор задачи")
+    skill(tmp_path, "sync-repo", "description: без имени")
+    skill(tmp_path, "weird", "name: две слова")
+    (tmp_path / "черновик").mkdir()  # каталог без SKILL.md
+
+    assert webui.skills() == [
+        {"name": "refine", "desc": "Разбор задачи"},
+        {"name": "sync-repo", "desc": "без имени"},
+        {"name": "weird", "desc": ""},
+    ]
+
+
+def test_skills_of_project_join_and_win(tmp_path, monkeypatch):
+    """Скиллы проекта видны в подсказке и перекрывают общие по имени — так же, как их
+    разрешает сам claude."""
+    monkeypatch.setattr(webui, "SKILLS", tmp_path / "home")
+    skill(tmp_path / "home", "refine", "name: refine\ndescription: общий")
+    project = tmp_path / "proj"
+    skill(project / ".claude" / "skills", "bw", "name: bw\ndescription: .env через vault")
+    skill(project / ".claude" / "skills", "refine", "name: refine\ndescription: проектный")
+
+    assert webui.skills(str(project)) == [
+        {"name": "bw", "desc": ".env через vault"},
+        {"name": "refine", "desc": "проектный"},
+    ]
+
+
 SKILL_BODY = "Ты исследуешь ЧУЖОЙ репозиторий через GitLab REST API. " * 20
 
 
@@ -124,7 +176,7 @@ def test_skill_body_is_collapsed_not_shown_as_answer(tmp_path):
               {"type": "text", "text": SKILL_BODY}]}},
           {"type": "assistant", "message": {"role": "assistant", "content": [
               {"type": "text", "text": "разобрал"}]}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
 
     assert [i["role"] for i in got] == ["user", "note", "assistant"]
     assert SKILL_BODY not in got[1]["text"]
@@ -138,7 +190,7 @@ def test_slash_command_wrapper_becomes_one_line(tmp_path):
           "<command-message>refine</command-message>\n"
           "<command-name>/refine</command-name>\n"
           "<command-args>RP-3945 + HANDOFF.md</command-args>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
 
     assert got == [{"role": "user", "text": "/refine RP-3945 + HANDOFF.md"}]
 
@@ -147,7 +199,7 @@ def test_slash_command_without_args(tmp_path):
     path = tmp_path / "s.jsonl"
     write(path, {"type": "user", "message": {"role": "user", "content":
           "<command-name>/end</command-name>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert got == [{"role": "user", "text": "/end"}]
 
 
@@ -157,7 +209,7 @@ def test_empty_injected_context_is_skipped(tmp_path):
     write(path, {"type": "user", "message": {"role": "user", "content": []}},
                 {"type": "user", "message": {"role": "user", "content": [
                     {"type": "tool_result", "content": "лог"}]}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert got == []
 
 
@@ -169,7 +221,7 @@ def test_task_notification_is_a_note_not_my_message(tmp_path):
           "<task-notification>\n<task-id>bcsebz5dc</task-id>\n"
           "<summary>Background command \"sleep 30; cat out\" completed (exit code 0)</summary>\n"
           "</task-notification>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
 
     assert got[0]["role"] == "note"
     assert got[0]["text"].startswith("фоновая задача завершилась: Background command")
@@ -179,7 +231,7 @@ def test_local_command_stdout_is_a_note(tmp_path):
     path = tmp_path / "s.jsonl"
     write(path, {"type": "user", "message": {"role": "user",
           "content": "<local-command-stdout>Goodbye!</local-command-stdout>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert got == [{"role": "note", "text": "вывод локальной команды: Goodbye!"}]
 
 
@@ -189,7 +241,7 @@ def test_caveat_before_command_still_shows_the_command(tmp_path):
     write(path, {"type": "user", "message": {"role": "user", "content":
           "<local-command-caveat>Caveat: messages below were generated by the user"
           "</local-command-caveat>\n<command-name>/clear</command-name>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert got == [{"role": "user", "text": "/clear"}]
 
 
@@ -198,11 +250,11 @@ def test_unknown_tag_stays_my_message(tmp_path):
     path = tmp_path / "s.jsonl"
     write(path, {"type": "user", "message": {"role": "user",
           "content": "<important>посмотри вот это</important>"}})
-    _, got = webui.items(path, 0)
+    _, got, _ = webui.items(path, 0)
     assert got == [{"role": "user", "text": "<important>посмотри вот это</important>"}]
 
 
-def test_ctx_of_takes_last_assistant_usage(tmp_path, monkeypatch):
+def test_ctx_takes_last_assistant_usage(tmp_path, monkeypatch):
     """Контекст считается по последнему ответу, а не суммой по сессии: после /compact
     он падает, и сумма показывала бы давно истёкший максимум."""
     path = tmp_path / "s.jsonl"
@@ -214,12 +266,16 @@ def test_ctx_of_takes_last_assistant_usage(tmp_path, monkeypatch):
     path.write_text("\n".join([ev(90_000, 100), ev(1_000, 90)]) + "\n", encoding="utf-8")
 
     monkeypatch.setattr(webui.store, "get", lambda key, default=None: None)
-    assert webui.ctx_of(path) == {"used": 1100, "window": webui.DEFAULT_WINDOW, "guess": True}
+    assert webui.items(path, 0)[2]["ctx"] == {"used": 1100, "window": webui.DEFAULT_WINDOW,
+                                              "guess": True}
+    # Токены — сумма по всем ответам куска, а не по последнему: их панель складывает.
+    assert webui.items(path, 0)[2]["spent"] == {"in": 4, "cache": 91016, "out": 190}
 
     # Окно, записанное runner-ом после прогона, перебивает оценку.
     monkeypatch.setattr(webui.store, "get", lambda key, default=None: "1000000")
-    assert webui.ctx_of(path) == {"used": 1100, "window": 1_000_000, "guess": False}
+    assert webui.items(path, 0)[2]["ctx"] == {"used": 1100, "window": 1_000_000,
+                                              "guess": False}
 
     empty = tmp_path / "empty.jsonl"
     empty.write_text("", encoding="utf-8")
-    assert webui.ctx_of(empty) is None
+    assert webui.items(empty, 0)[2] is None
