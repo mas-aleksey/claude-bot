@@ -166,24 +166,6 @@ def _first_arg(name: str, args: dict) -> str:
     return name
 
 
-def usage_line(ev: dict) -> str:
-    """Цена и токены прогона из события `result`: `$0.012 ↓100 ↑20`, либо пустая строка.
-
-    Формат один на Telegram и веб-панель: то же событие, та же строка, и сравнивать
-    два прогона из разных мест можно глазами. В транскрипт `result` не пишется, так
-    что оба зовут это на живом потоке событий, а не на файле.
-    """
-    u = ev.get("usage") or {}
-    bits = []
-    if cost := ev.get("total_cost_usd"):
-        bits.append(f"${cost:.3f}")
-    if tin := u.get("input_tokens"):
-        bits.append(f"↓{tin}")
-    if tout := u.get("output_tokens"):
-        bits.append(f"↑{tout}")
-    return " ".join(bits)
-
-
 class Run:
     """Накопитель состояния одного запуска. `text()` вызывается на каждый апдейт."""
 
@@ -223,7 +205,15 @@ class Run:
             if ev.get("is_error"):
                 self.error = self.result or "claude вернул ошибку"
                 self.result = ""
-            self.usage = usage_line(ev)
+            u = ev.get("usage") or {}
+            bits = []
+            if cost := ev.get("total_cost_usd"):
+                bits.append(f"${cost:.3f}")
+            if tin := u.get("input_tokens"):
+                bits.append(f"↓{tin}")
+            if tout := u.get("output_tokens"):
+                bits.append(f"↑{tout}")
+            self.usage = " ".join(bits)
 
     def parts(self) -> tuple[str, list[str]]:
         """Финал: (прогресс-сообщение, доп. сообщения с продолжением результата).

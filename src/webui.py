@@ -67,11 +67,6 @@ _tasks: set[asyncio.Task] = set()
 # Текст живёт до следующего запуска в той же панели.
 _errors: dict[str, str] = {}
 
-# Цена и токены последнего прогона по скоупу, строкой из `render.usage_line`. Живёт
-# рядом с ошибкой и по тем же правилам: до следующего запуска в этой панели. В памяти,
-# а не в базе — цифра нужна сразу после ответа, а не через неделю.
-_usage: dict[str, str] = {}
-
 
 def transcript(project: str, session_id: str) -> Path:
     """Путь к транскрипту по проекту и id, существование не проверяется.
@@ -109,11 +104,7 @@ SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
 
 
 def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
-    """С байтового оффсета `start`: (оффсет конца прочитанного, элементы, сводка).
-
-    Сводка — `{"ctx": занятость окна, "spent": токены этого куска}` либо `None`, если в
-    куске не было ни одного ответа claude. Токены именно за кусок, а не за сессию:
-    складывает их панель, потому что дальше начала своего оффсета сервер не читает.
+    """С байтового оффсета `start`: (оффсет конца прочитанного, элементы, контекст).
 
     Оффсет, а не номер строки: по номеру пришлось бы каждый раз пролистывать файл с
     начала, и на сорока мегабайтах это полторы сотни миллисекунд на каждый опрос. С
@@ -141,7 +132,6 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
     """
     out: list[dict] = []
     used = model = None
-    spent = {"in": 0, "cache": 0, "out": 0}
     with path.open("rb") as f:
         f.seek(start)
         for raw in f:
@@ -168,13 +158,6 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                     "input_tokens", "cache_creation_input_tokens",
                     "cache_read_input_tokens", "output_tokens"))
                 model = msg.get("model") or model
-                # Кэш отдельно от настоящего ввода: перечитанный контекст даёт десятки
-                # миллионов там, где ввода было пять сотен, и одним числом это пугает
-                # на ровном месте.
-                spent["in"] += int(u.get("input_tokens") or 0)
-                spent["cache"] += sum(int(u.get(k) or 0) for k in (
-                    "cache_creation_input_tokens", "cache_read_input_tokens"))
-                spent["out"] += int(u.get("output_tokens") or 0)
             content = msg.get("content")
 
             if isinstance(content, str):
@@ -206,9 +189,7 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                     })
             if len(out) >= CHUNK:
                 break
-    if not used:
-        return start, out, None
-    return start, out, {"ctx": _ctx(used, model), "spent": spent}
+    return start, out, _ctx(used, model)
 
 
 def _ctx(used: int | None, model: str | None) -> dict | None:
@@ -274,10 +255,39 @@ SKILLS = Path("/root/.claude/skills")
 # Имя в подсказку берём только такое, каким его можно набрать после слеша.
 SKILL_NAME_RE = re.compile(r"[\w-]{1,64}\Z")
 FRONT_RE = re.compile(r"^(name|description):\s*(.+)$", re.M)
+# Встроенные команды claude: в каталоге скиллов их нет, а в панели они нужны наравне.
+# Список руками, потому что наружу claude свой набор не отдаёт (`/help` в headless как
+# раз и отвечает «isn't available»). Каждая строка проверена прогоном `claude -p`
+# на 2.1.269: то, что открывает панель TUI (`/permissions`, `/hooks`, `/resume`,
+# `/export`, `/ide`, `/vim`, `/statusline`, `/sandbox`, `/add-dir`, `/bashes`,
+# `/memory`, `/status`, `/release-notes`, `/privacy-settings`, `/theme`), в headless
+# отвечает отказом и в меню не попало.
+#
+# Чего тут нет сознательно: `/login`, `/logout`, `/upgrade`, `/terminal-setup`,
+# `/install-github-app`, `/migrate-installer`, `/bug`. Они меняют общее состояние —
+# OAuth-ключ один на все сессии контейнера, и разлогин из панели убил бы и бота.
+BUILTIN = [
+    {"name": "clear", "desc": "начать разговор с чистого листа, панель перейдёт в новую сессию"},
+    {"name": "compact", "desc": "сжать контекст, сохранив суть разговора"},
+    {"name": "context", "desc": "на что потрачен контекст этой сессии"},
+    {"name": "cost", "desc": "расход подписки: сессия, неделя, когда сброс"},
+    {"name": "usage", "desc": "то же, что /cost"},
+    {"name": "model", "desc": "показать модель сессии; сменить нельзя — её задаёт панель"},
+    {"name": "output-style", "desc": "стиль ответа: текущий и список доступных"},
+    {"name": "config", "desc": "настройки claude: показать и поменять"},
+    {"name": "mcp", "desc": "состояние MCP-серверов"},
+    {"name": "doctor", "desc": "проверка установки claude"},
+    {"name": "init", "desc": "собрать CLAUDE.md по текущему проекту"},
+    {"name": "review", "desc": "ревью изменений в рабочем дереве"},
+    {"name": "security-review", "desc": "ревью изменений на дыры, нужен git-репозиторий"},
+]
 
 
 def skills(project: str = "") -> list[dict]:
-    """Скиллы для автодополнения: общие плюс проектные, по одному на имя.
+    """Команды для автодополнения: скиллы общие и проектные, затем встроенные.
+
+    Скиллы наверху, потому что их тринадцать встроенных не должны отжимать вниз: в
+    панель ходят за своим `/refine` и `/end`, а `/doctor` набирают раз в полгода.
 
     Проектные (`<project>/.claude/skills`) идут вторыми и перекрывают общие по имени —
     так же, как их разрешает сам claude. Без них панель localhome не знала бы про
@@ -299,7 +309,7 @@ def skills(project: str = "") -> list[dict]:
             if not SKILL_NAME_RE.match(name):
                 name = path.parent.name
             out[name] = {"name": name, "desc": meta.get("description", "")[:160]}
-    return sorted(out.values(), key=lambda s: s["name"])
+    return sorted(out.values(), key=lambda s: s["name"]) + BUILTIN
 
 
 def _int(value: str | None) -> int:
@@ -401,7 +411,6 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     sid = session_id
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
-    _usage.pop(scope, None)
     try:
         async with runner.slot(scope):
             if adopt:
@@ -415,12 +424,8 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                 # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
                 # отказ модели, недоступный проект — всё это claude пишет в stdout и
                 # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
-                if ev.get("type") == "result":
-                    # Цена есть и у упавшего прогона: токены он сжёг настоящие.
-                    if line := render.usage_line(ev):
-                        _usage[scope] = line
-                    if ev.get("is_error"):
-                        err = (ev.get("result") or "").strip()[:2000]
+                if ev.get("type") == "result" and ev.get("is_error"):
+                    err = (ev.get("result") or "").strip()[:2000]
                 if ev.get("type") == "_bot" and ev.get("kind") == "error":
                     rc = ev.get("rc")
                     stderr = (ev.get("text") or "").strip()
@@ -503,13 +508,13 @@ def build() -> web.Application:
         try:
             while True:
                 found: list[dict] = []
-                meta = None
+                ctx = None
                 if path.is_file():
                     # Диск в потоке: первый заход читает сессию целиком, а она бывает на
                     # десятки мегабайт — в общем event loop это заморозило бы все панели.
-                    off, found, meta = await asyncio.to_thread(items, path, off)
-                if found or meta:
-                    body = json.dumps({"next": off, "items": found, "meta": meta})
+                    off, found, ctx = await asyncio.to_thread(items, path, off)
+                if found or ctx:
+                    body = json.dumps({"next": off, "items": found, "ctx": ctx})
                     await res.write(f"id: {off}\ndata: {body}\n\n".encode())
                 if found:
                     idle = 0
@@ -577,7 +582,6 @@ def build() -> web.Application:
         из панели было не видно.
         """
         return web.json_response({"runs": runner.active(), "errors": _errors,
-                                  "usage": _usage, "spent": runner.spent(),
                                   "queued": runner.waiting(),
                                   "model": store.get("model") or "default"})
 
@@ -798,11 +802,6 @@ header button { padding:1px 6px; line-height:1.2 }
 /* Оба цвета заданы явно: подсветка должна читаться и в тёмной теме, и в светлой. */
 ::highlight(find) { background:#fd0; color:#000 }
 .log { flex:1; overflow:auto; padding:12px 14px }
-/* Счётчик под выводом: цифры нужны краем глаза, поэтому мелко, приглушённо и в одну
-   строку. Пустой подвал схлопывается сам — `:empty` убирает и отступы. */
-.foot { padding:2px 14px; font-size:11px; opacity:.55; white-space:nowrap;
-  overflow:hidden; text-overflow:ellipsis }
-.foot:empty { padding:0 }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
 /* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
@@ -985,9 +984,6 @@ const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 const echoes = new Map();
 // Показанная ошибка — чтобы не перерисовывать её на каждом тике.
 const shownErr = new Map();
-// Показанная цена прогона — по той же причине, что и ошибка: строка приходит в каждом
-// ответе /api/status, пока в панели не начнут следующий запуск.
-const shownCost = new Map();
 
 async function loadPeers() {
   let ps; try { ps = await get('api/peers'); } catch (e) { return; }
@@ -1370,7 +1366,6 @@ function drawPane(p) {
       <i class=ctx></i>
     </header>
     <div class=log></div>
-    <div class=foot></div>
     <form>
       <div class=menu hidden></div>
       <div class=ghost></div>
@@ -1474,7 +1469,6 @@ function skillsFor(project) {
 // только там: всё до курсора это `/` и слово без пробелов.
 const HEAD_RE = /^\/(\S*)$/;
 const NAME_RE = /^\/([\w-]+)/;
-const MENU_MAX = 12;
 
 // Поле ввода целиком: Enter, автодополнение по `/` и подсветка имени команды.
 // Одной функцией, потому что клавиши у них общие — меню забирает Enter себе, и
@@ -1503,7 +1497,7 @@ function wireSlash(p, el, ta) {
     const m = head();
     if (!m) return close();
     const q = m[1].toLowerCase();
-    shown = all.filter(s => s.name.toLowerCase().includes(q)).slice(0, MENU_MAX);
+    shown = all.filter(s => s.name.toLowerCase().includes(q));
     if (!shown.length) return close();
     sel = 0;
     draw();
@@ -1614,35 +1608,6 @@ function setCtx(p, ctx) {
   bar.classList.toggle('full', share >= 0.9);
 }
 
-// Счётчик под выводом. Токены приезжают кусками вместе с сообщениями, поэтому копит их
-// панель: дальше своего оффсета сервер не читает и суммы за сессию не знает. Держим в
-// Map, а не в самой панели — она уходит в localStorage, а после F5 поток начинается с
-// нуля и пересчитывает всё заново, так что сохранённое было бы двойным счётом.
-const toks = new Map();
-// Доллары приходят готовыми из /api/status по id сессии: их знает только событие
-// `result`, то есть конец прогона, и в транскрипте их нет вовсе.
-let costs = {};
-
-const big = (n) => n >= 1e6 ? (n / 1e6).toFixed(1) + 'M'
-                 : n >= 1e3 ? Math.round(n / 1e3) + 'k' : String(n);
-
-function drawFoot(p) {
-  const el = document.getElementById('pane-' + p.pane)?.querySelector('.foot');
-  if (!el) return;
-  const t = toks.get(p.pane);
-  const money = costs[p.session];
-  const bits = [];
-  // Кэш в общей сумме ввода, но назван отдельно в подсказке: перечитанный контекст даёт
-  // десятки миллионов при вводе в пять сотен, и без разбивки цифра только пугает.
-  if (t) bits.push(`↓${big(t.in + t.cache)} ↑${big(t.out)}`);
-  if (money) bits.push(`$${money.toFixed(2)}`);
-  el.textContent = bits.join(' · ');
-  el.title = !t ? '' : `ввод ${t.in}, кэш ${t.cache}, вывод ${t.out}`
-    + (money ? `\n$${money.toFixed(4)} за сессию с момента старта бота` : '');
-}
-
-// Возвращает вставленный узел: неудачная отправка забирает свою строку обратно, а
-// искать её в `catch` по последнему элементу нельзя — опрос за это время допишет своё.
 function log(p, html) {
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return null;
@@ -1670,10 +1635,13 @@ async function send(p, ta) {
     // подберёт в tick() из /api/status — к ответу на отправку её просто нет.
     if (r.queued) { log(p, `<div class="msg note">в очереди: впереди ${r.queued}</div>`); return; }
     if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
-    if (!p.session) {
+    if (r.session !== p.session) {
       // Новая сессия: id придумал claude, панель дочитывает уже созданный транскрипт.
       // Название берём из промпта — сервер даст своё только при следующем обновлении
       // списка, а подпись нужна сразу.
+      // Сравнение с прежним id, а не проверка на пустоту: `/clear` начинает новую
+      // сессию у живой панели, и без этого она осталась бы читать старый транскрипт,
+      // а ответы уходили бы в тот, которого никто не видит.
       p.session = r.session; p.next = 0;
       p.title = p.title || prompt.slice(0, 60);
       save();
@@ -1835,20 +1803,12 @@ function watch(p) {
 function unwatch(p) {
   streams.get(p.pane)?.close();
   streams.delete(p.pane);
-  // Счётчик уезжает вместе с потоком: новый начнёт с нуля и пересчитает сам.
-  toks.delete(p.pane);
 }
 
 function absorb(p, data) {
   const first = p.next === 0;
   p.next = data.next; save();
-  if (data.meta) {
-    setCtx(p, data.meta.ctx);
-    const t = toks.get(p.pane) || { in: 0, cache: 0, out: 0 };
-    for (const k of ['in', 'cache', 'out']) t[k] += data.meta.spent[k];
-    toks.set(p.pane, t);
-    drawFoot(p);
-  }
+  setCtx(p, data.ctx);
   if (!data.items.length) return;
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return;
@@ -1911,7 +1871,6 @@ async function tick() {
     for (const o of document.querySelectorAll('.model option[value=""]'))
       o.textContent = st.model;
   trackRuns(st.runs || []);
-  costs = st.spent || {};
   let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
@@ -1967,19 +1926,6 @@ async function tick() {
       }
     } else {
       shownErr.delete(p.pane);
-    }
-
-    // Цена прогона — последней строкой, уже после его ответа: поток доносит хвост
-    // транскрипта за 300 мс, а этот тик приходит раз в три секунды.
-    drawFoot(p);
-    const cost = (st.usage || {})[scope];
-    if (cost) {
-      if (shownCost.get(p.pane) !== cost) {
-        shownCost.set(p.pane, cost);
-        log(p, `<div class="msg note">💵 ${esc(cost)}</div>`);
-      }
-    } else {
-      shownCost.delete(p.pane);
     }
   }
   markList();

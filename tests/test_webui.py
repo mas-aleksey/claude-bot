@@ -145,6 +145,7 @@ def test_skills_reads_frontmatter(tmp_path, monkeypatch):
         {"name": "refine", "desc": "Разбор задачи"},
         {"name": "sync-repo", "desc": "без имени"},
         {"name": "weird", "desc": ""},
+        *webui.BUILTIN,
     ]
 
 
@@ -160,6 +161,7 @@ def test_skills_of_project_join_and_win(tmp_path, monkeypatch):
     assert webui.skills(str(project)) == [
         {"name": "bw", "desc": ".env через vault"},
         {"name": "refine", "desc": "проектный"},
+        *webui.BUILTIN,
     ]
 
 
@@ -266,15 +268,12 @@ def test_ctx_takes_last_assistant_usage(tmp_path, monkeypatch):
     path.write_text("\n".join([ev(90_000, 100), ev(1_000, 90)]) + "\n", encoding="utf-8")
 
     monkeypatch.setattr(webui.store, "get", lambda key, default=None: None)
-    assert webui.items(path, 0)[2]["ctx"] == {"used": 1100, "window": webui.DEFAULT_WINDOW,
-                                              "guess": True}
-    # Токены — сумма по всем ответам куска, а не по последнему: их панель складывает.
-    assert webui.items(path, 0)[2]["spent"] == {"in": 4, "cache": 91016, "out": 190}
+    assert webui.items(path, 0)[2] == {"used": 1100, "window": webui.DEFAULT_WINDOW,
+                                       "guess": True}
 
     # Окно, записанное runner-ом после прогона, перебивает оценку.
     monkeypatch.setattr(webui.store, "get", lambda key, default=None: "1000000")
-    assert webui.items(path, 0)[2]["ctx"] == {"used": 1100, "window": 1_000_000,
-                                              "guess": False}
+    assert webui.items(path, 0)[2] == {"used": 1100, "window": 1_000_000, "guess": False}
 
     empty = tmp_path / "empty.jsonl"
     empty.write_text("", encoding="utf-8")

@@ -39,8 +39,7 @@ async def client(tmp_path, monkeypatch):
 def clean_scopes():
     """Очередь и `_last` живут в модуле, а скоуп `web:pane-1` во всех тестах один."""
     yield
-    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs,
-              runner._cost):
+    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs):
         d.clear()
 
 
@@ -532,82 +531,3 @@ async def test_store_survives_a_worker_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_local", threading.local())
     store.put("ctxwin:claude-opus-5", "1000000")
     assert await asyncio.to_thread(store.get, "ctxwin:claude-opus-5") == "1000000"
-
-
-async def test_run_cost_shows_up_in_status(client, monkeypatch, tmp_path):
-    """Цена прогона живёт только в событии `result` — в транскрипт она не пишется,
-    и без этого пути в панели её взять неоткуда."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
-        yield {"type": "system", "subtype": "init",
-               "session_id": "11111111-2222-3333-4444-555555555555"}
-        yield {"type": "result", "result": "готово", "total_cost_usd": 0.0123,
-               "usage": {"input_tokens": 100, "output_tokens": 20}}
-
-    monkeypatch.setattr(runner, "run", fake)
-    monkeypatch.setattr(runner, "busy", lambda scope: False)
-    monkeypatch.setattr(webui, "_usage", {})
-    await client.post("/api/prompt", json={
-        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
-    await asyncio.sleep(0)
-
-    usage = (await (await client.get("/api/status")).json())["usage"]
-    assert usage["web:pane-1"] == "$0.012 ↓100 ↑20"
-
-
-async def test_new_run_clears_previous_cost(client, fake_run, tmp_path, monkeypatch):
-    """Иначе цена прошлого прогона висела бы под новым ответом как его собственная."""
-    monkeypatch.setattr(webui, "_usage", {"web:pane-1": "$9.999"})
-    await client.post("/api/prompt", json={
-        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
-    await asyncio.sleep(0)
-
-    usage = (await (await client.get("/api/status")).json())["usage"]
-    assert "web:pane-1" not in usage
-
-
-async def test_session_cost_accumulates_across_runs(monkeypatch, tmp_path):
-    """Цену говорит только `result`, и копить её надо в runner: через него идут оба
-    пути, и панель, и Telegram, поэтому счёт сессии не зависит от места запуска."""
-    class Proc:
-        returncode = None
-        pid = 1
-
-        def __init__(self, events):
-            self.stdout = events
-            self.stderr = self
-
-        async def wait(self):
-            self.returncode = 0
-            return 0
-
-        async def read(self):
-            return b""
-
-    async def run_once(cost):
-        async def lines():
-            yield json.dumps({"type": "system", "session_id": "sess-1"}).encode()
-            # Без `session_id`: в этом и подвох — локальная переменная тут обнулится,
-            # и сессию приходится брать из `_runs`.
-            yield json.dumps({"type": "result", "total_cost_usd": cost}).encode()
-
-        async def fake_exec(*a, **kw):
-            return Proc(lines())
-
-        monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", fake_exec)
-        async for _ in runner.run("промпт", str(tmp_path), scope="web:pane-1"):
-            pass
-
-    monkeypatch.setattr(runner, "trust", lambda cwd: None)
-    monkeypatch.setattr(runner, "_runs", {})
-    monkeypatch.setattr(runner, "_cost", {})
-    await run_once(0.01)
-    await run_once(0.02)
-
-    assert runner.spent() == pytest.approx({"sess-1": 0.03})
-
-
-async def test_status_reports_session_cost(client, monkeypatch):
-    """Панель берёт доллары отсюда: в транскрипте их нет, а поток о них не знает."""
-    monkeypatch.setattr(runner, "_cost", {"sess-1": 1.2345})
-    got = await (await client.get("/api/status")).json()
-    assert got["spent"] == {"sess-1": 1.2345}
