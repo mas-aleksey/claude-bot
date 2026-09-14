@@ -217,6 +217,7 @@ async def test_stream_waits_for_the_transcript_then_tails_it(client, tmp_path, m
                 "content": [{"type": "text", "text": "два"}]}}) + "\n")
     _, data = await _frame(r)
     assert [i["text"] for i in data["items"]] == ["два"]
+    assert data["reset"] is False  # дописанный файл — не повод стирать показанное
     r.close()
 
 
@@ -531,3 +532,26 @@ async def test_store_survives_a_worker_thread(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "_local", threading.local())
     store.put("ctxwin:claude-opus-5", "1000000")
     assert await asyncio.to_thread(store.get, "ctxwin:claude-opus-5") == "1000000"
+
+
+async def test_stream_recovers_when_the_transcript_shrinks(client, tmp_path, monkeypatch):
+    """Переписанный файл короче нашего оффсета, и `seek` за его конец молчал бы вечно —
+    панель выглядит зависшей, хотя поток жив и ошибок нет."""
+    monkeypatch.setattr(webui, "TAIL_TICK", 0.02)
+    sid = "11111111-2222-3333-4444-555555555555"
+    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    line = json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n"
+    path.write_text(line * 3, encoding="utf-8")
+
+    r = await client.get("/api/stream",
+                         params={"project": str(tmp_path / "proj"), "id": sid, "from": "0"})
+    off, _ = await _frame(r)
+    assert off == path.stat().st_size
+
+    path.write_text(json.dumps({"type": "user", "message": {"content": "два"}}) + "\n",
+                    encoding="utf-8")
+    _, data = await _frame(r)
+    assert [i["text"] for i in data["items"]] == ["два"]
+    assert data["reset"] is True  # панель обязана стереть показанное, иначе выйдет дубль
+    r.close()

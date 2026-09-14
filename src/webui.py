@@ -509,12 +509,24 @@ def build() -> web.Application:
             while True:
                 found: list[dict] = []
                 ctx = None
-                if path.is_file():
+                reset = False
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    size = None  # транскрипта ещё нет, claude его вот-вот создаст
+                if size is not None:
+                    # Файл короче нашего оффсета — его переписали или подменили. `seek`
+                    # за его конец молчит вечно, и панель выглядит зависшей при живом
+                    # потоке. Читаем сначала и просим панель очистить лог: показанное
+                    # относится к прежнему содержимому файла и уже неверно.
+                    if size < off:
+                        off, reset = 0, True
                     # Диск в потоке: первый заход читает сессию целиком, а она бывает на
                     # десятки мегабайт — в общем event loop это заморозило бы все панели.
                     off, found, ctx = await asyncio.to_thread(items, path, off)
                 if found or ctx:
-                    body = json.dumps({"next": off, "items": found, "ctx": ctx})
+                    body = json.dumps({"next": off, "items": found, "ctx": ctx,
+                                       "reset": reset})
                     await res.write(f"id: {off}\ndata: {body}\n\n".encode())
                 if found:
                     idle = 0
@@ -1792,10 +1804,11 @@ function watch(p) {
   const q = new URLSearchParams({ project: p.project, id: p.session, from: p.next });
   const es = new EventSource('api/stream?' + q);
   es.onmessage = (e) => absorb(p, JSON.parse(e.data));
-  // Переподключение при обрыве браузер делает сам, и это то, что нужно при рестарте
-  // бота. Но у вкладки с истёкшей сессией SSO обрыв вечный: каждая попытка уходит
-  // редиректом на вход. Останавливает её тот же счётчик отказов, что и опрос статуса —
-  // он ставит `dead`, а мы на ближайшей же ошибке закрываем поток.
+  // Переподключение после обрыва браузер делает сам. Но у вкладки с истёкшей сессией
+  // SSO обрыв вечный: каждая попытка уходит редиректом на вход. Останавливает её тот же
+  // счётчик отказов, что и опрос статуса — он ставит `dead`, а мы закрываем поток.
+  // Случай «сервер ответил не 200» сюда не относится: его EventSource считает фатальным
+  // и не повторяет вовсе, поднимает такой поток сторож в tick().
   es.onerror = () => { if (dead) unwatch(p); };
   streams.set(p.pane, es);
 }
@@ -1806,8 +1819,14 @@ function unwatch(p) {
 }
 
 function absorb(p, data) {
-  const first = p.next === 0;
+  const first = p.next === 0 || data.reset;
   p.next = data.next; save();
+  // Транскрипт переписали, и сервер читает его заново: показанное относится к прежнему
+  // содержимому. Стираем лог, иначе история встанет в панель дважды.
+  if (data.reset) {
+    const box = document.querySelector('#pane-' + p.pane + ' .log');
+    if (box) box.innerHTML = '';
+  }
   setCtx(p, data.ctx);
   if (!data.items.length) return;
   const box = document.querySelector('#pane-' + p.pane + ' .log');
@@ -1893,6 +1912,14 @@ async function tick() {
       setWho(p);
       loadSessions().catch(() => {});
     }
+
+    // Сторож потока. EventSource переподключается сам только после разрыва живого
+    // соединения; ответ не 200 — например 502 от Traefik, пока бот перезапускается —
+    // он по спецификации считает фатальным и закрывается навсегда. Панель при этом
+    // молчит, а баннер «офлайн» не появляется: /api/status отвечает как ни в чём не
+    // бывало. Тик и так ходит раз в три секунды, поэтому проверка стоит сравнения.
+    const es = streams.get(p.pane);
+    if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
 
     el?.classList.toggle('busy', busy);
     el?.querySelector('.dot')?.classList.toggle('busy', busy);
