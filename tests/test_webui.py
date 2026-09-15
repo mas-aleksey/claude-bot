@@ -71,6 +71,26 @@ def test_long_tool_argument_comes_with_its_full_text(tmp_path):
     assert len(got[1]["full"]) == min(len(long), webui.FULL_ARG)
 
 
+def test_run_summary_keeps_only_what_is_known():
+    """Итог прогона собирается из `result`: модель, время, цена, токены. Пустые поля
+    пропускаются — у местной команды цены нет, и `$0.000` сказал бы неправду."""
+    full = webui._stat_line({
+        "duration_ms": 72_000,
+        "total_cost_usd": 0.0837,
+        "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 300,
+                  "cache_read_input_tokens": 11_000, "output_tokens": 1400},
+    }, "opus")
+    assert full == "opus · 1:12 · $0.084 · ↓12.3k · ↑1.4k"
+
+    # Местная команда: ни цены, ни токенов, ни модели — строки нет вовсе, и панель
+    # ничего не печатает.
+    assert webui._stat_line({"total_cost_usd": 0, "usage": {"output_tokens": 0}}, None) == ""
+
+    # Короткий прогон без цены: секунды и вывод остаются, лишних разделителей нет.
+    assert webui._stat_line({"duration_ms": 4200, "usage": {"output_tokens": 950}},
+                            "sonnet") == "sonnet · 4с · ↑950"
+
+
 def test_items_reads_only_the_tail(tmp_path):
     """Опрос живого запуска: со старого оффсета отдаётся только новое."""
     path = tmp_path / "s.jsonl"

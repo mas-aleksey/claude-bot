@@ -26,7 +26,7 @@ USAGE = {
     ],
 }
 PROFILE = {
-    "account": {"email": "cc-ba-08@surf.dev"},
+    "account": {"email": "someone@example.com"},
     "organization": {"rate_limit_tier": "default_claude_max_5x"},
 }
 
@@ -52,9 +52,9 @@ def test_plan_short():
 
 
 def test_status_lines():
-    lim = {"email": "cc-ba-08@surf.dev", "plan": "max 5x", "bars": runner._bars(USAGE)}
+    lim = {"email": "someone@example.com", "plan": "max 5x", "bars": runner._bars(USAGE)}
     lines = app._plan_lines(lim)
-    assert lines.startswith("подписка: cc-ba-08@surf.dev · max 5x\n")
+    assert lines.startswith("подписка: someone@example.com · max 5x\n")
     assert "неделя 26%" in lines
     assert "неделя, Fable 0%" in lines
 

@@ -78,6 +78,11 @@ _errors: dict[str, str] = {}
 # всегда: он рендерит поток событий, а не файл.
 _local: dict[str, str] = {}
 
+# Итог последнего прогона по скоупу: `{"at": время, "text": строка}`. Живёт до начала
+# следующего запуска в той же панели, как и `_errors`. Время нужно панели, чтобы отличить
+# новый итог от уже показанного: два прогона подряд могут дать посимвольно равный текст.
+_stats: dict[str, dict] = {}
+
 
 def transcript(project: str, session_id: str) -> Path:
     """Путь к транскрипту по проекту и id, существование не проверяется.
@@ -218,6 +223,46 @@ def _ctx(used: int | None, model: str | None) -> dict | None:
     window = store.get(f"ctxwin:{model}")
     return {"used": used, "window": int(window) if window else DEFAULT_WINDOW,
             "guess": not window}
+
+
+def _short(n: int) -> str:
+    """Токены человеческим числом: 950, 12.3k, 1.4M."""
+    for div, suffix in ((1_000_000, "M"), (1_000, "k")):
+        if n >= div:
+            return f"{n / div:.1f}{suffix}"
+    return str(n)
+
+
+def _secs(sec: float) -> str:
+    s = int(sec)
+    if s < 60:
+        return f"{s}с"
+    return f"{s // 60}:{s % 60:02d}" if s < 3600 else f"{s // 3600}ч {s % 3600 // 60}м"
+
+
+def _stat_line(ev: dict, model: str | None) -> str:
+    """Итог прогона одной строкой: модель, время, цена, токены.
+
+    Всё это приезжает в `result` и до сих пор выбрасывалось — панель после ответа просто
+    гасила таймер, и сколько он стоил, было видно только в Telegram. Ввод считаем со
+    свежим и кэшированным вместе: платится и то и другое, а раздельно это четыре числа
+    в строке, которую читают на бегу.
+
+    Пустые поля пропускаем: у местных команд и у оборванного прогона цены нет, и `$0.000`
+    сказал бы неправду.
+    """
+    u = ev.get("usage") or {}
+    bits = [model] if model else []
+    if ms := ev.get("duration_ms"):
+        bits.append(_secs(ms / 1000))
+    if cost := ev.get("total_cost_usd"):
+        bits.append(f"${cost:.3f}")
+    if tin := sum(int(u.get(k) or 0) for k in (
+            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")):
+        bits.append(f"↓{_short(tin)}")
+    if tout := int(u.get("output_tokens") or 0):
+        bits.append(f"↑{_short(tout)}")
+    return " · ".join(bits)
 
 
 def _prompt(text: str) -> dict:
@@ -439,6 +484,8 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     _local.pop(scope, None)
+    _stats.pop(scope, None)
+    seen_model = None
     try:
         async with runner.slot(scope):
             if adopt:
@@ -452,11 +499,17 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                 # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
                 # отказ модели, недоступный проект — всё это claude пишет в stdout и
                 # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
+                # Модель берём из ответа, а не из того, что просили: панель с пустым
+                # выбором едет на общей модели бота, а сессия могла быть заведена на другой.
+                if ev.get("type") == "assistant":
+                    seen_model = (ev.get("message") or {}).get("model") or seen_model
                 if ev.get("type") == "result":
                     if ev.get("is_error"):
                         err = (ev.get("result") or "").strip()[:2000]
                     elif _answered_locally(ev) and (said := (ev.get("result") or "").strip()):
                         _local[scope] = said
+                    elif line := _stat_line(ev, seen_model):
+                        _stats[scope] = {"at": time.time(), "text": line}
                 if ev.get("type") == "_bot" and ev.get("kind") == "error":
                     rc = ev.get("rc")
                     stderr = (ev.get("text") or "").strip()
@@ -491,6 +544,9 @@ def build() -> web.Application:
 
     async def api_peers(_: web.Request) -> web.Response:
         return web.json_response(peers())
+
+    async def api_models(_: web.Request) -> web.Response:
+        return web.json_response(await runner.models())
 
     async def api_projects(_: web.Request) -> web.Response:
         return web.json_response(
@@ -629,9 +685,10 @@ def build() -> web.Application:
         запрос в API на минуту на все открытые вкладки.
         """
         return web.json_response({"runs": runner.active(), "errors": _errors,
-                                  "local": _local, "queued": runner.waiting(),
+                                  "local": _local, "stats": _stats,
+                                  "queued": runner.waiting(),
                                   "limits": await runner.limits(),
-                                  "model": store.get("model") or "default"})
+                                  "model": store.get("model") or runner.default_model()})
 
     async def api_prompt(req: web.Request) -> web.Response:
         data = await req.json()
@@ -681,6 +738,7 @@ def build() -> web.Application:
     app.add_routes([
         web.get("/", index),
         web.get("/api/peers", api_peers),
+        web.get("/api/models", api_models),
         web.get("/api/projects", api_projects),
         web.get("/api/skills", api_skills),
         web.get("/api/sessions", api_sessions),
@@ -964,7 +1022,16 @@ textarea:placeholder-shown ~ .bar .send { opacity:.35 }
 section.busy .bar .stop { display:grid; background:#e90; color:#000 }
 /* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
 section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
-#empty { grid-column:1/-1; margin:auto; opacity:.5 }
+/* Пустая область — не надпись, а два действия: открыть список и завести сессию. Текст
+   тут раньше указывал «слева», а сайдбар на узком экране свёрнут по умолчанию и лежит
+   поверх панелей — указывать было не на что, а вернуть его можно только полоской в 14
+   пикселей. Кнопка списка не нужна, когда список и так открыт. */
+#empty { grid-column:1/-1; margin:auto; display:flex; flex-direction:column; gap:8px }
+/* Своё `display` перебивает `hidden` из стилей браузера — та же ловушка, что у баннера
+   ниже: с открытой панелью кнопки оставались на экране под ней. */
+#empty[hidden] { display:none }
+#empty button { padding:8px 14px }
+body:not(.folded) #empty .list { display:none }
 /* Поверх всего и по центру верха: опрос встал, и пока человек не обновит страницу,
    ничего живого в панелях больше не появится. */
 #dead { position:fixed; z-index:50; top:12px; left:50%; transform:translateX(-50%);
@@ -982,13 +1049,20 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
    Ряды по содержимому, а высота задана самому окну: свёрнутое в заголовок иначе
    держало бы под собой пустые 70vh своего ряда. */
 @media (max-width: 700px) {
+  #top { --aw:min(280px, 85vw) }
   aside { position:absolute; z-index:10; left:0; top:0; height:100%;
-    width:min(280px, 85vw); background:Canvas; box-shadow:0 0 24px #0007 }
+    width:var(--aw); background:Canvas; box-shadow:0 0 24px #0007 }
+  /* Открытый сайдбар лежит поверх панелей и накрывает собой полоску возврата: на
+     телефоне спрятать список было нечем. Пока он открыт, полоска уезжает к его правому
+     краю и поднимается над ним. Ширина вдвое против настольной — 14px пальцем не берутся. */
+  #fold { width:24px }
+  body:not(.folded) #fold { position:absolute; z-index:11; left:var(--aw); top:0; height:100% }
   #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
     grid-template-rows:none; grid-auto-rows:auto }
   section { grid-column:1/-1 !important; grid-row:auto !important;
     height:min(70vh, 480px); border-radius:0; border-left:0; border-right:0 }
   section.rolled { height:auto }
+  .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
   form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
   .h { display:none }
 }
@@ -1007,7 +1081,10 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   <div id=plan hidden></div>
 </aside>
 <button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
-<div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
+<div id=panes><div id=empty>
+  <button class=list>список сессий</button>
+  <button class=fresh>+ новая сессия</button>
+</div></div>
 </div>
 <button id=termbar title="терминал: клик открывает и закрывает, потянуть — высота"
   aria-label="терминал"></button>
@@ -1016,6 +1093,10 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   <button id=reload>обновить страницу</button></div>
 <script>
 const $ = (id) => document.getElementById(id);
+
+// Порог узкого экрана. То же число стоит в @media выше: вёрстка там раскладывает панели
+// столбиком и перебивает сетку, а скрипт по этому же признаку отключает перетаскивание.
+const NARROW = matchMedia('(max-width: 700px)');
 
 // Вкладка стучится на сервер вечно, и хуже всего это выглядит при истёкшей сессии SSO:
 // каждый запрос уходит редиректом на вход и выписывает там куку состояния. Довести вход
@@ -1068,11 +1149,68 @@ const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 // транскрипта. Держим его тут, чтобы снять дубль. Не в самой панели: она уходит в
 // localStorage, и после F5 залипшее эхо съело бы строку из истории.
 const echoes = new Map();
+
+// --- echo:begin ---
+// Сравниваем по схлопнутым пробелам: слеш-команда возвращается из транскрипта собранной
+// заново из `<command-name>` и `<command-args>`, и лишний пробел или перенос между
+// командой и текстом делал строки разными. Набранное человеком и пересобранное claude
+// совпадают только с точностью до пробелов.
+const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
+
+// Дубли своих промптов. Ищем по всей очереди, а не только в голове: промпт, который до
+// транскрипта не доехал (отменён из очереди, съеден ошибкой), застревал первым и глушил
+// сверку для всех следующих — с этого момента каждый промпт панели печатался дважды.
+//
+// ponytail: застрявшая запись остаётся в очереди навсегда и однажды съест законный
+// повтор того же текста. Начнёт мешать — хранить рядом время отправки и выбрасывать
+// старше нескольких минут.
+function dropEcho(items, queue) {
+  return items.filter((it) => {
+    if (it.role !== 'user' || !queue.length) return true;
+    const at = queue.indexOf(norm(it.text));
+    if (at < 0) return true;
+    queue.splice(at, 1);
+    return false;
+  });
+}
+// --- echo:end ---
 // Показанная ошибка — чтобы не перерисовывать её на каждом тике.
 const shownErr = new Map();
 // Показанный ответ местной команды — по той же причине: он приходит в каждом ответе
 // /api/status, пока в панели не начнут следующий запуск.
 const shownLocal = new Map();
+// Показанный итог прогона — по времени, а не по тексту: два одинаковых прогона подряд
+// дают посимвольно равные строки, и сравнение текстов проглотило бы второй.
+const shownStats = new Map();
+
+// Список моделей на всю вкладку: один запрос за её жизнь. Каталог на сервере живёт
+// шесть часов, и опрашивать его чаще, чем человек жмёт F5, незачем.
+// Запасная тройка нужна ровно на случай, когда каталог не прочитался: панель без выбора
+// модели хуже, чем панель с устаревшим выбором.
+let MODELS = [];
+const FALLBACK = [{ id: 'opus', name: 'opus' }, { id: 'sonnet', name: 'sonnet' },
+                  { id: 'haiku', name: 'haiku' }];
+
+// Пустой пункт — «общая модель бота», его подписывает tick() именем этой модели.
+// Сохранённое значение, которого в каталоге нет (старый алиас, снятая модель), остаётся
+// отдельной строкой: молча подменить выбор панели значит соврать про то, чем она ходит.
+function fillModels(p, sel) {
+  const list = MODELS.length ? MODELS : FALLBACK;
+  const known = list.some(m => m.id === p.model);
+  sel.innerHTML = '<option value="">модель</option>' +
+    (p.model && !known ? `<option value="${esc(p.model)}">${esc(p.model)}</option>` : '') +
+    list.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
+  sel.value = p.model || '';
+}
+
+async function loadModels() {
+  try { MODELS = await get('api/models'); } catch (e) { return; }
+  if (!MODELS.length) return;
+  for (const p of panes) {
+    const sel = document.getElementById('pane-' + p.pane)?.querySelector('.model');
+    if (sel) fillModels(p, sel);
+  }
+}
 
 async function loadPeers() {
   let ps; try { ps = await get('api/peers'); } catch (e) { return; }
@@ -1322,6 +1460,10 @@ function wireGrab(p, el, node, edge) {
     // Кнопки в заголовке («стоп», «×») не должны запускать перенос: preventDefault ниже
     // съел бы их click, и панель стало бы нечем закрыть.
     if (e.button || e.target.closest('button')) return;
+    // На узком экране сетка перебита `!important`, и перенос там ничего не двигал —
+    // зато молча писал новые `c`/`r` в панель, и перекос вылезал на большом экране.
+    // Проверяем в момент жеста, а не при создании: окно поворачивают и меняют размер.
+    if (NARROW.matches) return;
     e.preventDefault();
     node.setPointerCapture(e.pointerId);
     raise(el);
@@ -1367,7 +1509,14 @@ function wireHandles(p, el) {
 }
 
 function addPane(p) {
-  if (p.session && panes.some(x => x.session === p.session)) return;  // уже открыта
+  // Сессия уже открыта — не вторая панель, а подъём той, что есть. Раньше клик по
+  // строке списка тут молча заканчивался, и это читалось как «кнопка не работает».
+  const open = p.session && panes.find(x => x.session === p.session);
+  if (open) {
+    const el = document.getElementById('pane-' + open.pane);
+    if (el) { raise(el); el.scrollIntoView({ block: 'nearest' }); }
+    return;
+  }
   if (p.session) { done.delete(p.session); saveMarks(); }
   p.w = p.w || W; p.h = p.h || H;
   p.hue = p.hue ?? freeHue();
@@ -1412,10 +1561,7 @@ function drawPane(p) {
         title="Enter — отправить, Shift+Enter — перенос строки"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
-        <select class=model title="модель этой панели">
-          <option value="">модель</option>
-          <option>opus</option><option>sonnet</option><option>haiku</option>
-        </select>
+        <select class=model title="модель этой панели"></select>
         <button class=send title="отправить">↑</button>
         <button class=stop type=button title="остановить">■</button>
       </div>
@@ -1455,7 +1601,7 @@ function drawPane(p) {
   wireSlash(p, el, ta);
 
   const model = el.querySelector('.model');
-  model.value = p.model || '';
+  fillModels(p, model);
   model.onchange = () => { p.model = model.value; save(); };
 
   // Файл: перетащить на панель или вставить из буфера. Наружу уходит путь, а не
@@ -1702,7 +1848,7 @@ async function send(p, ta) {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
-  echoes.set(p.pane, [...(echoes.get(p.pane) || []), prompt]);
+  echoes.set(p.pane, [...(echoes.get(p.pane) || []), norm(prompt)]);
   const line = log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   try {
     const r = await post('api/prompt', { pane: p.pane, project: p.project,
@@ -1732,7 +1878,7 @@ async function send(p, ta) {
     // Снимаем одну запись, а не все совпадения: тот же текст мог быть отправлен и
     // раньше, успешно, и его эхо в очереди законное.
     const queue = echoes.get(p.pane) || [];
-    const at = queue.lastIndexOf(prompt);
+    const at = queue.lastIndexOf(norm(prompt));
     if (at >= 0) queue.splice(at, 1);
     if (!queue.length) echoes.delete(p.pane);
     // Текст возвращаем только в пустое поле: за время запроса (до 90 секунд ожидания
@@ -1903,13 +2049,9 @@ function absorb(p, data) {
   const wasEnd = atEnd(box);
   // Свой же промпт, уже напечатанный локально, из транскрипта не берём — иначе он
   // стоит в панели дважды. Снимаем по одному совпадению на отправку: тот же текст мог
-  // быть отправлен и раньше, в истории он законный. Список, а не одна строка — в
-  // очереди панели ждут несколько промптов, и каждый вернётся из транскрипта своим.
+  // быть отправлен и раньше, в истории он законный.
   const queue = echoes.get(p.pane) || [];
-  const shown = data.items.filter(it => {
-    if (it.role === 'user' && queue.length && it.text === queue[0]) { queue.shift(); return false; }
-    return true;
-  });
+  const shown = dropEcho(data.items, queue);
   if (!queue.length) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
   wireCopy(box);
@@ -1959,7 +2101,10 @@ async function tick() {
   if (st.model)
     for (const o of document.querySelectorAll('.model option[value=""]'))
       o.textContent = st.model;
-  setPlan(st.limits);
+  // Только по живому ответу: у запасного `st` выше поля `limits` нет вовсе, и один
+  // неудачный опрос — рестарт бота, моргнувший Traefik — гасил полоски до следующего
+  // тика. Выглядело как «панель лимитов периодически прячется».
+  if ('limits' in st) setPlan(st.limits);
   trackRuns(st.runs || []);
   let running = 0;
   for (const p of panes) {
@@ -2038,6 +2183,18 @@ async function tick() {
     } else {
       shownLocal.delete(p.pane);
     }
+
+    // Итог прогона: модель, время, цена, токены. Панель до сих пор просто гасила таймер,
+    // хотя всё это лежит в том же `result`, из которого берётся текст ошибки.
+    const stat = (st.stats || {})[scope];
+    if (stat) {
+      if (shownStats.get(p.pane) !== stat.at) {
+        shownStats.set(p.pane, stat.at);
+        log(p, `<div class="msg note">✓ ${esc(stat.text)}</div>`);
+      }
+    } else {
+      shownStats.delete(p.pane);
+    }
   }
   markList();
   // Число работающих панелей в заголовке вкладки: видно, даже когда браузер свёрнут.
@@ -2075,7 +2232,7 @@ $('purge').onclick = async () => {
 const foldedAtStart = (saved, narrow) => saved === null ? narrow : saved === '1';
 // --- fold:end ---
 document.body.classList.toggle('folded',
-  foldedAtStart(localStorage.getItem('folded'), matchMedia('(max-width: 700px)').matches));
+  foldedAtStart(localStorage.getItem('folded'), NARROW.matches));
 $('fold').onclick = () => {
   const on = !document.body.classList.contains('folded');
   document.body.classList.toggle('folded', on);
@@ -2121,9 +2278,12 @@ $('termbar').onpointerdown = (e) => {
 $('reload').onclick = () => location.reload();
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
+$('empty').querySelector('.list').onclick = () => $('fold').click();
+$('empty').querySelector('.fresh').onclick = () => $('new').click();
 $('tile').onclick = () => { retile(); save(); };
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
+loadModels();
 loadProjects().then(() => {
   // Панели из localStorage могли получить оттенок из прежней палитры. Переназначаем по
   // одной: freeHue смотрит на уже занятые, поэтому цвета не совпадут.

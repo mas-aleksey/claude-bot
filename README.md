@@ -12,6 +12,7 @@ user ids — everyone else is ignored.
 | Command | |
 | --- | --- |
 | `/status` | current project, model, session, auth state, subscription limits |
+| `/web` | link to this instance's browser workspace |
 | `/projects`, `/cd <name>` | list projects as buttons, switch between them |
 | `/clone <git-url> [name]` | clone a repository into the projects directory |
 | `/sessions`, `/new` | switch to a recent session, or start a fresh one |
@@ -29,6 +30,14 @@ Plain text is a prompt. Text prefixed with `!` becomes a Claude slash command
 A prompt sent while that chat, topic or browser pane is busy is queued, not refused:
 it waits its turn and starts on its own when the previous run finishes. The queue
 lives in the bot process, so a restart drops it.
+
+Background work is carried to the end. A run that leaves a background shell command or
+a background subagent behind keeps its `claude` process alive instead of exiting on the
+first result: the task finishes, Claude picks the notification up on its own and sends
+the answer as a second message. Without it the process exits with the turn and takes the
+task with it, which is what `-p "prompt"` does — the promise to report back never
+arrives. The run ends when nothing is pending; a task that hangs holds the slot until
+`/cancel`, same as any other run that will not finish.
 
 Photos and documents are saved under `/data/inbox` and their path is appended to the
 prompt, so a caption and its file arrive as one message — the CLI reads the file itself.

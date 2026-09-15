@@ -117,6 +117,36 @@ console.log(JSON.stringify([seen, panes.length, panes[0].w, panes[0].h, was, big
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_own_prompt_is_shown_once(tmp_path):
+    """Свой промпт печатается сразу и через секунды приезжает из транскрипта. Сверка
+    идёт по всей очереди и по схлопнутым пробелам: слеш-команду claude пересобирает из
+    тегов, а застрявшая запись раньше глушила сверку для всех следующих промптов."""
+    body = slice_out("script").split("// --- echo:begin ---")[1].split("// --- echo:end ---")[0]
+    js = tmp_path / "echo.js"
+    js.write_text(body + """
+const q1 = ['/refine текст'];
+const same = dropEcho([{ role: 'user', text: '/refine  текст' }], q1);
+
+// Застрявшее эхо (промпт не доехал до транскрипта) не должно глушить следующий.
+const q2 = ['застряло', 'новый промпт'];
+const after = dropEcho([{ role: 'user', text: 'новый промпт' }], q2);
+
+// Чужая строка и ответ claude проходят как есть, очередь не трогают.
+const q3 = ['моё'];
+const rest = dropEcho([{ role: 'assistant', text: 'моё' },
+                       { role: 'user', text: 'из телеграма' }], q3);
+console.log(JSON.stringify([same.length, q1, after.length, q2, rest.length, q3]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    same, q1, after, q2, rest, q3 = json.loads(done.stdout)
+
+    assert [same, q1] == [0, []]                  # лишний пробел совпадению не мешает
+    assert [after, q2] == [0, ["застряло"]]       # снят свой, застрявшее осталось лежать
+    assert [rest, q3] == [2, ["моё"]]             # ответ и чужой промпт не съедены
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
 def test_sidebar_start_state(tmp_path):
     """Первый заход решается шириной экрана, дальше — сохранённым выбором. Ловушка тут
     в строке '0': она истинна, и проверка на истинность прятала бы открытый сайдбар."""

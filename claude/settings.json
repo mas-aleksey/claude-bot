@@ -1,4 +1,4 @@
 {
   "outputStyle": "conclusion-first",
-  "model": "opus"
+  "model": "claude-opus-5"
 }

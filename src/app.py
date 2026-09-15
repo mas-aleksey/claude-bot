@@ -44,6 +44,9 @@ WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
 
 THROTTLE = 2.0   # секунд между editMessageText
 LONG_RUN = 120   # после стольких секунд шлём отдельный пинг «готово»
+# Заголовок хода, который claude начал сам — по завершившейся фоновой задаче, а не по
+# промпту человека. Промпта у такого хода нет, а заголовок сообщению нужен.
+BG_TITLE = "фоновая задача завершилась"
 
 dp = Dispatcher()
 
@@ -81,6 +84,7 @@ def cwd(scope: str) -> str:
 # Пары, а не dict, — порядок важен, группировка по смыслу.
 HELP = [
     ("status", "текущий проект, модель, сессия, авторизация"),
+    ("web", "ссылка на рабочее пространство в браузере"),
     ("projects", "список проектов кнопками"),
     ("cd", "<name> — переключить проект"),
     ("clone", "<git-url> [name] — склонировать репозиторий в проекты"),
@@ -180,6 +184,15 @@ def _context_line(project: str, session_id: str | None) -> str:
     k = round(ctx["used"] / 1000)
     win = round(ctx["window"] / 1000)
     return f"{k}k/{win}k{'?' if ctx['guess'] else ''} ({round(100 * ctx['used'] / ctx['window'])}%)"
+
+
+@dp.message(Command("web"))
+async def cmd_web(msg: Message) -> None:
+    """Адрес панели этого инстанса. Держим в переменной, а не вычисляем: своего имени у
+    бота нет — hostname он берёт у dind, а `WEB_PEERS` перечисляет всех и не говорит,
+    кто из них мы."""
+    url = os.environ.get("WEB_SELF", "").strip()
+    await msg.answer(url or "адрес панели не задан — нужен WEB_SELF в compose инстанса")
 
 
 @dp.message(Command("projects"))
@@ -535,15 +548,45 @@ async def _run(msg: Message, prompt: str, sc: str, live: Message | None) -> None
         await edit(live, run.text())
     else:
         live = await send(msg, run.text())
+
+    stream = runner.run(
+        prompt, project, store.session_of(sc, project), store.get("model"), scope=sc
+    )
+    # Ходов на один промпт бывает несколько: claude дожидается фоновой задачи и сам
+    # начинает следующий ход с её результатом. Каждый ход — своё сообщение, потому что
+    # первое к тому времени уехало вверх ленты и человек его уже прочитал.
+    while await _turn(msg, stream, run, live, sc, project):
+        run, live = render.Run(BG_TITLE, Path(project).name), None
+
+
+async def _turn(msg: Message, stream, run: render.Run, live: Message | None,
+                sc: str, project: str) -> bool:
+    """Один ход claude в своём сообщении. Возвращает, может ли за ним быть следующий.
+
+    `live` пустой у всех ходов, кроме первого: сообщение заводится на первом событии,
+    иначе оставшийся без хода поток оставил бы в чате пустое «⏳».
+    """
     last_text, last_edit = run.text(), 0.0
     # Для дорисовки после рестарта. Ключ со скоупом — у каждого топика своё «⏳».
-    store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
+    if live:
+        store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
+    more, tail_error = False, ""
 
     try:
-        async for ev in runner.run(
-            prompt, project, store.session_of(sc, project), store.get("model"), scope=sc
-        ):
+        async for ev in stream:
+            if live is None:
+                # Код возврата приходит последним, уже после всех `result`. Своего хода
+                # он не начинает — иначе вышло бы сообщение «фоновая задача» с одной
+                # ошибкой внутри и без единого шага.
+                if ev.get("type") == "_bot":
+                    tail_error = f"rc={ev.get('rc')}\n{ev.get('text', '')}".strip()
+                    continue
+                live = await send(msg, run.text())
+                store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
             run.feed(ev)
+            if ev.get("type") == "result":
+                more = True  # дальше либо конец потока, либо ход по фоновой задаче
+                break
             now = time.monotonic()
             if now - last_edit < THROTTLE:
                 continue
@@ -560,6 +603,11 @@ async def _run(msg: Message, prompt: str, sc: str, live: Message | None) -> None
         store.save_session(sc, project, run.session_id)
     store.put(f"{sc}:live", None)
 
+    if live is None:  # поток кончился, хода не было
+        if tail_error:
+            await _err(msg, tail_error)
+        return False
+
     final, extra = run.parts()
     if final != last_text:
         await edit(live, final)
@@ -569,12 +617,18 @@ async def _run(msg: Message, prompt: str, sc: str, live: Message | None) -> None
 
     # Длинный запуск: «⏳» уехало вверх ленты, отдельным сообщением зовём обратно.
     if time.monotonic() - run.started > LONG_RUN:
-        await msg.answer(f"⬆️ готово: {render.clip(prompt, 60)}", reply_to_message_id=live.message_id)
+        await msg.answer(f"⬆️ готово: {render.clip(run.prompt, 60)}",
+                         reply_to_message_id=live.message_id)
 
     # Ошибку дублируем — в отредактированном сообщении её легко проспать. Если она уже
     # уехала отдельными сообщениями (extra), второй раз не шлём.
     if run.error and not extra:
-        await send(msg, f"❌ <b>ошибка</b>\n<pre>{render.esc(run.error[:3500])}</pre>")
+        await _err(msg, run.error)
+    return more
+
+
+async def _err(msg: Message, text: str) -> None:
+    await send(msg, f"❌ <b>ошибка</b>\n<pre>{render.esc(text[:3500])}</pre>")
 
 
 async def mark_orphan(bot: Bot) -> None:

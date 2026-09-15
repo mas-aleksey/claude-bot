@@ -43,6 +43,13 @@ _limits: tuple[float, dict] = (float("-inf"), {})
 # в который упрёшься, хуже, чем показать непонятную подпись.
 LIMIT_NAMES = {"session": "сессия", "weekly_all": "неделя", "weekly_scoped": "неделя"}
 
+# Каталог моделей. Кеш длинный, в отличие от минутного у лимитов: список меняется раз в
+# месяцы. Своего перечня у CLI нет — ни одна его команда моделей не печатает, поэтому
+# зашитая в панель тройка `opus/sonnet/haiku` устаревала молча и `fable` в ней не было.
+MODELS_URL = "https://api.anthropic.com/v1/models?limit=50"
+MODELS_TTL = 6 * 3600
+_models: tuple[float, list] = (float("-inf"), [])
+
 # Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
 # идти параллельно. Личка и обычная группа живут в скоупе "0".
 # Хранится тройка (процесс, момент старта, id сессии). Время нужно интерфейсу для
@@ -68,6 +75,72 @@ _last: dict[str, str] = {}
 
 class Dropped(Exception):
     """Промпт выкинули из очереди отменой: прогона не было и не будет."""
+
+
+class Drain:
+    """Когда процессу claude можно закрывать stdin, то есть выходить.
+
+    В текстовом режиме (`-p "промпт"`) CLI выходит по первому `result` и уносит с собой
+    фоновые задачи: файл вывода остаётся со словом `[killed]`, а обещание «вернусь, когда
+    закончится» не сбывается никогда. Поэтому промпт едет через `--input-format
+    stream-json`, и пока stdin открыт, процесс жив и сам начинает новый ход на каждое
+    уведомление о завершившейся задаче.
+
+    Признак «ждать больше нечего» собран из служебных событий CLI, а не из текста
+    tool_result: список живых задач плюс отметка о пришедшем уведомлении. Второе
+    закрывает гонку «задача кончилась за миг до `result`»: без него stdin закрылся бы
+    ровно между уведомлением и ответом на него.
+
+    Ждать по отметке можно только с потолком, и это не перестраховка, а разбор аварии
+    2026-09-15 в песочнице surf. Уведомление о брошенных задачах прошлой сессии CLI
+    отдаёт на `--resume`, ещё до первого `init`, и отрабатывает его **тем же** ходом,
+    что и промпт человека, — второго `init` не будет никогда. Бессрочное ожидание
+    оставило процесс висеть с открытым stdin: работа кончилась, а скоуп занят.
+    Поэтому отметка снимается `system/init`, а если он не пришёл за `GRACE` — ждать
+    нечего и stdin закрывается. Не по любому `assistant`: события фонового субагента
+    текут в тот же поток и `init` не несут, иначе отметка снималась бы чужой строкой.
+
+    Живой фоновой задачи потолок не касается: она разбудит поток сама, и ждать её можно
+    часами.
+
+    ponytail: контракт событий недокументирован, проверено на claude 2.1.270
+    (`local_bash` и `local_agent` в одном списке). Переименуют — список останется пустым,
+    и поведение выродится в сегодняшнее, выход по первому `result`.
+    """
+
+    # Ход по уведомлению начинается сразу (`init` в том же кадре потока) или не
+    # начинается вовсе. Секунды тут — на неспешный диск, а не на работу модели.
+    GRACE = 5.0
+
+    def __init__(self) -> None:
+        self.tasks = 0
+        self.awaited = False  # уведомление пришло, ход на него ещё не начался
+        self.started = False  # первый `init` — старт прогона, а не ход по уведомлению
+
+    def feed(self, ev: dict) -> None:
+        if ev.get("type") != "system":
+            return
+        match ev.get("subtype"):
+            case "background_tasks_changed":
+                self.tasks = len(ev.get("tasks") or [])
+            case "task_notification":
+                self.awaited = True
+            case "init":
+                if self.started:
+                    self.awaited = False
+                self.started = True
+
+    def done(self, ev: dict) -> bool:
+        """`result` при пустом фоне — прогон окончен, stdin можно закрывать."""
+        return ev.get("type") == "result" and not self.tasks and not self.awaited
+
+    def wait(self) -> float | None:
+        """Сколько ждать следующего события. None — сколько угодно."""
+        return self.GRACE if self.awaited and not self.tasks else None
+
+    def give_up(self) -> None:
+        """Обещанный ход не начался за `GRACE` — больше его не ждём."""
+        self.awaited = False
 
 
 def busy(scope: str) -> bool:
@@ -208,7 +281,10 @@ async def run(
     второй канал под ошибки и код возврата.
     """
     trust(cwd)
-    argv = [*BASE, "-p", prompt, "--output-format", "stream-json", "--verbose"]
+    # Промпт уходит в stdin, а не в argv: см. `Drain` — только в этом режиме процесс
+    # переживает конец хода и доносит фоновые задачи до конца.
+    argv = [*BASE, "-p", "--input-format", "stream-json",
+            "--output-format", "stream-json", "--verbose"]
     if session_id:
         argv += ["--resume", session_id]
     if model:
@@ -217,6 +293,7 @@ async def run(
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=cwd,
+        stdin=asyncio.subprocess.PIPE,
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         start_new_session=True,  # своя группа — /cancel бьёт по всем детям
@@ -225,9 +302,24 @@ async def run(
         limit=16 * 1024 * 1024,
     )
     _runs[scope] = (proc, time.monotonic(), session_id)
+    proc.stdin.write(json.dumps(
+        {"type": "user", "message": {"role": "user", "content": prompt}}).encode() + b"\n")
+    await proc.stdin.drain()
 
+    drain = Drain()
     try:
-        async for line in proc.stdout:
+        while True:
+            try:
+                # Читаем с потолком, а не `async for`: ожидание хода по уведомлению
+                # обязано кончиться (см. Drain), а живой фоновой задачи ждём без срока.
+                line = await asyncio.wait_for(proc.stdout.readline(), drain.wait())
+            except TimeoutError:
+                drain.give_up()
+                if not proc.stdin.is_closing():
+                    proc.stdin.close()
+                continue
+            if not line:
+                break
             line = line.strip()
             if not line:
                 continue
@@ -247,6 +339,11 @@ async def run(
                 for name, info in (ev.get("modelUsage") or {}).items():
                     if window := info.get("contextWindow"):
                         store.put(f"ctxwin:{name}", str(window))
+            # Закрываем до `yield`: вызывающий рисует ответ в Telegram, а процесс
+            # столько ждать не должен.
+            drain.feed(ev)
+            if drain.done(ev) and not proc.stdin.is_closing():
+                proc.stdin.close()
             yield ev
 
         rc = await proc.wait()
@@ -254,6 +351,10 @@ async def run(
         if rc != 0:
             yield {"type": "_bot", "kind": "error", "rc": rc, "text": err}
     finally:
+        # Вызывающий может бросить генератор на середине (ошибка рендера, отмена задачи).
+        # Открытый stdin держал бы claude живым вечно — раньше он выходил сам.
+        if not proc.stdin.is_closing():
+            proc.stdin.close()
         if (entry := _runs.get(scope)) and entry[0] is proc:
             del _runs[scope]
 
@@ -435,15 +536,75 @@ async def limits() -> dict:
     return out
 
 
+async def models() -> list[dict]:
+    """Модели для выпадашки панели: `{"id", "name"}`, свежие сверху.
+
+    Тем же токеном подписки, что читает `runner.limits`: каталог отдаётся по OAuth и
+    всегда актуален — новая модель появляется в списке сама, снятая исчезает.
+
+    Пустой список значит «панель покажет запасную тройку». Каталог недоступен — это не
+    повод оставить человека без выбора модели вообще.
+
+    Подпись — `display_name` без слова «Claude»: в списке из одиннадцати строк оно стоит
+    в каждой и не различает ничего.
+    """
+    global _models
+    now = time.monotonic()
+    if now - _models[0] < MODELS_TTL:
+        return _models[1]
+    out: list[dict] = []
+    try:
+        with open(CREDS, encoding="utf-8") as f:
+            token = json.load(f)["claudeAiOauth"]["accessToken"]
+        headers = {"Authorization": f"Bearer {token}",
+                   "anthropic-beta": "oauth-2025-04-20",
+                   "anthropic-version": "2023-06-01"}
+        async with aiohttp.ClientSession(
+                headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s, \
+                s.get(MODELS_URL) as r:
+            body = await r.json()
+        out = [{"id": m["id"], "name": (m.get("display_name") or m["id"]).removeprefix("Claude ")}
+               for m in body.get("data") or [] if m.get("id")]
+    except Exception as e:
+        log.warning("каталог моделей не прочитался: %s", e)
+    _models = (now, out)
+    return out
+
+
+def default_model() -> str:
+    """Чем пойдёт прогон, когда в боте ничего не выбрано: модель из settings.json.
+
+    Раньше и бот, и панель показывали в этом случае слово «default», из которого не
+    следует ничего. Файл лежит в образе, читается редко — кеш тут не нужен.
+    """
+    try:
+        with open(SETTINGS, encoding="utf-8") as f:
+            return json.load(f).get("model") or "default"
+    except (OSError, ValueError):
+        return "default"
+
+
+# Алиасы «последняя модель этого семейства». В каталоге их нет — он перечисляет только
+# конкретные версии, — поэтому список держим рядом. Проверено прогоном `claude -p --model
+# <алиас>` на 2.1.270: эти шесть CLI принимает, `sonnet-5` уже отвергает.
+ALIASES = {"opus", "sonnet", "haiku", "fable", "default", "opusplan"}
+
+
 async def check_model(model: str) -> str | None:
-    """Валиден ли алиас модели — спрашиваем сам claude, чтобы не вести свой список.
-    С пустым stdin cli печатает жалобу на незнакомую модель и выходит ДО обращения
-    к API, так что проверка бесплатная. Возвращает текст ошибки или None."""
-    proc = await asyncio.create_subprocess_exec(
-        "claude", "-p", "--model", model,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    err = (await proc.communicate())[1].decode("utf-8", "replace")
-    return err.strip() if "is not a model" in err else None
+    """Знаем ли такую модель. Текст ошибки или None.
+
+    По каталогу, а не по жалобе CLI: формулировка жалобы уже сменилась с `is not a model`
+    на `isn\'t described by this version\'s model catalog`, и проверка молча пропускала
+    любую опечатку — `/model фигня` сохранялся как есть и ломал следующий прогон.
+
+    Каталог недоступен — не запрещаем: интернета может не быть, а это не повод не дать
+    сменить модель.
+    """
+    if model in ALIASES:
+        return None
+    cat = await models()
+    if not cat or any(m["id"] == model for m in cat):
+        return None
+    return (f"не знаю модель «{model}». Полные имена: "
+            + ", ".join(m["id"] for m in cat[:4]) + " …; алиасы: "
+            + ", ".join(sorted(ALIASES)))

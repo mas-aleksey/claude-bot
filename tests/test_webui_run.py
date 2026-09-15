@@ -407,6 +407,25 @@ def test_days_has_a_floor(raw, want):
 async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
     """Сессию новой панели придумывает claude, и запомнить её можно только из первого
     события. Тег ставится внутри runner.run, чтобы вызывающий не смог забыть."""
+    class Stdin:
+        """Промпт уходит сюда, а не в argv: только в режиме stream-json процесс живёт
+        дольше одного хода и доносит фоновые задачи (см. runner.Drain)."""
+
+        def __init__(self):
+            self.written, self.closed = b"", False
+
+        def write(self, data):
+            self.written += data
+
+        async def drain(self):
+            pass
+
+        def is_closing(self):
+            return self.closed
+
+        def close(self):
+            self.closed = True
+
     class Proc:
         returncode = None
         pid = 1
@@ -414,6 +433,7 @@ async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
         def __init__(self):
             self.stdout = self
             self.stderr = self
+            self.stdin = Stdin()
 
         async def __aiter__(self):  # pragma: no cover — заменяется ниже
             yield b""
@@ -427,10 +447,17 @@ async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
 
     proc = Proc()
 
-    async def lines():
-        yield json.dumps({"type": "system", "session_id": "sess-new"}).encode()
+    class Stdout:
+        """Одно событие, потом EOF — как у claude, который закончил и вышел."""
 
-    proc.stdout = lines()
+        def __init__(self):
+            self.lines = [
+                json.dumps({"type": "system", "session_id": "sess-new"}).encode() + b"\n"]
+
+        async def readline(self):
+            return self.lines.pop(0) if self.lines else b""
+
+    proc.stdout = Stdout()
 
     async def fake_exec(*a, **kw):
         return proc
@@ -445,6 +472,10 @@ async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
         assert runner.active()[0]["session"] == "sess-new"  # тег появился сразу
 
     assert seen[0]["session_id"] == "sess-new"
+    # Промпт — строкой stream-json в stdin, и stdin закрыт: генератор дошёл до конца,
+    # а брошенный открытым он держал бы claude живым вечно.
+    assert json.loads(proc.stdin.written)["message"]["content"] == "промпт"
+    assert proc.stdin.closed
 
 
 async def test_prompt_passes_pane_model(client, fake_run, tmp_path):
