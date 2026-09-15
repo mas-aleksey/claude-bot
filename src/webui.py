@@ -1218,7 +1218,11 @@ body:not(.folded) #empty .list { display:none }
    забирал 280 и окно оставалось в сотню. Поля области убраны совсем — окно идёт от
    края до края, и единственное, что у экрана отъедено, это полоска возврата к списку.
    Ряды по содержимому, а высота задана самому окну: свёрнутое в заголовок иначе
-   держало бы под собой пустые 70vh своего ряда. */
+   держало бы под собой пустые 70vh своего ряда.
+   align-content:start — не украшение: по умолчанию grid растягивает auto-ряды, раздавая
+   остаток высоты между ними поровну. Окно при этом своего размера не меняет, и довесок
+   ряда вылезает пустотой под ним — свёрнутое в заголовок выглядело так, будто оно и не
+   свернулось. */
 @media (max-width: 700px) {
   #top { --aw:min(280px, 85vw) }
   aside { position:absolute; z-index:10; left:0; top:0; height:100%;
@@ -1233,7 +1237,7 @@ body:not(.folded) #empty .list { display:none }
   body:not(.rfolded) #rfold { position:absolute; z-index:11; left:auto; right:var(--aw);
     top:0; height:100% }
   #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
-    grid-template-rows:none; grid-auto-rows:auto }
+    grid-template-rows:none; grid-auto-rows:auto; align-content:start }
   section { grid-column:1/-1 !important; grid-row:auto !important;
     height:min(70vh, 480px); border-radius:0; border-left:0; border-right:0 }
   section.rolled { height:auto }
