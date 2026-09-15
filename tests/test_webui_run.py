@@ -555,3 +555,42 @@ async def test_stream_recovers_when_the_transcript_shrinks(client, tmp_path, mon
     assert [i["text"] for i in data["items"]] == ["два"]
     assert data["reset"] is True  # панель обязана стереть показанное, иначе выйдет дубль
     r.close()
+
+
+async def test_local_command_answer_reaches_the_panel(client, monkeypatch, tmp_path):
+    """`/cost` и `/model` claude отвечает сам, до модели не доходя, и в транскрипт ответ
+    не пишет — там остаются пометка клиента и имя команды. Поток его принести не может,
+    поэтому текст едет через статус."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "result", "result": "Current model: Opus 5", "total_cost_usd": 0,
+               "usage": {"input_tokens": 0, "output_tokens": 0}}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_local", {})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "/model"})
+    await asyncio.sleep(0)
+
+    got = await (await client.get("/api/status")).json()
+    assert got["local"]["web:pane-1"] == "Current model: Opus 5"
+
+
+async def test_normal_answer_does_not_ride_the_local_channel(client, monkeypatch, tmp_path):
+    """Иначе обычный ответ встал бы в панель дважды: его же текст лежит в `result`,
+    а из транскрипта панель его уже вытянула."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        yield {"type": "result", "result": "готово", "total_cost_usd": 0.02,
+               "usage": {"output_tokens": 20}}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_local", {})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "привет"})
+    await asyncio.sleep(0)
+
+    got = await (await client.get("/api/status")).json()
+    assert got["local"] == {}

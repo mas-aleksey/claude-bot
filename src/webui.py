@@ -67,6 +67,13 @@ _tasks: set[asyncio.Task] = set()
 # Текст живёт до следующего запуска в той же панели.
 _errors: dict[str, str] = {}
 
+# Ответ местной команды claude (`/cost`, `/model`, `/context`) по скоупу. Такие команды
+# claude отвечает сам, не обращаясь к модели, и в транскрипт ответ не пишет — там
+# остаются только пометка клиента и имя команды. Панель читает транскрипт, поэтому без
+# этого словаря она показывала серую пометку и молчание. В Telegram то же самое видно
+# всегда: он рендерит поток событий, а не файл.
+_local: dict[str, str] = {}
+
 
 def transcript(project: str, session_id: str) -> Path:
     """Путь к транскрипту по проекту и id, существование не проверяется.
@@ -398,6 +405,19 @@ def _project(raw: str) -> str:
     raise web.HTTPBadRequest(text="нет такого проекта")
 
 
+def _answered_locally(ev: dict) -> bool:
+    """Ответил ли claude сам, не обращаясь к модели.
+
+    Признак — нулевые цена и токены в `result`: местная команда до API не доходит.
+    Проверено на `/cost` и `/model`, оба отдают текст при `total_cost_usd: 0` и
+    `output_tokens: 0`. Настоящий прогон обоих нулей одновременно дать не может.
+
+    Нужно, чтобы не дублировать обычный ответ: у него тот же `result`, но его панель
+    уже вытянула из транскрипта.
+    """
+    return not ev.get("total_cost_usd") and not (ev.get("usage") or {}).get("output_tokens")
+
+
 async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                  got: asyncio.Future, model: str | None = None, adopt: bool = False) -> None:
     """Довести запуск до конца, ничего не рендеря: вывод claude сам пишет в транскрипт,
@@ -411,6 +431,7 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     sid = session_id
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
+    _local.pop(scope, None)
     try:
         async with runner.slot(scope):
             if adopt:
@@ -424,8 +445,11 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                 # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
                 # отказ модели, недоступный проект — всё это claude пишет в stdout и
                 # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
-                if ev.get("type") == "result" and ev.get("is_error"):
-                    err = (ev.get("result") or "").strip()[:2000]
+                if ev.get("type") == "result":
+                    if ev.get("is_error"):
+                        err = (ev.get("result") or "").strip()[:2000]
+                    elif _answered_locally(ev) and (said := (ev.get("result") or "").strip()):
+                        _local[scope] = said
                 if ev.get("type") == "_bot" and ev.get("kind") == "error":
                     rc = ev.get("rc")
                     stderr = (ev.get("text") or "").strip()
@@ -594,7 +618,7 @@ def build() -> web.Application:
         из панели было не видно.
         """
         return web.json_response({"runs": runner.active(), "errors": _errors,
-                                  "queued": runner.waiting(),
+                                  "local": _local, "queued": runner.waiting(),
                                   "model": store.get("model") or "default"})
 
     async def api_prompt(req: web.Request) -> web.Response:
@@ -996,6 +1020,9 @@ const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 const echoes = new Map();
 // Показанная ошибка — чтобы не перерисовывать её на каждом тике.
 const shownErr = new Map();
+// Показанный ответ местной команды — по той же причине: он приходит в каждом ответе
+// /api/status, пока в панели не начнут следующий запуск.
+const shownLocal = new Map();
 
 async function loadPeers() {
   let ps; try { ps = await get('api/peers'); } catch (e) { return; }
@@ -1953,6 +1980,20 @@ async function tick() {
       }
     } else {
       shownErr.delete(p.pane);
+    }
+
+    // Ответ местной команды (`/cost`, `/model`, `/context`): claude отвечает на них сам
+    // и в транскрипт ответ не пишет, поэтому поток его не принесёт — только статус.
+    // Рисуем обычным ответом claude, потому что это он и есть.
+    const said = (st.local || {})[scope];
+    if (said) {
+      if (shownLocal.get(p.pane) !== said) {
+        shownLocal.set(p.pane, said);
+        log(p, renderItem({ role: 'assistant', text: said }));
+        wireCopy(document.querySelector('#pane-' + p.pane + ' .log'));
+      }
+    } else {
+      shownLocal.delete(p.pane);
     }
   }
   markList();
