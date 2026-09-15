@@ -4,6 +4,7 @@
 формы не должна ронять статус, поэтому проверяем и мусор.
 """
 
+import json
 import os
 import time
 
@@ -13,6 +14,7 @@ os.environ.setdefault("TG_BOT_TOKEN", "x")  # app читает env на импо
 
 import app
 import runner
+import store
 
 USAGE = {
     "five_hour": {"utilization": 0.0},
@@ -79,6 +81,9 @@ async def test_limits_cached(monkeypatch):
         raise FileNotFoundError("нет токена")
 
     monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+    # Пустой кеш — это холодный старт, и он лезет в базу за прошлым ответом. База тут
+    # настоящая, с настоящими процентами живого бота: без заглушки тест сверял бы их.
+    monkeypatch.setattr(runner, "_remembered", dict)
     monkeypatch.setattr("builtins.open", creds)
     assert await runner.limits() == {}
     assert await runner.limits() == {}
@@ -86,20 +91,17 @@ async def test_limits_cached(monkeypatch):
 
 
 async def test_limits_keep_last_good_answer(monkeypatch):
-    """Промах запроса не должен гасить полоски: проценты известны и за минуту не
-    устареют. Ошибку ловим на нечитаемом CREDS — сети в тестах нет и не надо."""
+    """Промах запроса не должен гасить полоски: проценты известны, а насколько они
+    стары — видно по отметке времени в самих числах. Ошибку ловим на нечитаемом CREDS,
+    сети в тестах нет и не надо."""
     monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
-    known = {"email": "", "plan": "max 5x", "bars": [{"name": "сессия", "percent": 12}]}
+    known = {"email": "", "plan": "max 5x", "at": time.time() - 86400,
+             "bars": [{"name": "сессия", "percent": 12}]}
 
     monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
-    monkeypatch.setattr(runner, "_limits_ok", time.monotonic())
+    monkeypatch.setattr(runner, "_remembered", dict)   # база настоящая, см. выше
+    # Даже суточной давности: панель подпишет возраст, а пустота не сообщает ничего.
     assert await runner.limits() == known
-
-    # Полчаса без единого удачного ответа — скорее всего бот разлогинен, и старым
-    # числам веры нет.
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
-    monkeypatch.setattr(runner, "_limits_ok", time.monotonic() - runner.LIMITS_STALE - 1)
-    assert await runner.limits() == {}
 
 
 async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
@@ -115,8 +117,8 @@ async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
 
     monkeypatch.setattr("builtins.open", counting_open)
     # Кеш пуст и промах случился LIMITS_RETRY назад — пора пробовать снова.
+    monkeypatch.setattr(runner, "_limits_wait", runner.LIMITS_RETRY)
     monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, {}))
-    monkeypatch.setattr(runner, "_limits_ok", float("-inf"))
     assert await runner.limits() == {}
     assert calls, "запрос не повторился"
 
@@ -126,3 +128,52 @@ async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
     monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, known))
     assert await runner.limits() == known
     assert not calls, "сходили в сеть, хотя кеш свежий"
+
+
+async def test_expired_token_never_reaches_the_api(tmp_path, monkeypatch):
+    """Протухший токен обновляет CLI на ближайшем прогоне, а запрос с ним не просто
+    бесполезен: на surf такие запросы раз в полминуты утянули аккаунт в лимит самого
+    эндпоинта, и полоски не появлялись часами."""
+    creds = tmp_path / "creds.json"
+    creds.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "t", "expiresAt": (time.time() - 60) * 1000}}), encoding="utf-8")
+    monkeypatch.setattr(runner, "CREDS", str(creds))
+
+    def no_network(*a, **kw):
+        raise AssertionError("пошли в сеть с протухшим токеном")
+
+    monkeypatch.setattr(runner.aiohttp, "ClientSession", no_network)
+    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+    monkeypatch.setattr(runner, "_remembered", dict)
+    assert await runner.limits() == {}
+
+
+async def test_failures_back_off(tmp_path, monkeypatch):
+    """Пауза после неудачи удваивается: сбой бывает общим на аккаунт, и три инстанса,
+    долбящие раз в полминуты, сами держат эндпоинт в отказе."""
+    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(runner, "_limits_wait", runner.LIMITS_RETRY)
+    for expected in (runner.LIMITS_RETRY * 2, runner.LIMITS_RETRY * 4):
+        monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+        await runner.limits()
+        assert runner._limits_wait == expected
+
+
+async def test_limits_survive_a_restart(tmp_path, monkeypatch):
+    """Свежий процесс показывает запомненное сразу, не дожидаясь ответа API: после
+    рестарта панель стояла без полосок, а с протухшим токеном — пока в песочнице не
+    запустят claude."""
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store._local, "conn", None, raising=False)
+    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    known = {"email": "", "plan": "max 5x", "at": time.time() - 60,
+             "bars": [{"name": "сессия", "percent": 7}]}
+    store.put(runner.LIMITS_KEY, json.dumps(known))
+
+    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+    assert await runner.limits() == known
+
+    # Мусор в базе не должен ронять статус — просто нечего вспоминать.
+    store.put(runner.LIMITS_KEY, "не json")
+    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+    assert await runner.limits() == {}

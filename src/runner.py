@@ -48,13 +48,23 @@ LIMITS_JITTER = random.randint(0, 30)
 # `rate_limit_error`, показать нечего — и при общем TTL панель осталась бы без полосок на
 # все пять минут. Проверено на surf 15.09: старт 14:24, отказ 14:25, полоски до 14:30.
 LIMITS_RETRY = 30
-# Сколько держать последний удачный ответ, когда новый не пришёл. Полоски исчезали на
-# каждый промах: одна ошибка — и панель минуту стоит без них, хотя проценты известны и
-# устареть за минуту не успели. Через полчаса молчания показывать уже нечестно — скорее
-# всего бот разлогинен, и старые числа врут.
-LIMITS_STALE = 1800
+_limits_wait = LIMITS_RETRY   # пауза после неудачи: удваивается, пока не упрётся в TTL
+# Ключ в `store`: последний удачный ответ переживает рестарт. Без него свежий процесс
+# минуту стоял без полосок, а с протухшим токеном — пока в песочнице не запустят claude.
+LIMITS_KEY = "limits"
+
+
+def _remembered() -> dict:
+    """Последний удачный ответ из базы. Пусто, если его там нет или он покорёжен."""
+    try:
+        return json.loads(store.get(LIMITS_KEY) or "")
+    except ValueError:
+        return {}
+# Последний удачный ответ держим сколько угодно: он уезжает в базу вместе с отметкой
+# времени, а панель подписывает его возрастом. Раньше тут стоял порог в полчаса, после
+# которого полоски гасли, — с видимым возрастом врать уже нечем, а пустота посреди дня
+# сообщает человеку ровно ничего.
 _limits: tuple[float, dict] = (float("-inf"), {})
-_limits_ok = float("-inf")   # когда в последний раз ответ был разбираем
 
 # Подписи известных лимитов. Неизвестный показываем его же ключом: спрятать лимит,
 # в который упрёшься, хуже, чем показать непонятную подпись.
@@ -527,14 +537,26 @@ async def limits() -> dict:
     на каждый промах кеша, а неудачу кешируем наравне с успехом — иначе трёхсекундный
     опрос панели будет долбить API.
     """
-    global _limits, _limits_ok
+    global _limits, _limits_wait
     now = time.monotonic()
-    if now - _limits[0] < (LIMITS_TTL + LIMITS_JITTER if _limits[1] else LIMITS_RETRY):
+    # Холодный старт: показываем запомненное сразу, а запрос уходит этим же вызовом.
+    # Числа с отметкой времени — панель сама решит, насколько они устарели.
+    if _limits[0] == float("-inf") and (was := _remembered()):
+        _limits = (now - LIMITS_TTL - LIMITS_JITTER, was)
+    if now - _limits[0] < (LIMITS_TTL + LIMITS_JITTER if _limits[1] else _limits_wait):
         return _limits[1]
     out: dict = {}
     try:
         with open(CREDS, encoding="utf-8") as f:
-            token = json.load(f)["claudeAiOauth"]["accessToken"]
+            oauth = json.load(f)["claudeAiOauth"]
+        # Протухший токен чиним не мы: его обновляет CLI на ближайшем прогоне. Идти с
+        # ним в API не просто бесполезно — на surf такой запрос раз в полминуты сначала
+        # получал `authentication_error`, а потом утянул нас в `rate_limit_error`
+        # эндпоинта, и полоски не появлялись часами. Проверено 15.09: токен истёк в
+        # 16:07, первый же промпт в 22:37 обновил его сам.
+        if oauth.get("expiresAt", 0) / 1000 < time.time():
+            raise RuntimeError("токен протух, обновится на ближайшем прогоне claude")
+        token = oauth["accessToken"]
         headers = {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"}
         async with aiohttp.ClientSession(
                 headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
@@ -544,14 +566,18 @@ async def limits() -> dict:
                 profile = await r.json()
         if bars := _bars(usage):
             out = {"email": (profile.get("account") or {}).get("email") or "",
-                   "plan": _plan(profile), "bars": bars}
+                   "plan": _plan(profile), "bars": bars, "at": time.time()}
+            store.put(LIMITS_KEY, json.dumps(out))
         else:
             log.warning("лимиты подписки: в ответе нет процентов, %s", str(usage)[:200])
     except Exception as e:
         log.warning("лимиты подписки не прочитались: %s", e)
     if out:
-        _limits_ok = now
-    elif now - _limits_ok < LIMITS_STALE:
+        _limits_wait = LIMITS_RETRY
+    else:
+        # Пауза растёт: сбой бывает и общим на аккаунт, и тогда три инстанса, долбящие
+        # раз в полминуты, сами и держат эндпоинт в отказе.
+        _limits_wait = min(_limits_wait * 2, LIMITS_TTL)
         out = _limits[1]  # не вышло сейчас — показываем прошлое, а не пустоту
     _limits = (now, out)
     return out
