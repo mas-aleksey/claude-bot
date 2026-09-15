@@ -294,3 +294,17 @@ def test_default_model_comes_from_settings(tmp_path, monkeypatch):
 
     path.write_text("не json", encoding="utf-8")
     assert runner.default_model() == "default"   # битый файл не должен ронять /status
+
+
+async def test_resolve_model_matches_a_catalog_row(monkeypatch):
+    """Модель бота панель показывает обычной строкой списка, поэтому и приходить она
+    должна в виде строки каталога. Алиас — это свежая модель семейства, каталог
+    отсортирован по свежести."""
+    catalog = [{"id": "claude-opus-5", "name": "Opus 5"},
+               {"id": "claude-opus-4-8", "name": "Opus 4.8"}]
+    monkeypatch.setattr(runner, "models", lambda: asyncio.sleep(0, catalog))
+
+    assert (await runner.resolve_model("claude-opus-4-8"))["name"] == "Opus 4.8"
+    assert (await runner.resolve_model("opus"))["id"] == "claude-opus-5"   # алиас — свежая
+    # Семейства нет: отдаём как есть, панель покажет сырую строку отдельным пунктом.
+    assert await runner.resolve_model("default") == {"id": "default", "name": "default"}

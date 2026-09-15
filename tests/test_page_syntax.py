@@ -266,3 +266,11 @@ console.log(JSON.stringify([first, drawn.length, saves]));
     assert titles == ["новое имя", "было"]   # пустое имя из списка не затирает своё
     assert drawn == ["a"] and saves == 1     # перерисована одна панель, запись одна
     assert drawn_after == 1 and saves_after == 1  # повтор не трогает ни панель, ни диск
+
+
+def test_sidebars_fold_independently():
+    """Правило пишется на голый `aside`, а их теперь два: без `:not(.files)` полоска
+    слева прятала бы заодно и дерево файлов справа."""
+    css = slice_out("style")
+    assert "body.folded aside:not(.files)" in css
+    assert "body.rfolded aside.files { display:none }" in css

@@ -392,6 +392,17 @@ MAX_UPLOAD = 25 << 20
 # теперь его текст видно в панели.
 MODEL_RE = re.compile(r"[a-zA-Z0-9._-]{2,64}\Z")
 
+# Что показывает дерево файлов помимо проектов. По умолчанию — конфиг claude и источник
+# скиллов: правят их чаще всего, а лежат они вне /projects. Список через запятую и из
+# окружения, как PROJECTS_DIR и WEB_PEERS: набор монтирований у инстансов разный, и
+# менять его надо в .env, а не кнопкой в браузере. Кнопка «добавить корень» из панели
+# означала бы «добавить /», после чего список корней теряет смысл.
+FILE_ROOTS = [Path(x.strip()) for x in
+              os.environ.get("FILE_ROOTS", "/root/.claude,/opt/skills").split(",") if x.strip()]
+# Потолок файла для редактора. Больше в textarea всё равно не поправить, а транскрипт
+# сессии на 18 МБ утащил бы вкладку в своп. Имя файла и размер показываем и сверх него.
+MAX_EDIT = 1 << 20
+
 
 # Ниже этого размера цифра в списке — шум: у большинства сессий она одинаково мелкая.
 # Выше — предупреждение, что панель будет открываться заметно дольше.
@@ -455,6 +466,54 @@ def _project(raw: str) -> str:
     if raw in {str(p) for p in sessions.projects()}:
         return raw
     raise web.HTTPBadRequest(text="нет такого проекта")
+
+
+def roots() -> list[Path]:
+    """Корни дерева файлов: проекты плюс FILE_ROOTS. Несуществующие пропускаем —
+    инстансы монтируют разное, и лишний путь в .env не должен оставлять панель без
+    списка."""
+    return [*sessions.projects(), *(r for r in FILE_ROOTS if r.is_dir())]
+
+
+def _inside(raw: str) -> Path:
+    """Путь из браузера, обязанный лежать в одном из корней.
+
+    Сверяем после `resolve()`, а не до: и `..`, и симлинк иначе уводят наружу. Именно
+    симлинками собран `/root/.claude/skills` — каждый скилл ведёт в `/opt/skills/*`.
+    Поэтому `/opt/skills` и стоит корнем по умолчанию: без него скилл видно в дереве,
+    но не открыть, а список исключений пришлось бы вести руками.
+
+    Отдельно от `_project`: тот решает, где запускается claude, и `/root/.claude`
+    рабочим каталогом промпта быть не должен.
+    """
+    path = Path(raw or "").resolve()
+    tops = [r.resolve() for r in roots()]
+    if any(path == top or top in path.parents for top in tops):
+        return path
+    raise web.HTTPBadRequest(text="путь вне корней")
+
+
+def _entries(path: Path) -> list[dict]:
+    """Содержимое каталога: сначала каталоги, дальше по имени без учёта регистра.
+
+    `stat` под try — битый симлинк в дереве обычное дело (скилл, чей источник отмонтировали),
+    и ронять из-за него весь листинг незачем.
+    """
+    out = []
+    for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+        try:
+            size = item.stat().st_size
+        except OSError:
+            size = 0
+        out.append({"name": item.name, "path": str(item), "dir": item.is_dir(), "size": size})
+    return out
+
+
+def _version(st) -> str:
+    """Метка версии файла для защиты от затирания. Строкой, а не числом: `st_mtime_ns`
+    это 1.8e18, а JSON-число в браузере теряет точность после 9e15 — сравнение на
+    сервере разъехалось бы на каждом сохранении."""
+    return f"{st.st_mtime_ns}-{st.st_size}"
 
 
 def _answered_locally(ev: dict) -> bool:
@@ -671,6 +730,81 @@ def build() -> web.Application:
         log.info("upload: %s (%d байт)", dest, dest.stat().st_size)
         return web.json_response({"path": str(dest)})
 
+    async def api_roots(_: web.Request) -> web.Response:
+        return web.json_response([{"name": r.name, "path": str(r)} for r in roots()])
+
+    async def api_files(req: web.Request) -> web.Response:
+        """Листинг каталога. Скрытые файлы отдаём все — прячет их переключатель в
+        панели. Чёрного списка имён тут нет сознательно: его пришлось бы вести руками,
+        он молча прятал бы нужный файл, а закрывать им нечего — claude читает те же
+        файлы сам, и в панель пускает allowlist."""
+        path = _inside(req.query.get("path", ""))
+        if not path.is_dir():
+            raise web.HTTPBadRequest(text="не каталог")
+        try:
+            entries = await asyncio.to_thread(_entries, path)
+        except OSError as err:
+            raise web.HTTPBadRequest(text=f"не прочитать каталог: {err}") from err
+        return web.json_response({"path": str(path), "entries": entries})
+
+    async def api_file(req: web.Request) -> web.Response:
+        """Содержимое файла для редактора.
+
+        Отказ отдаётся полем `why`, а не кодом ошибки: панель показывает имя, размер и
+        причину, а не пустое окно. Не-utf8 отклоняем до декодирования с `replace` —
+        сохранение такого текста переписало бы файл испорченным.
+        """
+        path = _inside(req.query.get("path", ""))
+        try:
+            st = path.stat()
+        except OSError as err:
+            raise web.HTTPBadRequest(text=f"нет файла: {err}") from err
+        if not path.is_file():
+            raise web.HTTPBadRequest(text="не файл")
+        head = {"path": str(path), "size": st.st_size, "version": _version(st)}
+        if st.st_size > MAX_EDIT:
+            return web.json_response({**head, "why": "больше 1 МБ"})
+        try:
+            data = await asyncio.to_thread(path.read_bytes)
+        except OSError as err:
+            raise web.HTTPBadRequest(text=f"не прочитать: {err}") from err
+        try:
+            text = data.decode()
+        except UnicodeDecodeError:
+            return web.json_response({**head, "why": "не текст в utf-8"})
+        if b"\x00" in data:
+            return web.json_response({**head, "why": "двоичный файл"})
+        return web.json_response({**head, "text": text})
+
+    async def api_save(req: web.Request) -> web.Response:
+        """Запись поверх существующего файла.
+
+        Версия из чтения возвращается назад и сверяется: claude правит те же файлы, и
+        без этой сверки правка человека молча затирала бы его правку. Расхождение —
+        409, панель предлагает перечитать.
+
+        Создания, удаления и переименования тут нет: это умеет claude в соседней
+        панели, а редактору хватает существующего файла. Открытие идёт по тому же
+        inode, поэтому владелец и права остаются чужими — новых root-файлов в проекте
+        не появляется.
+        """
+        data = await req.json()
+        path = _inside(data.get("path") or "")
+        text = data.get("text")
+        if not isinstance(text, str):
+            raise web.HTTPBadRequest(text="нужен text")
+        if not path.is_file():
+            raise web.HTTPBadRequest(text="нет такого файла")
+        if _version(path.stat()) != data.get("version"):
+            raise web.HTTPConflict(text="файл изменился на диске")
+        try:
+            await asyncio.to_thread(path.write_text, text, encoding="utf-8")
+        except OSError as err:
+            # Сюда попадает и `:ro`-монтирование: `/root/.claude/CLAUDE.md` в песочнице
+            # примонтирован только на чтение, и текст системы об этом честнее нашего.
+            raise web.HTTPBadRequest(text=f"не записать: {err}") from err
+        return web.json_response({"version": _version(path.stat())})
+
     async def api_status(_: web.Request) -> web.Response:
         """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
         что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
@@ -688,7 +822,8 @@ def build() -> web.Application:
                                   "local": _local, "stats": _stats,
                                   "queued": runner.waiting(),
                                   "limits": await runner.limits(),
-                                  "model": store.get("model") or runner.default_model()})
+                                  "model": await runner.resolve_model(
+                                      store.get("model") or runner.default_model())})
 
     async def api_prompt(req: web.Request) -> web.Response:
         data = await req.json()
@@ -743,6 +878,10 @@ def build() -> web.Application:
         web.get("/api/skills", api_skills),
         web.get("/api/sessions", api_sessions),
         web.get("/api/search", api_search),
+        web.get("/api/roots", api_roots),
+        web.get("/api/files", api_files),
+        web.get("/api/file", api_file),
+        web.post("/api/file", api_save),
         web.get("/api/purge", api_purge),
         web.post("/api/purge", api_purge),
         web.get("/api/stream", api_stream),
@@ -783,7 +922,7 @@ body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; flex-directio
    ним теперь живёт ящик терминала, и делить высоту им надо колонкой. */
 #top { position:relative; flex:1; min-height:0; display:flex }
 aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
-body.folded aside { display:none }
+body.folded aside:not(.files) { display:none }  /* дерево справа прячется своей полоской */
 /* Полоса на левом краю области панелей. Видна всегда, в том числе когда сайдбар убран:
    иначе его нечем было бы вернуть. Стрелка — через `content`, чтобы состояние рисовал
    CSS, а не переписывал скрипт. */
@@ -804,6 +943,25 @@ body.term #termbar::before { content:'\2304' }
 #term { flex:none; height:var(--th,40vh); min-height:0 }
 body:not(.term) #term { display:none }
 #term iframe { display:block; width:100%; height:100%; border:0 }
+/* Правый сайдбар — дерево файлов. Устроен зеркально левому: своя полоска, свой класс
+   на body, своя память в localStorage. Флаг отдельный, а не общий: списки прячутся
+   независимо, и один класс схлопывал бы оба разом. */
+aside.files { border-right:0; border-left:1px solid #8884 }
+body.rfolded aside.files { display:none }
+#rfold { flex:none; width:14px; padding:0; border:0; border-left:1px solid #8884;
+  border-radius:0; opacity:.45; font-size:11px }
+#rfold:hover { opacity:1; background:#8882 }
+#rfold::before { content:'\203A' }
+body.rfolded #rfold::before { content:'\2039' }
+/* Хлебные крошки: путь от корня кнопками, каждая возвращает на свой уровень. Отдельной
+   кнопки «наверх» поэтому нет. */
+#crumb { padding:8px 8px 0; font-size:12px; word-break:break-all; opacity:.8 }
+#crumb button { border:0; padding:1px 2px; border-radius:2px }
+#crumb button:hover { background:#8882 }
+#tree { overflow:auto; flex:1; margin-top:8px }
+#tree .dir { font-weight:600 }
+#tree .size { float:right; opacity:.5; font-size:11px }
+#tree .none { padding:8px 10px; opacity:.5; font-size:12px }
 #peers { display:flex; gap:2px; padding:8px 8px 0 }
 #peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
   text-decoration:none; color:inherit; font-size:13px }
@@ -814,9 +972,9 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
   overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
 #list { overflow:auto; flex:1; margin-top:8px }
-#list button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
+#list button, #tree button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
-#list button:hover { background:#8882 }
+#list button:hover, #tree button:hover { background:#8882 }
 /* Открытая сессия залита цветом своей панели ровно как её заголовок, теми же числами,
    и мигает теми же кадрами `blink`. Строка слева и заголовок наверху — одно и то же
    окно, разный цвет заливки развёл бы их по ощущению.
@@ -978,6 +1136,19 @@ form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
    переживает F5 вместе с её местом. */
 section.rolled { grid-row:var(--r,1) / span 1; align-self:start; height:auto }
 section.rolled .logbox, section.rolled form, section.rolled .h { display:none }
+section.rolled .edit, section.rolled .filebar { display:none }
+/* Поле правки во всю высоту окна. Потолок в 240px ниже поставлен композеру, здесь он
+   не нужен — окно тянется само, и файл должен занимать его целиком.
+   `white-space:pre` и `wrap=off`: перенос длинной строки сдвинул бы нумерацию строк в
+   голове у читающего, а код чаще смотрят по строкам, чем читают сплошняком. */
+.edit { flex:1; min-height:0; max-height:none; margin:8px; padding:6px;
+  border:1px solid #8886; border-radius:8px; font:12px/1.45 ui-monospace,monospace;
+  white-space:pre; overflow:auto }
+.edit:focus { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+.filebar { display:flex; gap:8px; align-items:center; margin:0 8px 8px }
+.filebar .state { flex:1; font-size:12px; opacity:.6; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis }
+.filebar .state.bad { color:#e55; opacity:1 }
 textarea { position:relative; resize:none; min-height:40px; max-height:240px;
   padding:4px 4px 0; font:inherit; background:none; color:inherit; border:0; outline:none }
 /* Подсветка слеш-команды: залить текст внутри textarea нельзя, поэтому под полем лежит
@@ -1057,6 +1228,10 @@ body:not(.folded) #empty .list { display:none }
      краю и поднимается над ним. Ширина вдвое против настольной — 14px пальцем не берутся. */
   #fold { width:24px }
   body:not(.folded) #fold { position:absolute; z-index:11; left:var(--aw); top:0; height:100% }
+  aside.files { left:auto; right:0 }
+  #rfold { width:24px }
+  body:not(.rfolded) #rfold { position:absolute; z-index:11; left:auto; right:var(--aw);
+    top:0; height:100% }
   #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
     grid-template-rows:none; grid-auto-rows:auto }
   section { grid-column:1/-1 !important; grid-row:auto !important;
@@ -1085,6 +1260,13 @@ body:not(.folded) #empty .list { display:none }
   <button class=list>список сессий</button>
   <button class=fresh>+ новая сессия</button>
 </div></div>
+<button id=rfold title="дерево файлов" aria-label="скрыть или показать дерево файлов"></button>
+<aside class=files>
+  <select id=root title="корень дерева"></select>
+  <button class=new id=dots title="показывать файлы с точкой в начале">скрытые: вкл</button>
+  <div id=crumb></div>
+  <div id=tree></div>
+</aside>
 </div>
 <button id=termbar title="терминал: клик открывает и закрывает, потянуть — высота"
   aria-label="терминал"></button>
@@ -1191,25 +1373,36 @@ let MODELS = [];
 const FALLBACK = [{ id: 'opus', name: 'opus' }, { id: 'sonnet', name: 'sonnet' },
                   { id: 'haiku', name: 'haiku' }];
 
-// Пустой пункт — «общая модель бота», его подписывает tick() именем этой модели.
-// Сохранённое значение, которого в каталоге нет (старый алиас, снятая модель), остаётся
-// отдельной строкой: молча подменить выбор панели значит соврать про то, чем она ходит.
+// Чем ходит бот, когда в панели ничего не выбрано: `{id, name}` из каталога. Панель
+// показывает эту модель как обычную строку списка, а не отдельным пунктом «общая» — для
+// человека тут одна вещь, какая модель отвечает, а не две.
+let botModel = null;
+
+// Сохранённое значение, которого в каталоге нет (снятая модель, незнакомый алиас),
+// остаётся отдельной строкой: молча подменить выбор панели значит соврать про то, чем
+// она ходит. Пустой пункт живёт ровно до первого ответа сервера — пока модель бота
+// неизвестна, показывать в списке нечего.
 function fillModels(p, sel) {
   const list = MODELS.length ? MODELS : FALLBACK;
-  const known = list.some(m => m.id === p.model);
-  sel.innerHTML = '<option value="">модель</option>' +
-    (p.model && !known ? `<option value="${esc(p.model)}">${esc(p.model)}</option>` : '') +
+  const value = p.model || botModel?.id || '';
+  const known = list.some(m => m.id === value);
+  sel.innerHTML = (value ? '' : '<option value="">…</option>') +
+    (value && !known ? `<option value="${esc(value)}">${esc(value)}</option>` : '') +
     list.map(m => `<option value="${esc(m.id)}">${esc(m.name)}</option>`).join('');
-  sel.value = p.model || '';
+  sel.value = value;
 }
 
-async function loadModels() {
-  try { MODELS = await get('api/models'); } catch (e) { return; }
-  if (!MODELS.length) return;
+// Перерисовать выпадашки всех панелей: приехал каталог или сменилась модель бота.
+function refillModels() {
   for (const p of panes) {
     const sel = document.getElementById('pane-' + p.pane)?.querySelector('.model');
     if (sel) fillModels(p, sel);
   }
+}
+
+async function loadModels() {
+  try { MODELS = await get('api/models'); } catch (e) { return; }
+  refillModels();
 }
 
 async function loadPeers() {
@@ -1538,6 +1731,9 @@ function closePane(p) {
 }
 
 function drawPane(p) {
+  // Окно файла — другое тело при той же обвязке. Ветка здесь, потому что через drawPane
+  // проходят оба пути: и открытие, и восстановление панелей после F5.
+  if (p.file) return drawFile(p);
   $('empty').hidden = true;
   const el = document.createElement('section');
   el.id = 'pane-' + p.pane;
@@ -1576,18 +1772,6 @@ function drawPane(p) {
   const down = el.querySelector('.down');
   box.onscroll = () => { down.hidden = atEnd(box); };
   down.onclick = () => { box.scrollTop = 1e9; };
-  const max = el.querySelector('header .max');
-  max.onclick = () => { zoom(p); save(); raise(el); };
-  const fold = el.querySelector('header .foldbar');
-  const drawFold = () => {
-    el.classList.toggle('rolled', !!p.roll);
-    fold.textContent = p.roll ? '▾' : '▴';
-    fold.title = p.roll ? 'развернуть окно' : 'свернуть окно в заголовок';
-  };
-  // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
-  // остаётся свёрнутой и после F5, как остаётся её место в сетке.
-  fold.onclick = () => { p.roll = !p.roll; save(); drawFold(); };
-  drawFold();
   el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane })
     .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
     .catch(() => {});
@@ -1616,6 +1800,29 @@ function drawPane(p) {
   ta.onpaste = (e) => {
     if (e.clipboardData?.files?.length) attach(p, ta, e.clipboardData.files);
   };
+  wirePane(p, el);
+  // Панель нарисована — можно подписываться. Отсюда, а не из addPane: после F5 панели
+  // восстанавливает startup тем же вызовом, и второе место забыли бы синхронизировать.
+  watch(p);
+}
+
+// Всё, что у окна не зависит от содержимого: место в сетке, цвет, перетаскивание,
+// разворот и сворачивание. Вынесено, потому что окон стало два вида — сессия и файл, —
+// а отличаются они только телом. Кнопка «закрыть» осталась снаружи: у файла она сначала
+// спрашивает про несохранённые правки.
+function wirePane(p, el) {
+  const max = el.querySelector('header .max');
+  max.onclick = () => { zoom(p); save(); raise(el); };
+  const fold = el.querySelector('header .foldbar');
+  const drawFold = () => {
+    el.classList.toggle('rolled', !!p.roll);
+    fold.textContent = p.roll ? '▾' : '▴';
+    fold.title = p.roll ? 'развернуть окно' : 'свернуть окно в заголовок';
+  };
+  // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
+  // остаётся свёрнутой и после F5, как остаётся её место в сетке.
+  fold.onclick = () => { p.roll = !p.roll; save(); drawFold(); };
+  drawFold();
   el.style.setProperty('--hue', p.hue ?? HUES[0]);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
@@ -1626,10 +1833,138 @@ function drawPane(p) {
   // Новое окно — сверху. Без этого оно уходило под активную панель: `act` держит
   // z-index, а порядок в DOM его не перебивает.
   raise(el);
-  // Панель нарисована — можно подписываться. Отсюда, а не из addPane: после F5 панели
-  // восстанавливает startup тем же вызовом, и второе место забыли бы синхронизировать.
-  watch(p);
 }
+
+// --- files:begin ---
+// Окно файла: то же окно сетки, вместо лога и композера — поле правки. Дерево при этом
+// остаётся в правом сайдбаре: править код в полосе 280px негде, а окон с файлами нужно
+// столько же, сколько с сессиями.
+function drawFile(p) {
+  $('empty').hidden = true;
+  const el = document.createElement('section');
+  el.id = 'pane-' + p.pane;
+  el.innerHTML = `
+    <header>
+      <span class=who></span>
+      <button class=max title="во весь экран"></button>
+      <button class=foldbar title="свернуть окно в заголовок">▾</button>
+      <button class=close title="закрыть окно">×</button>
+    </header>
+    <textarea class=edit spellcheck=false wrap=off></textarea>
+    <div class=filebar>
+      <button class=save>сохранить</button>
+      <button class=reread title="перечитать с диска">↻</button>
+      <span class=state></span>
+    </div>`;
+  $('panes').append(el);
+  const who = el.querySelector('.who');
+  const ta = el.querySelector('.edit');
+  const state = el.querySelector('.state');
+  const save_ = el.querySelector('.save');
+  who.textContent = p.file.split('/').pop();
+  who.title = p.file;
+  const say = (text, bad) => { state.textContent = text; state.classList.toggle('bad', !!bad); };
+
+  let version = null, dirty = false;
+  const load = () => get('api/file?path=' + encodeURIComponent(p.file)).then(f => {
+    version = f.version;
+    ta.value = f.text ?? '';
+    // Отказ приходит полем `why`: файл больше мегабайта или не текст. Показываем имя,
+    // размер и причину — пустое окно без объяснения читалось бы как поломка.
+    ta.readOnly = !!f.why;
+    save_.hidden = !!f.why;
+    dirty = false;
+    say(f.why ? f.why + ', ' + kb(f.size) : kb(f.size));
+  }, (e) => { ta.readOnly = true; save_.hidden = true; say('не открыть (' + e + ')', true); });
+
+  // Своя обёртка вместо общего `post`: тут нужен текст ошибки, а не только её код.
+  // `:ro`-монтирование отвечает «Read-only file system», и это единственное, что
+  // объясняет отказ — например у /root/.claude/CLAUDE.md, он примонтирован на чтение.
+  const put = async () => {
+    const r = await fetch('api/file', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ path: p.file, text: ta.value, version }) });
+    const body = await r.text();
+    if (!r.ok) throw new Error(r.status === 409 ? 'файл изменился на диске, перечитайте' : body);
+    version = JSON.parse(body).version;
+    dirty = false;
+    say('сохранено ' + new Date().toLocaleTimeString());
+  };
+
+  ta.oninput = () => { dirty = true; say('не сохранено'); };
+  save_.onclick = () => put().catch(e => say(String(e.message || e), true));
+  el.querySelector('.reread').onclick = () => {
+    if (dirty && !confirm('Правки не сохранены. Перечитать с диска?')) return;
+    load();
+  };
+  // Ctrl+S привычнее кнопки, а браузерное «сохранить страницу» тут не нужно никому.
+  ta.onkeydown = (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === 's') { e.preventDefault(); save_.onclick(); }
+  };
+  el.querySelector('.close').onclick = () => {
+    if (dirty && !confirm('Правки не сохранены. Закрыть окно?')) return;
+    closePane(p);
+  };
+  wirePane(p, el);
+  load();
+}
+
+const kb = (n) => n < 1024 ? n + ' Б'
+                : n < 1048576 ? Math.round(n / 1024) + ' КБ'
+                : (n / 1048576).toFixed(1) + ' МБ';
+
+// Скрытые файлы показаны по умолчанию: в /root/.claude половина интересного начинается
+// с точки. Переключатель их прячет, память — в localStorage.
+const showDots = () => localStorage.getItem('dots') !== '0';
+
+async function loadRoots() {
+  const list = await get('api/roots');
+  const sel = $('root');
+  sel.innerHTML = list.map(r => `<option value="${esc(r.path)}">${esc(r.path)}</option>`).join('');
+  const saved = localStorage.getItem('root');
+  sel.value = list.some(r => r.path === saved) ? saved : (list[0]?.path || '');
+  // Каталог с прошлого раза мог исчезнуть вместе с веткой — тогда открываем корень.
+  const at = localStorage.getItem('dir');
+  const start = at && at.startsWith(sel.value) ? at : sel.value;
+  return openDir(start).catch(() => openDir(sel.value));
+}
+
+async function openDir(path) {
+  const data = await get('api/files?path=' + encodeURIComponent(path));
+  localStorage.setItem('dir', data.path);
+  drawCrumb(data.path);
+  drawTree(data.entries);
+}
+
+const treeFail = (e) => { $('tree').innerHTML = '<div class=none>не открыть (' + esc(e) + ')</div>'; };
+
+// Путь от корня кнопками. Выше корня подниматься нечем и не нужно: сервер такой путь
+// всё равно отклонит, а в дереве видно только примонтированное.
+function drawCrumb(path) {
+  const root = $('root').value;
+  const rest = path.startsWith(root) ? path.slice(root.length).split('/').filter(Boolean) : [];
+  let at = root;
+  const parts = [`<button data-at="${esc(root)}">${esc(root.split('/').pop() || '/')}</button>`];
+  for (const name of rest) {
+    at += '/' + name;
+    parts.push(`<button data-at="${esc(at)}">${esc(name)}</button>`);
+  }
+  $('crumb').innerHTML = parts.join('<span> / </span>');
+  for (const b of $('crumb').querySelectorAll('button'))
+    b.onclick = () => openDir(b.dataset.at).catch(treeFail);
+}
+
+function drawTree(entries) {
+  const rows = entries.filter(e => showDots() || !e.name.startsWith('.'));
+  $('tree').innerHTML = rows.map(e =>
+    `<button class="${e.dir ? 'dir' : ''}" data-path="${esc(e.path)}" data-dir="${e.dir ? 1 : ''}">`
+    + esc(e.name) + (e.dir ? '/' : `<span class=size>${kb(e.size)}</span>`) + '</button>').join('')
+    || '<div class=none>пусто</div>';
+  for (const b of $('tree').querySelectorAll('button'))
+    b.onclick = () => b.dataset.dir ? openDir(b.dataset.path).catch(treeFail)
+                                    : addPane({ pane: uid(), file: b.dataset.path });
+}
+// --- files:end ---
 
 // Заголовок панели: проект и название сессии. Восьми символов id хватало, чтобы
 // отличить панели, но не чтобы вспомнить, о чём сессия. Название приходит с сервера в
@@ -2096,11 +2431,11 @@ async function tick() {
   if (dead) return;
   let st = { runs: [], errors: {} };
   try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
-  // Пустой выбор в панели означает «общая модель бота». Подписываем его именем этой
-  // модели: иначе в селекте стоит слово «модель» и что поедет в claude — загадка.
-  if (st.model)
-    for (const o of document.querySelectorAll('.model option[value=""]'))
-      o.textContent = st.model;
+  // Модель бота сменили командой `/model` — панели без своего выбора идут за ней.
+  if (st.model && st.model.id !== botModel?.id) {
+    botModel = st.model;
+    refillModels();
+  }
   // Только по живому ответу: у запасного `st` выше поля `limits` нет вовсе, и один
   // неудачный опрос — рестарт бота, моргнувший Traefik — гасил полоски до следующего
   // тика. Выглядело как «панель лимитов периодически прячется».
@@ -2275,6 +2610,27 @@ $('termbar').onpointerdown = (e) => {
   };
 };
 
+// Правый сайдбар спрятан по умолчанию, в отличие от левого: сессии нужны каждый заход,
+// а дерево файлов — под задачу. Открыли хоть раз — состояние запоминается, и правило
+// дефолта больше не действует.
+document.body.classList.toggle('rfolded', localStorage.getItem('rfolded') !== '0');
+$('rfold').onclick = () => {
+  const on = !document.body.classList.contains('rfolded');
+  document.body.classList.toggle('rfolded', on);
+  localStorage.setItem('rfolded', on ? '1' : '0');
+};
+const drawDots = () => { $('dots').textContent = 'скрытые: ' + (showDots() ? 'вкл' : 'выкл'); };
+$('dots').onclick = () => {
+  localStorage.setItem('dots', showDots() ? '0' : '1');
+  drawDots();
+  openDir(localStorage.getItem('dir') || $('root').value).catch(treeFail);
+};
+drawDots();
+$('root').onchange = () => {
+  localStorage.setItem('root', $('root').value);
+  openDir($('root').value).catch(treeFail);
+};
+
 $('reload').onclick = () => location.reload();
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
@@ -2284,6 +2640,7 @@ $('tile').onclick = () => { retile(); save(); };
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadModels();
+loadRoots().catch(treeFail);
 loadProjects().then(() => {
   // Панели из localStorage могли получить оттенок из прежней палитры. Переназначаем по
   // одной: freeHue смотрит на уже занятые, поэтому цвета не совпадут.

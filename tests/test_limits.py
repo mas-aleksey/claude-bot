@@ -5,6 +5,7 @@
 """
 
 import os
+import time
 
 import pytest
 
@@ -82,3 +83,46 @@ async def test_limits_cached(monkeypatch):
     assert await runner.limits() == {}
     assert await runner.limits() == {}
     assert calls == 1
+
+
+async def test_limits_keep_last_good_answer(monkeypatch):
+    """Промах запроса не должен гасить полоски: проценты известны и за минуту не
+    устареют. Ошибку ловим на нечитаемом CREDS — сети в тестах нет и не надо."""
+    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    known = {"email": "", "plan": "max 5x", "bars": [{"name": "сессия", "percent": 12}]}
+
+    monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
+    monkeypatch.setattr(runner, "_limits_ok", time.monotonic())
+    assert await runner.limits() == known
+
+    # Полчаса без единого удачного ответа — скорее всего бот разлогинен, и старым
+    # числам веры нет.
+    monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
+    monkeypatch.setattr(runner, "_limits_ok", time.monotonic() - runner.LIMITS_STALE - 1)
+    assert await runner.limits() == {}
+
+
+async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
+    """Промах при пустом кеше должен повториться быстро: первый запрос после рестарта
+    попадает в rate_limit, и с общим TTL панель осталась бы без полосок пять минут."""
+    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    calls = []
+    real_open = open
+
+    def counting_open(path, *a, **kw):
+        calls.append(path)
+        return real_open(path, *a, **kw)
+
+    monkeypatch.setattr("builtins.open", counting_open)
+    # Кеш пуст и промах случился LIMITS_RETRY назад — пора пробовать снова.
+    monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, {}))
+    monkeypatch.setattr(runner, "_limits_ok", float("-inf"))
+    assert await runner.limits() == {}
+    assert calls, "запрос не повторился"
+
+    # Удачный ответ той же давности ещё живёт: TTL у него в десять раз длиннее.
+    calls.clear()
+    known = {"email": "", "plan": "max 5x", "bars": [{"name": "сессия", "percent": 1}]}
+    monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, known))
+    assert await runner.limits() == known
+    assert not calls, "сходили в сеть, хотя кеш свежий"

@@ -4,7 +4,12 @@ FROM python:${PYTHON_VERSION}-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.27 /uv /bin/uv
 
-ENV PYTHONDONTWRITEBYTECODE=1 \
+# LANG: the image has no locale at all, and tmux falls back to its non-UTF-8 mode —
+# the browser terminal printed `______` in place of every Cyrillic word (`cat` of a
+# Russian file, tmux client in a C locale). C.UTF-8 ships with the base image, needs no
+# locale-gen, and reaches everything: ttyd, the ssh shell and claude's own subprocesses.
+ENV LANG=C.UTF-8 \
+    PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_PROJECT_ENVIRONMENT=/usr/local \
     UV_PYTHON=/usr/local/bin/python \
