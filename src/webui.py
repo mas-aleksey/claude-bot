@@ -47,6 +47,10 @@ PANE_RE = re.compile(r"[0-9a-zA-Z-]{4,64}\Z")
 # Элементов в одном кадре. Транскрипт бывает на десятки тысяч строк, а страница должна
 # отрисоваться сразу — остальное доедет следующими кадрами с того же оффсета.
 CHUNK = 3000
+# Потолок раскрытого аргумента шага. Медиана шага в песочнице — 244 символа, p90 —
+# около 1700, но встречаются и тридцатитысячные: такой развернули бы лог на весь экран,
+# а прочесть его всё равно негде. Обрезанную строку показываем без раскрытия.
+FULL_ARG = 2000
 # Как часто сервер смотрит на хвост транскрипта. Чтение стоит дописанных байт, поэтому
 # частота ограничена не ценой, а тем, что быстрее человек всё равно не заметит.
 TAIL_TICK = 0.3
@@ -188,12 +192,15 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                 elif kind == "tool_use":
                     name = block.get("name", "?")
                     arg = render._first_arg(name, block.get("input") or {})
-                    out.append({
-                        "role": "tool",
-                        "icon": render.ICONS.get(name, "🔧"),
-                        "name": name,
-                        "text": render.clip(arg, 200),
-                    })
+                    step = {"role": "tool", "icon": render.ICONS.get(name, "🔧"),
+                            "name": name, "text": render.clip(arg, 200)}
+                    # Полный текст — только когда строку реально обрезало: у Read и Edit
+                    # аргумент это путь, и раскрывать там нечего. Переводы строк тут
+                    # живые, в отличие от `clip`: команда с heredoc читается столбиком.
+                    full = render.strip_ansi(str(arg)).strip()
+                    if len(full) > 200:
+                        step["full"] = full[:FULL_ARG]
+                    out.append(step)
             if len(out) >= CHUNK:
                 break
     return start, out, _ctx(used, model)
@@ -805,16 +812,12 @@ header { position:relative; display:flex; gap:6px; align-items:center; padding:6
   background:oklch(0.62 0.18 var(--hue,250) / .30) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
-header .dot { width:8px; height:8px; border-radius:50%; flex:none;
-  background:oklch(0.62 0.20 var(--hue,250)) }
-/* Занятость важнее опознавания: оранжевый перебивает цвет панели. */
-header .dot.busy { background:#e90; animation:pulse 1.1s ease-in-out infinite }
-@keyframes pulse { 50% { opacity:.25; transform:scale(.7) } }
 header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; flex:none }
 
-/* Мигает заголовок панели, а не точка 8x8: полоса во всю ширину против 64 пикселей в
-   углу — потому точку и не было видно. Насыщенность в ярком кадре умеренная: в
-   заголовке лежит текст, и заливка в полную силу его бы утопила. */
+/* Занятость показывает сам заголовок: полоса во всю ширину панели. Точка 8x8 стояла
+   тут раньше и не читалась вовсе, а рядом с мигающим заголовком была третьим сигналом
+   после него и таймера. Насыщенность в ярком кадре умеренная: в заголовке лежит текст,
+   и заливка в полную силу его бы утопила. */
 section.busy header { animation:blink 1.2s ease-in-out infinite }
 @keyframes blink { 50% { background:oklch(0.68 0.21 var(--hue,250) / .70) } }
 /* Без движения подсказка обязана остаться: раньше правило просто убирало анимацию, и
@@ -822,11 +825,9 @@ section.busy header { animation:blink 1.2s ease-in-out infinite }
 @media (prefers-reduced-motion: reduce) {
   #list button.busy { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
-  header .dot.busy { animation:none }
   section.busy header { animation:none;
     background:oklch(0.68 0.21 var(--hue,250) / .70) }
 }
-header .hits { font-size:11px; opacity:.6; flex:none }
 /* Занятый контекст — полоска в нижней кромке заголовка: места не занимает, а через всю
    сетку видно, какая панель подошла к пределу. Без чисел и подсказки: текст в узкой
    панели вытеснил бы название сессии, а title на полоске в два пикселя недостижим —
@@ -835,9 +836,20 @@ header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
   background:oklch(0.62 0.18 var(--hue,250)) }
 header .ctx.full { background:#e55 }
 header button { padding:1px 6px; line-height:1.2 }
-/* Оба цвета заданы явно: подсветка должна читаться и в тёмной теме, и в светлой. */
-::highlight(find) { background:#fd0; color:#000 }
+/* Обёртка нужна только как система координат для кнопки «вниз»: внутри самого лога
+   абсолютная кнопка уехала бы вместе с прокруткой, а снаружи ей не на что опереться —
+   высота лога известна только здесь. */
+.logbox { position:relative; flex:1; min-height:0; display:flex }
 .log { flex:1; overflow:auto; padding:12px 14px }
+/* Полоска во всю ширину лога, устроена как #termbar у окна: узкая, в тоне панели,
+   поверх текста. Полупрозрачная нарочно — сквозь неё видно последнюю строку, поэтому
+   низ лога не читается как обрыв, а промахнуться по ней нельзя даже пальцем.
+   Видна, только пока лог отлистан от низа. */
+.down { position:absolute; left:0; right:0; bottom:0; height:18px; padding:0;
+  display:grid; place-items:center; border:0; border-radius:0; font-size:11px;
+  line-height:1; opacity:.75; background:oklch(0.62 0.18 var(--hue,250) / .35) }
+.down:hover { opacity:1; background:oklch(0.62 0.18 var(--hue,250) / .55) }
+.down[hidden] { display:none }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
 /* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
@@ -854,10 +866,10 @@ header button { padding:1px 6px; line-height:1.2 }
   background:#8881; border-radius:4px }
 /* Кнопка появляется по наведению: в узкой панели постоянная отнимала бы место у кода.
    Прилипает к правому краю самого блока, поэтому не уезжает при его прокрутке. */
-.body pre .copy { position:sticky; float:right; top:0; right:0; opacity:0;
+pre .copy { position:sticky; float:right; top:0; right:0; opacity:0;
   font:inherit; font-size:11px; padding:1px 5px; cursor:pointer; color:inherit;
   background:Canvas; border:1px solid #8884; border-radius:3px }
-.body pre:hover .copy, .body pre .copy:focus { opacity:.9 }
+pre:hover .copy, pre .copy:focus { opacity:.9 }
 .body code { font-family:ui-monospace,monospace; font-size:.92em }
 .body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
 .body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }
@@ -866,6 +878,11 @@ header button { padding:1px 6px; line-height:1.2 }
 .body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
+/* Раскрытый шаг: аргумент столбиком, как он и был набран. Маркер остаётся штатный —
+   свой треугольник рисовать незачем. */
+details.tool summary { cursor:pointer }
+details.tool pre { margin:4px 0 0 1.2em; padding:6px; background:#8881; border-radius:4px;
+  overflow:auto; white-space:pre-wrap }
 .note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
@@ -951,7 +968,6 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   <select id=proj></select>
   <button class=new id=new>+ новая сессия</button>
   <input id=find type=search placeholder="поиск по сессиям проекта">
-  <input id=filter type=search placeholder="поиск по открытым панелям">
   <button class=new id=purge title="удалить старые сессии во всех проектах">
     очистить старше 2 дней</button>
   <div id=list></div>
@@ -1168,107 +1184,6 @@ async function runFind() {
   } catch (e) { /* следующий ввод попробует снова */ }
 }
 
-// Поиск по открытым панелям: подсвечиваем найденное, ничего не скрывая — как Ctrl+F.
-// Раньше несовпавшие сообщения прятались, то есть контекст исчезал ровно тогда, когда
-// он нужнее всего.
-//
-// Подсветка через CSS Custom Highlight API: диапазоны регистрируются в CSS.highlights,
-// DOM не мутируется вообще. Это принципиально — внутри .body лежит готовый HTML
-// разметки, и вставка <mark> его бы порвала. В браузере без этого API останется
-// счётчик без жёлтого.
-//
-// Объект Highlight один на всё время жизни страницы, и меняется его содержимое, а не
-// запись в реестре: после `CSS.highlights.delete` Safari оставлял жёлтое на экране до
-// следующего рефлоу, то есть подсветка переживала очистку поля.
-const HL = 'highlights' in CSS ? new Highlight() : null;
-if (HL) CSS.highlights.set('find', HL);
-
-// Инлайновые теги текст не разрывают: «функция » и «linkify» из <code> идут подряд и
-// склеиваются обратно в одну строку. Всё остальное — граница строки, иначе конец
-// одного сообщения слипся бы с началом следующего в несуществующее слово.
-const INLINE = new Set(['A', 'B', 'CODE', 'EM', 'I', 'S', 'SPAN', 'STRONG', 'SUB', 'SUP', 'U']);
-
-// Плоский текст панели и карта «смещение → узел». Поиск по каждому узлу отдельно не
-// находил ничего, что пересекает границу тега или перевод строки, — а разметка ответа
-// режет текст на узлы буквально по каждому <br>, <b> и `коду`.
-//
-// ponytail: карта строится на каждое нажатие клавиши и на каждую вставку в панель.
-// На десятках тысяч строк начнёт подтормаживать — тогда кешировать по узлу .log и
-// сбрасывать кеш в absorb().
-function flatten(root) {
-  const walk = document.createTreeWalker(root, NodeFilter.SHOW_TEXT | NodeFilter.SHOW_ELEMENT, {
-    // Подписи «ты»/«claude» и кнопка «копировать» — не текст беседы, попадание в них
-    // было бы шумом. REJECT на элементе отсекает его вместе с содержимым.
-    acceptNode: (n) => n.nodeType === 1 && (n.classList.contains('role') ||
-                                            n.classList.contains('copy'))
-      ? NodeFilter.FILTER_REJECT : NodeFilter.FILTER_ACCEPT,
-  });
-  let text = '';
-  const map = [];
-  for (let n = walk.nextNode(); n; n = walk.nextNode()) {
-    if (n.nodeType === 1) {
-      if (!INLINE.has(n.tagName) && !text.endsWith('\n')) text += '\n';
-    } else {
-      map.push({ node: n, at: text.length, len: n.data.length });
-      text += n.data;
-    }
-  }
-  return { text, map };
-}
-
-// Диапазон по смещениям в плоском тексте: начало и конец могут оказаться в разных
-// узлах — именно ради этого всё и затевалось. Смещение, попавшее на вставленный
-// разделитель строк, прижимается к границе ближайшего узла: на экране его всё равно нет.
-function rangeFor(map, from, to) {
-  const spot = (off, end) => {
-    for (const m of map)
-      if (end ? off <= m.at + m.len : off < m.at + m.len)
-        return [m.node, clamp(off - m.at, 0, m.len)];
-    return null;
-  };
-  const a = spot(from, false), b = spot(to, true);
-  if (!a || !b) return null;
-  const r = new Range();
-  r.setStart(a[0], a[1]);
-  r.setEnd(b[0], b[1]);
-  return r;
-}
-
-// --- find:begin ---
-// Совпадения в плоском тексте. Пробел в запросе матчит любой пробельный кусок, включая
-// перевод строки между сообщениями, — иначе фраза, разорванная переносом, не находится.
-// Остальное экранируется: в запросе бывают точки, скобки и звёздочки из кода.
-function hits(text, q) {
-  const pat = q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&').replace(/\s+/g, '\\s+');
-  if (!pat) return [];
-  const re = new RegExp(pat, 'gi');
-  const out = [];
-  for (let m = re.exec(text); m; m = re.exec(text)) out.push([m.index, m.index + m[0].length]);
-  return out;
-}
-// --- find:end ---
-
-function applyFilter() {
-  const q = $('filter').value.trim();
-  HL?.clear();
-  for (const p of panes) {
-    const el = document.getElementById('pane-' + p.pane);
-    if (!el) continue;
-    let found = 0;
-    if (q) {
-      // Ищем только по выводу: в заголовке и в композере искать нечего, а варианты
-      // селекта моделей давали ложные попадания.
-      const { text, map } = flatten(el.querySelector('.log'));
-      for (const [from, to] of hits(text, q)) {
-        const r = rangeFor(map, from, to);
-        if (r) { HL?.add(r); found++; }
-      }
-    }
-    const box = el.querySelector('.hits');
-    if (box) box.textContent = q ? (found || '—') : '';
-  }
-}
-
 // Сетка фиксированного размера в клетках: 12 на 8. Клетка — доля области, а не пиксели,
 // поэтому панели тянутся и сжимаются вместе с окном, сохраняя свои пропорции. Панель по
 // умолчанию 6x4, то есть ровно четверть: четыре сессии раскладываются по углам.
@@ -1396,15 +1311,16 @@ function drawPane(p) {
   el.id = 'pane-' + p.pane;
   el.innerHTML = `
     <header>
-      <span class=dot></span>
       <span class=who></span>
       <span class=timer></span>
-      <span class=hits></span>
       <button class=foldbar title="скрыть поле ввода">▾</button>
       <button class=close title="закрыть панель">×</button>
       <i class=ctx></i>
     </header>
-    <div class=log></div>
+    <div class=logbox>
+      <div class=log></div>
+      <button class=down type=button hidden title="к последнему ответу">↓</button>
+    </div>
     <form>
       <div class=menu hidden></div>
       <div class=ghost></div>
@@ -1423,6 +1339,13 @@ function drawPane(p) {
   $('panes').append(el);
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
+  // Лог доводит себя до низа, только пока ты у низа (absorb ниже). Отлистал вверх —
+  // и ответ дописывается молча, вернуться было нечем. Кнопку показываем по прокрутке,
+  // а после вставки её обновляет absorb: прокрутки там не случается.
+  const box = el.querySelector('.log');
+  const down = el.querySelector('.down');
+  box.onscroll = () => { down.hidden = atEnd(box); };
+  down.onclick = () => { box.scrollTop = 1e9; };
   const fold = el.querySelector('header .foldbar');
   const drawFold = () => {
     el.classList.toggle('noinput', !!p.fold);
@@ -1647,6 +1570,10 @@ function setCtx(p, ctx) {
   bar.classList.toggle('full', share >= 0.9);
 }
 
+// У низа ли лог. Сорок пикселей допуска: докрутить вплотную выходит не всегда, а
+// «почти внизу» читается как «внизу» — и дальше лог снова едет за ответом сам.
+const atEnd = (box) => box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+
 function log(p, html) {
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return null;
@@ -1808,7 +1735,12 @@ function renderItem(it) {
     return `<div class="msg note">↳ ${esc(it.text)}</div>`;
   }
   if (it.role === 'tool') {
-    return `<div class="msg tool">${esc(it.icon)} ${esc(it.name)}: ${linkify(esc(it.text))}</div>`;
+    const head = `${esc(it.icon)} ${esc(it.name)}: ${linkify(esc(it.text))}`;
+    // Длинный шаг раскрывается кликом. `details` нативный: разворот, фокус с клавиатуры
+    // и Ctrl+F браузера достаются даром, своей кнопки и состояния в JS не нужно.
+    return it.full ? `<details class="msg tool"><summary>${head}</summary>` +
+                     `<pre>${esc(it.full)}</pre></details>`
+                   : `<div class="msg tool">${head}</div>`;
   }
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
@@ -1858,7 +1790,7 @@ function absorb(p, data) {
   if (!data.items.length) return;
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return;
-  const atEnd = box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
+  const wasEnd = atEnd(box);
   // Свой же промпт, уже напечатанный локально, из транскрипта не берём — иначе он
   // стоит в панели дважды. Снимаем по одному совпадению на отправку: тот же текст мог
   // быть отправлен и раньше, в истории он законный. Список, а не одна строка — в
@@ -1871,10 +1803,11 @@ function absorb(p, data) {
   if (!queue.length) echoes.delete(p.pane);
   box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
   wireCopy(box);
-  // Дописанное при активном поиске тоже надо подсветить. Встроенный Ctrl+F на каждой
-  // вставке в DOM теряет позицию, а тут диапазоны просто пересобираются.
-  if ($('filter').value.trim()) applyFilter();
-  if (atEnd || first) box.scrollTop = 1e9;
+  if (wasEnd || first) box.scrollTop = 1e9;
+  // Вставка прокрутки не вызывает, поэтому кнопку двигаем руками: лог вырос, и низ
+  // уехал даже у того, кто не трогал колесо.
+  const down = document.querySelector('#pane-' + p.pane + ' .down');
+  if (down) down.hidden = atEnd(box);
 }
 
 // Сравниваем с последними ответами, а не со всей панелью: тот же текст мог быть в
@@ -1949,7 +1882,6 @@ async function tick() {
     if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
 
     el?.classList.toggle('busy', busy);
-    el?.querySelector('.dot')?.classList.toggle('busy', busy);
     const timer = el?.querySelector('.timer');
     if (timer) {
       const foreign = busy && mine.scope !== scope;
@@ -2078,7 +2010,6 @@ $('termbar').onpointerdown = (e) => {
 $('reload').onclick = () => location.reload();
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
-$('filter').oninput = applyFilter;
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadProjects().then(() => {

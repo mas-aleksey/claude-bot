@@ -53,6 +53,24 @@ def test_items_keeps_conversation_drops_noise(tmp_path):
     assert got[2]["text"] == "готово"
 
 
+def test_long_tool_argument_comes_with_its_full_text(tmp_path):
+    """Короткий шаг остаётся строкой, длинный несёт `full` — из него панель делает
+    раскрытие. Переводы строк в `full` живые: `clip` их схлопывает, а команду с heredoc
+    читают столбиком."""
+    path = tmp_path / "s.jsonl"
+    long = "for f in *.py; do\n  echo $f\ndone  # " + "x" * 300
+    write(path,
+          {"type": "assistant", "message": {"role": "assistant", "content": [
+              {"type": "tool_use", "name": "Read", "input": {"file_path": "/p/a.py"}},
+              {"type": "tool_use", "name": "Bash", "input": {"command": long}}]}})
+    _, got, _ = webui.items(path, 0)
+
+    assert "full" not in got[0]                      # путь и так виден целиком
+    assert got[1]["text"].endswith("…")              # строка шага по-прежнему обрезана
+    assert got[1]["full"].startswith("for f in *.py; do\n")
+    assert len(got[1]["full"]) == min(len(long), webui.FULL_ARG)
+
+
 def test_items_reads_only_the_tail(tmp_path):
     """Опрос живого запуска: со старого оффсета отдаётся только новое."""
     path = tmp_path / "s.jsonl"
