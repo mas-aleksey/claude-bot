@@ -3,6 +3,7 @@
 import asyncio
 import contextlib
 import json
+import logging
 import os
 import pty
 import re
@@ -11,8 +12,12 @@ import subprocess
 import time
 from collections.abc import AsyncIterator
 
+import aiohttp
+
 import store
 from render import strip_ansi
+
+log = logging.getLogger("claude_bot.runner")
 
 # --settings: путь, а не содержимое — файл лежит в образе и читается claude на каждом
 # запуске. Он выбирает output style, то есть правит СИСТЕМНЫЙ промпт; CLAUDE.md инстанса
@@ -25,6 +30,18 @@ CONFIG = "/root/.claude.json"
 # Домен OAuth уже переезжал (claude.ai → claude.com), поэтому ловим по пути /oauth/,
 # а не по списку хостов. Проверено на 2.1.220: claude.com/cai/oauth/authorize?...
 URL_RE = re.compile(r"https://\S+/oauth/\S+")
+
+# Лимиты подписки. В headless их не спросить — `/usage` и `/cost` отвечают только внутри
+# сессии и текстом, — зато CLI берёт их с этого эндпоинта, и токен для него уже лежит
+# в CREDS. Ходим туда же сами.
+OAUTH_API = "https://api.anthropic.com/api/oauth"
+# Минута: панель опрашивает статус раз в три секунды, а проценты столько не меняются.
+LIMITS_TTL = 60
+_limits: tuple[float, dict] = (float("-inf"), {})
+
+# Подписи известных лимитов. Неизвестный показываем его же ключом: спрятать лимит,
+# в который упрёшься, хуже, чем показать непонятную подпись.
+LIMIT_NAMES = {"session": "сессия", "weekly_all": "неделя", "weekly_scoped": "неделя"}
 
 # Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
 # идти параллельно. Личка и обычная группа живут в скоупе "0".
@@ -353,6 +370,69 @@ async def auth_status() -> dict:
         return json.loads(out)
     except json.JSONDecodeError:
         return {"loggedIn": False, "error": out or f"rc={rc}"}
+
+
+def _bars(usage: dict) -> list[dict]:
+    """`limits` из ответа API — в то, что рисует панель.
+
+    Список курирует сервер: у разных тарифов он разной длины и с разными `kind`,
+    поэтому перебираем что дали, а не ждём знакомых ключей.
+    """
+    out = []
+    for lim in usage.get("limits") or []:
+        try:
+            percent = round(float(lim["percent"]))
+        except (KeyError, TypeError, ValueError):
+            continue
+        name = LIMIT_NAMES.get(lim.get("kind"), lim.get("kind") or "лимит")
+        if model := ((lim.get("scope") or {}).get("model") or {}).get("display_name"):
+            name = f"{name}, {model}"
+        out.append({"name": name, "percent": percent,
+                    "resets": lim.get("resets_at") or "",
+                    "severity": lim.get("severity") or "normal"})
+    return out
+
+
+def _plan(profile: dict) -> str:
+    """Тариф коротко: `default_claude_max_5x` → `max 5x`."""
+    tier = (profile.get("organization") or {}).get("rate_limit_tier") or ""
+    return tier.removeprefix("default_").removeprefix("claude_").replace("_", " ")
+
+
+async def limits() -> dict:
+    """Занятость лимитов подписки и чей это аккаунт, с кешем на LIMITS_TTL.
+
+    Пустой словарь значит «показывать нечего»: нет файла с токеном, токен протух или
+    ответ не той формы. Эндпоинт недокументированный, и смена его формы не должна
+    ронять статус — панель на пустом словаре просто гасит полоски. Протухший токен
+    чиним не мы: CLI обновляет CREDS на следующем прогоне, поэтому файл читаем заново
+    на каждый промах кеша, а неудачу кешируем наравне с успехом — иначе трёхсекундный
+    опрос панели будет долбить API.
+    """
+    global _limits
+    now = time.monotonic()
+    if now - _limits[0] < LIMITS_TTL:
+        return _limits[1]
+    out: dict = {}
+    try:
+        with open(CREDS, encoding="utf-8") as f:
+            token = json.load(f)["claudeAiOauth"]["accessToken"]
+        headers = {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"}
+        async with aiohttp.ClientSession(
+                headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
+            async with s.get(f"{OAUTH_API}/usage") as r:
+                usage = await r.json()
+            async with s.get(f"{OAUTH_API}/profile") as r:
+                profile = await r.json()
+        if bars := _bars(usage):
+            out = {"email": (profile.get("account") or {}).get("email") or "",
+                   "plan": _plan(profile), "bars": bars}
+        else:
+            log.warning("лимиты подписки: в ответе нет процентов, %s", str(usage)[:200])
+    except Exception as e:
+        log.warning("лимиты подписки не прочитались: %s", e)
+    _limits = (now, out)
+    return out
 
 
 async def check_model(model: str) -> str | None:

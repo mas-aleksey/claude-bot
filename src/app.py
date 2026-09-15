@@ -7,6 +7,7 @@ import logging
 import os
 import shlex
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 from aiogram import Bot, Dispatcher, F
@@ -134,9 +135,37 @@ async def cmd_status(msg: Message) -> None:
         f"сессия: {sid or 'новая'}\n"
         f"контекст: {_context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
+        f"{_plan_lines(await runner.limits())}\n"
         f"занят: {runner.busy(sc)}{f', в очереди {queued}' if queued else ''}\n"
         f"\n/help — команды"
     )
+
+
+def _plan_lines(lim: dict) -> str:
+    """Чей аккаунт и сколько лимита съедено — две строки статуса.
+
+    До сброса пишем, сколько осталось, а не когда он будет: часовой пояс контейнера
+    не тот, в котором это читают. Пустой словарь — лимиты не прочитались, и прочерк
+    тут честнее нулей."""
+    who = " · ".join(x for x in (lim.get("email"), lim.get("plan")) if x)
+    bars = " · ".join(
+        f"{b['name']} {b['percent']}%{_until(b['resets'])}" for b in lim.get("bars", ()))
+    return f"подписка: {who or '—'}\nлимиты: {bars or '—'}"
+
+
+def _until(iso: str) -> str:
+    """`(↻2ч)` — сколько осталось до сброса лимита. Пусто, если времени нет или прошло."""
+    try:
+        secs = (datetime.fromisoformat(iso) - datetime.now(UTC)).total_seconds()
+    except (TypeError, ValueError):
+        return ""
+    if secs <= 0:
+        return ""
+    if secs < 3600:
+        return f" (↻{int(secs // 60)}м)"
+    if secs < 86400:
+        return f" (↻{int(secs // 3600)}ч)"
+    return f" (↻{int(secs // 86400)}д)"
 
 
 def _context_line(project: str, session_id: str | None) -> str:

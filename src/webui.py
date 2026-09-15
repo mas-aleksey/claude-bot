@@ -623,9 +623,14 @@ def build() -> web.Application:
         Общая модель — оттуда же, откуда её берёт `_drive` при пустом выборе в панели.
         Без неё в селекте стояло безымянное «модель», и что именно поедет в claude,
         из панели было не видно.
+
+        Лимиты подписки едут тем же ответом, а не своим роутом: он уже опрашивается
+        раз в три секунды, а `runner.limits` держит свой минутный кеш — выходит один
+        запрос в API на минуту на все открытые вкладки.
         """
         return web.json_response({"runs": runner.active(), "errors": _errors,
                                   "local": _local, "queued": runner.waiting(),
+                                  "limits": await runner.limits(),
                                   "model": store.get("model") or "default"})
 
     async def api_prompt(req: web.Request) -> web.Response:
@@ -718,7 +723,7 @@ body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; flex-directio
   height:100vh }
 /* Верхний ряд: список, его полоска и поле панелей. Отдельной обёрткой, потому что под
    ним теперь живёт ящик терминала, и делить высоту им надо колонкой. */
-#top { flex:1; min-height:0; display:flex }
+#top { position:relative; flex:1; min-height:0; display:flex }
 aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
 body.folded aside { display:none }
 /* Полоса на левом краю области панелей. Видна всегда, в том числе когда сайдбар убран:
@@ -770,6 +775,15 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    гаснет, как только сессию открыли. */
 #list button.done::after { content:'\25CF'; float:right; margin-left:6px; font-size:10px;
   color:oklch(0.62 0.20 var(--hue,250)) }
+#plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
+#plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+#plan .lim { margin-top:6px }
+#plan .lim em { font-style:normal; opacity:.75 }
+#plan .lim span { float:right; opacity:.6 }
+#plan .track { height:4px; margin-top:3px; border-radius:2px; background:#8883 }
+#plan .fill { display:block; height:100%; border-radius:2px; background:oklch(0.62 0.18 250) }
+#plan .fill.warn { background:#e90 }
+#plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
 #list .size { float:right; opacity:.5; font-size:11px }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
@@ -836,6 +850,10 @@ header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
   background:oklch(0.62 0.18 var(--hue,250)) }
 header .ctx.full { background:#e55 }
 header button { padding:1px 6px; line-height:1.2 }
+/* Значок разворота — через `content`, чтобы состояние окна рисовал CSS, а не переписывал
+   скрипт: та же механика, что у полоски сайдбара. */
+header .max::before { content:'\2922' }
+section.zoomed header .max::before { content:'\2921' }
 /* Обёртка нужна только как система координат для кнопки «вниз»: внутри самого лога
    абсолютная кнопка уехала бы вместе с прокруткой, а снаружи ей не на что опереться —
    высота лога известна только здесь. */
@@ -895,10 +913,13 @@ form { position:relative; display:flex; flex-direction:column; gap:4px;
   border:1px solid #8886; border-radius:12px;
   background:oklch(0.62 0.16 var(--hue,250) / .05) }
 form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
-/* Композер сворачивается кнопкой в заголовке: в четырёх панелях он отнимает у лога
-   полторы сотни пикселей на каждую, но прятать его самому по фокусу оказалось хуже —
-   поле исчезало из-под руки. Решает человек, состояние живёт в панели. */
-section.noinput form { display:none }
+/* Окно сворачивается в свой заголовок: на экране остаётся полоса с именем сессии,
+   таймером и кнопками. Раньше та же кнопка прятала только композер — окно занимало
+   свою четверть экрана и пустым. Свёрнутое встаёт в один ряд сетки и держит высоту по
+   содержимому, поэтому под ним видно то, что лежало ниже. Состояние живёт в панели и
+   переживает F5 вместе с её местом. */
+section.rolled { grid-row:var(--r,1) / span 1; align-self:start; height:auto }
+section.rolled .logbox, section.rolled form, section.rolled .h { display:none }
 textarea { position:relative; resize:none; min-height:40px; max-height:240px;
   padding:4px 4px 0; font:inherit; background:none; color:inherit; border:0; outline:none }
 /* Подсветка слеш-команды: залить текст внутри textarea нельзя, поэтому под полем лежит
@@ -954,11 +975,21 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
 #dead[hidden] { display:none }
 #dead button { border-color:#fff8 }
 /* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
-   отключаем ручки — тянуть тут всё равно нечего. */
+   отключаем ручки — тянуть тут всё равно нечего.
+   Сайдбар ложится поверх панелей, а не отнимает у них колонку: на 390 пикселях он
+   забирал 280 и окно оставалось в сотню. Поля области убраны совсем — окно идёт от
+   края до края, и единственное, что у экрана отъедено, это полоска возврата к списку.
+   Ряды по содержимому, а высота задана самому окну: свёрнутое в заголовок иначе
+   держало бы под собой пустые 70vh своего ряда. */
 @media (max-width: 700px) {
-  #panes { overflow:auto; grid-template-columns:1fr; grid-template-rows:none;
-    grid-auto-rows:min(70vh, 480px) }
-  section { grid-column:1/-1 !important; grid-row:auto !important }
+  aside { position:absolute; z-index:10; left:0; top:0; height:100%;
+    width:min(280px, 85vw); background:Canvas; box-shadow:0 0 24px #0007 }
+  #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
+    grid-template-rows:none; grid-auto-rows:auto }
+  section { grid-column:1/-1 !important; grid-row:auto !important;
+    height:min(70vh, 480px); border-radius:0; border-left:0; border-right:0 }
+  section.rolled { height:auto }
+  form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
   .h { display:none }
 }
 </style></head><body>
@@ -967,10 +998,13 @@ section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offse
   <nav id=peers></nav>
   <select id=proj></select>
   <button class=new id=new>+ новая сессия</button>
+  <button class=new id=tile title="расставить открытые окна поровну, без перекрытий">
+    разложить окна</button>
   <input id=find type=search placeholder="поиск по сессиям проекта">
   <button class=new id=purge title="удалить старые сессии во всех проектах">
     очистить старше 2 дней</button>
   <div id=list></div>
+  <div id=plan hidden></div>
 </aside>
 <button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
 <div id=panes><div id=empty>открой сессию слева или начни новую</div></div>
@@ -1210,8 +1244,13 @@ function applyGeom(p) {
   for (const k of ['c', 'r', 'w', 'h']) el.style.setProperty('--' + k, p[k]);
 }
 
-// Первое свободное место под прямоугольник панели. Без этого две новые панели легли бы
-// одна на другую, и рабочий стол начинался бы с разбора завала.
+// --- place:begin ---
+// Размеры новой панели по убыванию: четверть области, полоса, столбец, восьмая. Пятая
+// сессия раньше ложилась поверх первой — свободной четверти уже не было, и место
+// подбиралось только под один размер. Теперь окно ужимается, пока не встанет рядом:
+// шестушками в сетку 12x8 влезает шестнадцать штук.
+const SIZES = [[W, H], [W, H / 2], [W / 2, H], [W / 2, H / 2], [3, 2]];
+
 function place(p) {
   const busy = (c, r) => panes.some(x => x !== p && x.c <= c && c < x.c + x.w &&
                                                     x.r <= r && r < x.r + x.h);
@@ -1221,10 +1260,52 @@ function place(p) {
         if (busy(c + i, r + j)) return false;
     return true;
   };
-  for (let r = 1; r <= ROWS - p.h + 1; r++)
-    for (let c = 1; c <= COLS - p.w + 1; c++)
-      if (free(c, r)) { p.c = c; p.r = r; return; }
-  p.c = 1; p.r = 1;  // мест нет — кладём поверх, разберёт человек
+  for (const [w, h] of SIZES) {
+    p.w = w; p.h = h;
+    for (let r = 1; r <= ROWS - h + 1; r++)
+      for (let c = 1; c <= COLS - w + 1; c++)
+        if (free(c, r)) { p.c = c; p.r = r; return; }
+  }
+  retile();  // свободного места нет вовсе — раскладываем всё заново, поровну
+}
+
+// Разворот на всю область и возврат. Прежний прямоугольник живёт в самой панели,
+// поэтому переживает F5: развёрнутое окно и после перезагрузки знает, куда вернуться.
+// Отдельного режима нет — это обычная геометрия, и перетащить развёрнутое окно или
+// потянуть его за угол можно так же, как любое другое. Любая такая правка руками стирает
+// память о прежнем размере: возвращать после неё некуда.
+function zoom(p) {
+  if (p.prev) { Object.assign(p, p.prev); p.prev = null; }
+  else { p.prev = { c: p.c, r: p.r, w: p.w, h: p.h }; p.c = p.r = 1; p.w = COLS; p.h = ROWS; }
+  applyGeom(p);
+  drawZoom(p);
+}
+
+// Плитка на всех: столбцов — корень из числа окон, дальше по рядам. Нужна ровно там,
+// где подбор места бессилен: четыре окна по четверти занимают сетку целиком, и пятому
+// некуда встать, как его ни ужимай. Расставляет и уже открытые — молча ложиться поверх
+// них хуже, чем подвинуть их один раз на глазах.
+function retile() {
+  const cols = Math.ceil(Math.sqrt(panes.length));
+  const rows = Math.ceil(panes.length / cols);
+  const w = Math.max(1, Math.floor(COLS / cols)), h = Math.max(1, Math.floor(ROWS / rows));
+  panes.forEach((x, i) => {
+    x.w = w; x.h = h;
+    x.c = 1 + (i % cols) * w;
+    x.r = 1 + Math.floor(i / cols) * h;
+    x.prev = null;
+    applyGeom(x);
+    drawZoom(x);
+  });
+}
+// --- place:end ---
+
+function drawZoom(p) {
+  const el = document.getElementById('pane-' + p.pane);
+  const btn = el?.querySelector('.max');
+  if (!btn) return;
+  el.classList.toggle('zoomed', !!p.prev);
+  btn.title = p.prev ? 'вернуть прежний размер' : 'во весь экран';
 }
 
 function raise(el) {
@@ -1264,6 +1345,8 @@ function wireGrab(p, el, node, edge) {
     node.onpointerup = node.onpointercancel = () => {
       node.onpointermove = null;
       node.classList.remove('moving');
+      // Окно подвинули руками — возвращать из разворота уже некуда.
+      if (p.prev) { p.prev = null; drawZoom(p); }
       save();
     };
   };
@@ -1313,7 +1396,8 @@ function drawPane(p) {
     <header>
       <span class=who></span>
       <span class=timer></span>
-      <button class=foldbar title="скрыть поле ввода">▾</button>
+      <button class=max title="во весь экран"></button>
+      <button class=foldbar title="свернуть окно в заголовок">▾</button>
       <button class=close title="закрыть панель">×</button>
       <i class=ctx></i>
     </header>
@@ -1346,15 +1430,17 @@ function drawPane(p) {
   const down = el.querySelector('.down');
   box.onscroll = () => { down.hidden = atEnd(box); };
   down.onclick = () => { box.scrollTop = 1e9; };
+  const max = el.querySelector('header .max');
+  max.onclick = () => { zoom(p); save(); raise(el); };
   const fold = el.querySelector('header .foldbar');
   const drawFold = () => {
-    el.classList.toggle('noinput', !!p.fold);
-    fold.textContent = p.fold ? '▴' : '▾';
-    fold.title = p.fold ? 'показать поле ввода' : 'скрыть поле ввода';
+    el.classList.toggle('rolled', !!p.roll);
+    fold.textContent = p.roll ? '▾' : '▴';
+    fold.title = p.roll ? 'развернуть окно' : 'свернуть окно в заголовок';
   };
   // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
   // остаётся свёрнутой и после F5, как остаётся её место в сетке.
-  fold.onclick = () => { p.fold = !p.fold; save(); drawFold(); };
+  fold.onclick = () => { p.roll = !p.roll; save(); drawFold(); };
   drawFold();
   el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane })
     .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
@@ -1390,6 +1476,10 @@ function drawPane(p) {
   el.onpointerdown = () => raise(el);
   fit(p);
   applyGeom(p);
+  drawZoom(p);
+  // Новое окно — сверху. Без этого оно уходило под активную панель: `act` держит
+  // z-index, а порядок в DOM его не перебивает.
+  raise(el);
   // Панель нарисована — можно подписываться. Отсюда, а не из addPane: после F5 панели
   // восстанавливает startup тем же вызовом, и второе место забыли бы синхронизировать.
   watch(p);
@@ -1568,6 +1658,26 @@ function setCtx(p, ctx) {
   const share = Math.min(1, ctx.used / ctx.window);
   bar.style.width = (share * 100).toFixed(1) + '%';
   bar.classList.toggle('full', share >= 0.9);
+}
+
+// Лимиты подписки. Место — низ списка, а не шапка панели: лимит общий на аккаунт,
+// и в каждом окне это была бы одна и та же полоска. Значения приезжают со статусом,
+// перерисовываем только когда они правда сменились — раз в минуту, а не раз в тик.
+function setPlan(lim) {
+  const box = $('plan');
+  const j = JSON.stringify(lim || null);
+  if (box.dataset.j === j) return;
+  box.dataset.j = j;
+  if (!lim || !(lim.bars || []).length) { box.hidden = true; return; }
+  box.hidden = false;
+  const who = [lim.email, lim.plan].filter(Boolean).join(' · ');
+  box.innerHTML = `<div class=who title="${esc(who)}">${esc(who)}</div>` + lim.bars.map((b) => {
+    const p = Math.max(0, Math.min(100, b.percent));
+    const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
+    const when = b.resets ? 'сброс ' + new Date(b.resets).toLocaleString() : 'время сброса неизвестно';
+    return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em><span>${p}%</span>
+      <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
+  }).join('');
 }
 
 // У низа ли лог. Сорок пикселей допуска: докрутить вплотную выходит не всегда, а
@@ -1849,6 +1959,7 @@ async function tick() {
   if (st.model)
     for (const o of document.querySelectorAll('.model option[value=""]'))
       o.textContent = st.model;
+  setPlan(st.limits);
   trackRuns(st.runs || []);
   let running = 0;
   for (const p of panes) {
@@ -2010,6 +2121,7 @@ $('termbar').onpointerdown = (e) => {
 $('reload').onclick = () => location.reload();
 $('proj').onchange = () => { $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
+$('tile').onclick = () => { retile(); save(); };
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadProjects().then(() => {

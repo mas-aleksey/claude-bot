@@ -11,7 +11,7 @@ user ids — everyone else is ignored.
 
 | Command | |
 | --- | --- |
-| `/status` | current project, model, session, auth state |
+| `/status` | current project, model, session, auth state, subscription limits |
 | `/projects`, `/cd <name>` | list projects as buttons, switch between them |
 | `/clone <git-url> [name]` | clone a repository into the projects directory |
 | `/sessions`, `/new` | switch to a recent session, or start a fresh one |
