@@ -1129,14 +1129,12 @@ form { position:relative; display:flex; flex-direction:column; gap:4px;
   border:1px solid #8886; border-radius:12px;
   background:oklch(0.62 0.16 var(--hue,250) / .05) }
 form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
-/* Окно сворачивается в свой заголовок: на экране остаётся полоса с именем сессии,
-   таймером и кнопками. Раньше та же кнопка прятала только композер — окно занимало
-   свою четверть экрана и пустым. Свёрнутое встаёт в один ряд сетки и держит высоту по
-   содержимому, поэтому под ним видно то, что лежало ниже. Состояние живёт в панели и
-   переживает F5 вместе с её местом. */
-section.rolled { grid-row:var(--r,1) / span 1; align-self:start; height:auto }
-section.rolled .logbox, section.rolled form, section.rolled .h { display:none }
-section.rolled .edit, section.rolled .filebar { display:none }
+/* Сворачивание в заголовок — мобильное, правила лежат в медиаблоке внизу. На большом
+   экране оно бессмысленно: окна стоят в явных клетках сетки, освободившиеся ряды никто
+   не занимает, и свёрнутое оставляло бы под собой дыру. Кнопка спрятана здесь, а не
+   показана там, чтобы состояние `roll` могло пережить переход между экранами: панель
+   с телефона открывают на десктопе целой, а не полоской заголовка без кнопки. */
+header .foldbar { display:none }
 /* Поле правки во всю высоту окна. Потолок в 240px ниже поставлен композеру, здесь он
    не нужен — окно тянется само, и файл должен занимать его целиком.
    `white-space:pre` и `wrap=off`: перенос длинной строки сдвинул бы нумерацию строк в
@@ -1240,7 +1238,21 @@ body:not(.folded) #empty .list { display:none }
     grid-template-rows:none; grid-auto-rows:auto; align-content:start }
   section { grid-column:1/-1 !important; grid-row:auto !important;
     height:min(70vh, 480px); border-radius:0; border-left:0; border-right:0 }
+  /* Окно сворачивается в свой заголовок: остаётся полоса с именем сессии, таймером и
+     кнопками, а всё, что лежало ниже, поднимается вплотную. Состояние живёт в панели и
+     переживает F5. Ручки в списке скрытого нет — на этом экране её и так нет. */
+  header .foldbar { display:revert }
   section.rolled { height:auto }
+  section.rolled .logbox, section.rolled form { display:none }
+  section.rolled .edit, section.rolled .filebar { display:none }
+  /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
+     раньше просто ничего не делала. Окно выходит из потока и накрывает экран целиком,
+     включая полоску терминала: это единственный способ растянуть лог, раз ресайза на
+     телефоне нет. z-index выше сайдбаров (10) и их полосок (11), но ниже плашки `#dead`.
+     Свёрнутое разворачивать некуда — там нечего показывать, кроме заголовка. */
+  section.zoomed { position:fixed; inset:0; z-index:20; height:auto }
+  section.rolled.zoomed { position:static }
+  #tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
   .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
   form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
   .h { display:none }
@@ -2155,7 +2167,11 @@ function setPlan(lim) {
   box.dataset.j = j;
   if (!lim || !(lim.bars || []).length) { box.hidden = true; return; }
   box.hidden = false;
-  const who = [lim.email, lim.plan].filter(Boolean).join(' · ');
+  // Возраст чисел: полоски переживают рестарт бота и живут в базе, поэтому «сейчас» и
+  // «час назад» надо различать. До пяти минут молчим — это обычный такт опроса.
+  const age = lim.at ? Date.now() / 1000 - lim.at : 0;
+  const who = [lim.email, lim.plan, age > 300 ? fmt(age) + ' назад' : '']
+    .filter(Boolean).join(' · ');
   box.innerHTML = `<div class=who title="${esc(who)}">${esc(who)}</div>` + lim.bars.map((b) => {
     const p = Math.max(0, Math.min(100, b.percent));
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
