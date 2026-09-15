@@ -73,6 +73,50 @@ const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_new_pane_never_lands_on_an_open_one(tmp_path):
+    """Место под новое окно подбирается по занятым. Четыре окна по четверти занимают
+    сетку целиком — пятому места нет ни в каком размере, и тогда раскладка пересчитыва-
+    ется на всех. Проверяем главное обещание: перекрытий нет ни на одном шаге."""
+    body = slice_out("script").split("// --- place:begin ---")[1].split("// --- place:end ---")[0]
+    js = tmp_path / "place.js"
+    js.write_text("""
+const COLS = 12, ROWS = 8, W = COLS / 2, H = ROWS / 2;
+const applyGeom = () => {};
+const drawZoom = () => {};
+let panes = [];
+""" + body + """
+const overlap = () => panes.some((a, i) => panes.slice(i + 1).some(b =>
+  a.c < b.c + b.w && b.c < a.c + a.w && a.r < b.r + b.h && b.r < a.r + a.h));
+const outside = () => panes.some(p =>
+  p.c < 1 || p.r < 1 || p.c + p.w - 1 > COLS || p.r + p.h - 1 > ROWS);
+const seen = [];
+for (let n = 1; n <= 9; n++) {
+  const p = {};
+  panes.push(p);
+  place(p);
+  seen.push([overlap(), outside()]);
+}
+// Разворот и возврат: прямоугольник обязан вернуться ровно тем же.
+const first = panes[0];
+const was = [first.c, first.r, first.w, first.h];
+zoom(first);
+const big = [first.c, first.r, first.w, first.h];
+zoom(first);
+const back = [first.c, first.r, first.w, first.h];
+console.log(JSON.stringify([seen, panes.length, panes[0].w, panes[0].h, was, big, back]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    seen, count, w, h, was, big, back = json.loads(done.stdout)
+
+    assert seen == [[False, False]] * 9   # ни одного перекрытия и ни одного выхода за сетку
+    assert count == 9
+    assert [w, h] == [4, 2]               # девять окон — плитка 3x3 по клеткам 4x2
+    assert big == [1, 1, 12, 8]           # развёрнутое занимает всю область
+    assert back == was                    # и возвращается ровно откуда развернули
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
 def test_sidebar_start_state(tmp_path):
     """Первый заход решается шириной экрана, дальше — сохранённым выбором. Ловушка тут
     в строке '0': она истинна, и проверка на истинность прятала бы открытый сайдбар."""
