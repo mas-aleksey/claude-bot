@@ -54,12 +54,26 @@ _limits_wait = LIMITS_RETRY   # пауза после неудачи: удваи
 LIMITS_KEY = "limits"
 
 
-def _remembered() -> dict:
-    """Последний удачный ответ из базы. Пусто, если его там нет или он покорёжен."""
+def _remembered(key: str, default):
+    """Последний удачный ответ из базы. Умолчание, если его там нет или он покорёжен."""
     try:
-        return json.loads(store.get(LIMITS_KEY) or "")
+        return json.loads(store.get(key) or "")
     except ValueError:
-        return {}
+        return default
+
+
+def _oauth_token() -> str:
+    """Токен подписки из CREDS. Протухший не отдаём вовсе.
+
+    Обновляет его CLI на ближайшем прогоне, а идти с ним в API не просто бесполезно:
+    на surf такие запросы раз в полминуты сначала получали `authentication_error`, а
+    потом утянули аккаунт в `rate_limit_error` самого эндпоинта.
+    """
+    with open(CREDS, encoding="utf-8") as f:
+        oauth = json.load(f)["claudeAiOauth"]
+    if oauth.get("expiresAt", 0) / 1000 < time.time():
+        raise RuntimeError("токен протух, обновится на ближайшем прогоне claude")
+    return oauth["accessToken"]
 # Последний удачный ответ держим сколько угодно: он уезжает в базу вместе с отметкой
 # времени, а панель подписывает его возрастом. Раньше тут стоял порог в полчаса, после
 # которого полоски гасли, — с видимым возрастом врать уже нечем, а пустота посреди дня
@@ -75,6 +89,13 @@ LIMIT_NAMES = {"session": "сессия", "weekly_all": "неделя", "weekly_
 # зашитая в панель тройка `opus/sonnet/haiku` устаревала молча и `fable` в ней не было.
 MODELS_URL = "https://api.anthropic.com/v1/models?limit=50"
 MODELS_TTL = 6 * 3600
+# Промах живёт минуту, а не шесть часов. Иначе один неудачный запрос на старте — а он
+# случается ровно тогда, когда протух токен, — оставлял выпадашку с запасной тройкой
+# `opus/sonnet/haiku` до вечера. Проверено на ассистенте 16.09.
+MODELS_RETRY = 60
+# Каталог тоже помним в базе: он меняется раз в месяцы, и ждать ответа API, чтобы
+# показать список моделей, незачем.
+MODELS_KEY = "models"
 _models: tuple[float, list] = (float("-inf"), [])
 
 # Запуск на скоуп, а не один на бота: топик форума = своя сессия, и две сессии должны
@@ -541,22 +562,13 @@ async def limits() -> dict:
     now = time.monotonic()
     # Холодный старт: показываем запомненное сразу, а запрос уходит этим же вызовом.
     # Числа с отметкой времени — панель сама решит, насколько они устарели.
-    if _limits[0] == float("-inf") and (was := _remembered()):
+    if _limits[0] == float("-inf") and (was := _remembered(LIMITS_KEY, {})):
         _limits = (now - LIMITS_TTL - LIMITS_JITTER, was)
     if now - _limits[0] < (LIMITS_TTL + LIMITS_JITTER if _limits[1] else _limits_wait):
         return _limits[1]
     out: dict = {}
     try:
-        with open(CREDS, encoding="utf-8") as f:
-            oauth = json.load(f)["claudeAiOauth"]
-        # Протухший токен чиним не мы: его обновляет CLI на ближайшем прогоне. Идти с
-        # ним в API не просто бесполезно — на surf такой запрос раз в полминуты сначала
-        # получал `authentication_error`, а потом утянул нас в `rate_limit_error`
-        # эндпоинта, и полоски не появлялись часами. Проверено 15.09: токен истёк в
-        # 16:07, первый же промпт в 22:37 обновил его сам.
-        if oauth.get("expiresAt", 0) / 1000 < time.time():
-            raise RuntimeError("токен протух, обновится на ближайшем прогоне claude")
-        token = oauth["accessToken"]
+        token = _oauth_token()
         headers = {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"}
         async with aiohttp.ClientSession(
                 headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
@@ -597,12 +609,13 @@ async def models() -> list[dict]:
     """
     global _models
     now = time.monotonic()
-    if now - _models[0] < MODELS_TTL:
+    if _models[0] == float("-inf") and (was := _remembered(MODELS_KEY, [])):
+        _models = (now - MODELS_TTL, was)   # показываем запомненное, запрос уйдёт сейчас
+    if now - _models[0] < (MODELS_TTL if _models[1] else MODELS_RETRY):
         return _models[1]
     out: list[dict] = []
     try:
-        with open(CREDS, encoding="utf-8") as f:
-            token = json.load(f)["claudeAiOauth"]["accessToken"]
+        token = _oauth_token()
         headers = {"Authorization": f"Bearer {token}",
                    "anthropic-beta": "oauth-2025-04-20",
                    "anthropic-version": "2023-06-01"}
@@ -614,6 +627,10 @@ async def models() -> list[dict]:
                for m in body.get("data") or [] if m.get("id")]
     except Exception as e:
         log.warning("каталог моделей не прочитался: %s", e)
+    if out:
+        store.put(MODELS_KEY, json.dumps(out))
+    else:
+        out = _models[1]  # не вышло — остаёмся на прошлом каталоге, а не на пустоте
     _models = (now, out)
     return out
 

@@ -2160,23 +2160,45 @@ function setCtx(p, ctx) {
 // Лимиты подписки. Место — низ списка, а не шапка панели: лимит общий на аккаунт,
 // и в каждом окне это была бы одна и та же полоска. Значения приезжают со статусом,
 // перерисовываем только когда они правда сменились — раз в минуту, а не раз в тик.
+// Возраст чисел словами. Полоски переживают рестарт бота и живут в базе, поэтому
+// «только что» и «час назад» надо различать: при протухшем токене или сбое API числа
+// остаются на экране, и без подписи они выглядят свежими.
+// Сколько осталось до сброса лимита. Дата сброса приходит с каждой полоской и до сих
+// пор лежала только в подсказке — до неё не дотянуться ни пальцем, ни взглядом, а это
+// главное число после самого процента: упёрся в лимит и решаешь, ждать или менять план.
+const until = (iso) => {
+  const sec = (new Date(iso) - Date.now()) / 1000;
+  if (!iso || !(sec > 0)) return '';
+  const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
+  return h >= 24 ? `${Math.floor(h / 24)}д ${h % 24}ч` : h ? `${h}ч ${m}м` : `${m}м`;
+};
+
+const since = (sec) =>
+  sec < 60 ? 'только что'
+    : sec < 3600 ? `${Math.floor(sec / 60)} мин назад`
+    : sec < 86400 ? `${Math.floor(sec / 3600)} ч назад`
+    : `${Math.floor(sec / 86400)} дн назад`;
+
 function setPlan(lim) {
   const box = $('plan');
-  const j = JSON.stringify(lim || null);
+  // Подпись возраста меняется сама по себе, без нового ответа сервера, поэтому входит
+  // в ключ сравнения: иначе блок перерисовался бы только раз в две минуты и врал бы
+  // «только что» всё это время.
+  const label = lim?.at ? since(Date.now() / 1000 - lim.at) : '';
+  const j = JSON.stringify(lim || null) + '|' + label +
+    '|' + (lim?.bars || []).map(b => until(b.resets)).join();
   if (box.dataset.j === j) return;
   box.dataset.j = j;
   if (!lim || !(lim.bars || []).length) { box.hidden = true; return; }
   box.hidden = false;
-  // Возраст чисел: полоски переживают рестарт бота и живут в базе, поэтому «сейчас» и
-  // «час назад» надо различать. До пяти минут молчим — это обычный такт опроса.
-  const age = lim.at ? Date.now() / 1000 - lim.at : 0;
-  const who = [lim.email, lim.plan, age > 300 ? fmt(age) + ' назад' : '']
-    .filter(Boolean).join(' · ');
+  const who = [lim.email, lim.plan, label].filter(Boolean).join(' · ');
   box.innerHTML = `<div class=who title="${esc(who)}">${esc(who)}</div>` + lim.bars.map((b) => {
     const p = Math.max(0, Math.min(100, b.percent));
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
     const when = b.resets ? 'сброс ' + new Date(b.resets).toLocaleString() : 'время сброса неизвестно';
-    return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em><span>${p}%</span>
+    const left = until(b.resets);
+    return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em>` +
+      `<span>${left ? `через ${esc(left)} · ` : ''}${p}%</span>
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
   }).join('');
 }

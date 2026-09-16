@@ -83,7 +83,7 @@ async def test_limits_cached(monkeypatch):
     monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
     # Пустой кеш — это холодный старт, и он лезет в базу за прошлым ответом. База тут
     # настоящая, с настоящими процентами живого бота: без заглушки тест сверял бы их.
-    monkeypatch.setattr(runner, "_remembered", dict)
+    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
     monkeypatch.setattr("builtins.open", creds)
     assert await runner.limits() == {}
     assert await runner.limits() == {}
@@ -99,7 +99,7 @@ async def test_limits_keep_last_good_answer(monkeypatch):
              "bars": [{"name": "сессия", "percent": 12}]}
 
     monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
-    monkeypatch.setattr(runner, "_remembered", dict)   # база настоящая, см. выше
+    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)   # база настоящая, см. выше
     # Даже суточной давности: панель подпишет возраст, а пустота не сообщает ничего.
     assert await runner.limits() == known
 
@@ -144,7 +144,7 @@ async def test_expired_token_never_reaches_the_api(tmp_path, monkeypatch):
 
     monkeypatch.setattr(runner.aiohttp, "ClientSession", no_network)
     monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
-    monkeypatch.setattr(runner, "_remembered", dict)
+    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
     assert await runner.limits() == {}
 
 
@@ -177,3 +177,22 @@ async def test_limits_survive_a_restart(tmp_path, monkeypatch):
     store.put(runner.LIMITS_KEY, "не json")
     monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
     assert await runner.limits() == {}
+
+
+async def test_model_catalog_survives_a_failed_fetch(tmp_path, monkeypatch):
+    """Каталог тоже помним: один промах на старте — а он случается ровно при протухшем
+    токене — оставлял выпадашку с запасной тройкой на шесть часов."""
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store._local, "conn", None, raising=False)
+    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    catalog = [{"id": "claude-opus-5", "name": "Opus 5"}]
+    store.put(runner.MODELS_KEY, json.dumps(catalog))
+
+    monkeypatch.setattr(runner, "_models", (float("-inf"), []))
+    assert await runner.models() == catalog        # запомненное отдаётся сразу
+    assert await runner.models() == catalog        # промах не стёр его
+
+    # Пустая база и неудачный запрос — честно пусто, панель покажет запасную тройку.
+    store.put(runner.MODELS_KEY, None)
+    monkeypatch.setattr(runner, "_models", (float("-inf"), []))
+    assert await runner.models() == []
