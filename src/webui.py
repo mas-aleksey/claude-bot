@@ -1296,6 +1296,11 @@ const $ = (id) => document.getElementById(id);
 // столбиком и перебивает сетку, а скрипт по этому же признаку отключает перетаскивание.
 const NARROW = matchMedia('(max-width: 700px)');
 
+// Экранная клавиатура: `Shift` на ней нажать нечем, поэтому Enter там переносит строку,
+// а отправляет кнопка. Признак — указатель, а не ширина: телефон в альбомной шире 700px,
+// а ноутбук с тачскрином остаётся `fine` (тач у него виден только в `any-pointer`).
+const TOUCH = matchMedia('(pointer: coarse)');
+
 // Вкладка стучится на сервер вечно, и хуже всего это выглядит при истёкшей сессии SSO:
 // каждый запрос уходит редиректом на вход и выписывает там куку состояния. Довести вход
 // из XHR всё равно нельзя: OIDC требует перехода верхнего уровня, то есть перезагрузки
@@ -1769,8 +1774,8 @@ function drawPane(p) {
     <form>
       <div class=menu hidden></div>
       <div class=ghost></div>
-      <textarea placeholder="промпт"
-        title="Enter — отправить, Shift+Enter — перенос строки"></textarea>
+      <textarea placeholder="промпт" title="${TOUCH.matches ? 'кнопка ↑ — отправить'
+        : 'Enter — отправить, Shift+Enter — перенос строки'}"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
         <select class=model title="модель этой панели"></select>
@@ -1786,7 +1791,20 @@ function drawPane(p) {
   // а после вставки её обновляет absorb: прокрутки там не случается.
   const box = el.querySelector('.log');
   const down = el.querySelector('.down');
-  box.onscroll = () => { down.hidden = atEnd(box); };
+  // Действия с окном — разворот, сворачивание, плитка, углы — меняют размер лога, а
+  // scrollTop остаётся прежним числом пикселей: текст перетекает, и вид уезжает в
+  // середину истории или за её конец, где окно выглядит пустым. Наблюдатель за
+  // размером нужен потому, что путей геометрии много (zoom, retile, wireGrab, смена
+  // раскладки по ширине), а общее у них одно — этот блок меняет размер.
+  // Низ возвращаем только тому, кто у низа и был: отлистанный вверх читает историю.
+  // Признак считаем на прокрутке, а не внутри наблюдателя: там размер уже новый, и
+  // «был ли внизу» по нему не узнать. Допуск в atEnd — те самые «очень близко к низу».
+  let stick = true;   // новое окно открывается у низа
+  box.onscroll = () => { if (box.clientHeight) { stick = atEnd(box); down.hidden = stick; } };
+  // Свёрнутое окно прячет лог целиком (`display:none`), и размер обнуляется. Нулевую
+  // высоту пропускаем в обе стороны, иначе сворачивание считалось бы уходом вверх и
+  // разворот открывал бы начало истории.
+  new ResizeObserver(() => { if (stick && box.clientHeight) box.scrollTop = 1e9; }).observe(box);
   down.onclick = () => { box.scrollTop = 1e9; };
   el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane })
     .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
@@ -2080,6 +2098,8 @@ function wireSlash(p, el, ta) {
 
   // Enter отправляет, перенос строки — с Shift или Alt. Ctrl/Cmd+Enter оставлен: он
   // работал раньше, и пальцы помнят. При открытом меню Enter сначала выбирает команду.
+  // На тач-устройстве Enter не отправляет вовсе: модификаторов на экранной клавиатуре
+  // нет, и перенос строки набрать было нечем — любой Enter улетал промптом.
   ta.onkeydown = (e) => {
     if (!menu.hidden && head()) {
       if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
@@ -2090,7 +2110,7 @@ function wireSlash(p, el, ta) {
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return accept(sel); }
       if (e.key === 'Escape') { e.preventDefault(); return close(); }
     }
-    if (e.key === 'Enter' && !e.shiftKey && !e.altKey) { e.preventDefault(); send(p, ta); }
+    if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !TOUCH.matches) { e.preventDefault(); send(p, ta); }
   };
   ta.oninput = () => { grow(ta); paint(); open(); };
   // Курсор переехал мышью — меню либо открывается на новом месте, либо закрывается.
