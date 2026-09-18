@@ -91,27 +91,20 @@ def test_run_summary_keeps_only_what_is_known():
                             "sonnet") == "sonnet · 4с · ↑950"
 
 
-def test_tail_starts_a_big_session_on_a_line_boundary(tmp_path, monkeypatch):
-    """Большую сессию панель открывает с хвоста: иначе браузер разбирает мегабайты
-    истории с заблокированным потоком и страница выглядит белой. Оффсет обязан попасть
-    на начало строки — со среза посреди события первое сообщение потерялось бы."""
+def test_big_session_arrives_whole(tmp_path):
+    """Панель открывает сессию с начала: обрезка по байтам была снята, потому что
+    наружу идут только промпты, ответы и строки шагов — на 13.7 МБ транскрипта это
+    644 элемента и 0.47 МБ json. Предохранитель остался один, `CHUNK` на кадр."""
     path = tmp_path / "s.jsonl"
     write(path, *[{"type": "user", "message": {"content": f"промпт {i}"}}
                   for i in range(200)])
-    size = path.stat().st_size
-    monkeypatch.setattr(webui, "TAIL_MAX", size // 4)
 
-    off = webui.tail(path, size)
-    _, got, _ = webui.items(path, off)
+    off, got, _ = webui.items(path, 0)
 
-    assert 0 < off < size
-    assert len(got) < 200                       # история обрезана
-    assert got[0]["text"].startswith("промпт")  # но первая строка целая
-    assert got[-1]["text"] == "промпт 199"      # и хвост на месте
-
-    # Маленькая сессия читается целиком — обрезать нечего.
-    monkeypatch.setattr(webui, "TAIL_MAX", size)
-    assert webui.tail(path, size) == 0
+    assert off == path.stat().st_size
+    assert len(got) == 200
+    assert got[0]["text"] == "промпт 0"
+    assert got[-1]["text"] == "промпт 199"
 
 
 def test_items_reads_only_the_tail(tmp_path):
