@@ -47,6 +47,11 @@ PANE_RE = re.compile(r"[0-9a-zA-Z-]{4,64}\Z")
 # Элементов в одном кадре. Транскрипт бывает на десятки тысяч строк, а страница должна
 # отрисоваться сразу — остальное доедет следующими кадрами с того же оффсета.
 CHUNK = 3000
+# Сколько истории панель получает при открытии. Транскрипт растёт до мегабайтов, а
+# после F5 панель читает его с нуля: 5 МБ — это минуты разбора и вставки в DOM с
+# заблокированным потоком браузера, и страница всё это время выглядит белой. Что старше
+# хвоста — осталось в файле и находится поиском.
+TAIL_MAX = 512 << 10
 # Потолок раскрытого аргумента шага. Медиана шага в песочнице — 244 символа, p90 —
 # около 1700, но встречаются и тридцатитысячные: такой развернули бы лог на весь экран,
 # а прочесть его всё равно негде. Обрезанную строку показываем без раскрытия.
@@ -209,6 +214,18 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             if len(out) >= CHUNK:
                 break
     return start, out, _ctx(used, model)
+
+
+def tail(path: Path, size: int) -> int:
+    """Оффсет, с которого панель начинает большую сессию: первая целая строка после
+    `size - TAIL_MAX`. Срез приходится на середину события, поэтому огрызок дочитываем
+    и выбрасываем — `items` на нём дал бы битый json и потерял бы первое сообщение."""
+    if size <= TAIL_MAX:
+        return 0
+    with path.open("rb") as f:
+        f.seek(size - TAIL_MAX)
+        f.readline()
+        return f.tell()
 
 
 def _ctx(used: int | None, model: str | None) -> dict | None:
@@ -667,6 +684,10 @@ def build() -> web.Application:
                     # относится к прежнему содержимому файла и уже неверно.
                     if size < off:
                         off, reset = 0, True
+                    # Оффсет 0 — либо панель только открылась, либо файл переписали:
+                    # оба раза читать всё незачем, панели нужен хвост.
+                    if off == 0:
+                        off = await asyncio.to_thread(tail, path, size)
                     # Диск в потоке: первый заход читает сессию целиком, а она бывает на
                     # десятки мегабайт — в общем event loop это заморозило бы все панели.
                     off, found, ctx = await asyncio.to_thread(items, path, off)
@@ -1315,7 +1336,20 @@ const DEAD = 5;  // подряд неудачных запросов, приме
 let fails = 0;
 let dead = false;
 
-const get = (u) => fetch(u).then(r => r.ok ? r.json() : Promise.reject(r.status))
+// Ответ сервера или отказ. Редирект на вход `fetch` проходит молча и отдаёт 200 со
+// страницей входа: по `r.ok` это успех, json там нет, и вкладка оставалась белой —
+// данные не пришли, а сказать об этом было некому. Тип ответа тут единственный честный
+// признак. Серии ждать незачем: html вместо json — это точно вход, а не помеха связи.
+const payload = (r) => {
+  if (!r.ok) throw r.status;
+  if (!(r.headers.get('content-type') || '').includes('json')) {
+    if (!dead) offline();
+    throw 'вход';
+  }
+  return r.json();
+};
+
+const get = (u) => fetch(u).then(payload)
   .then((v) => { fails = 0; return v; },
         (e) => { if (++fails >= DEAD && !dead) offline(); throw e; });
 
@@ -1328,7 +1362,7 @@ function offline() {
 }
 // --- dead:end ---
 const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body) }).then(r => r.ok ? r.json() : Promise.reject(r.status));
+  body: JSON.stringify(body) }).then(payload);
 const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
@@ -1345,6 +1379,15 @@ const freeHue = () => {
 
 // Панели переживают F5: в них лежит id, который на сервере служит скоупом запуска,
 // поэтому после перезагрузки «стоп» бьёт по своему прогону, а не по чужому.
+// Аварийный выход: `?reset` в адресе стирает сохранённые окна и открывает панель
+// чистой. Раскладка — единственное состояние, которое портит вид раньше, чем до кнопок
+// можно дотянуться: 18.09.2026 белый экран пришлось лечить инспектором, другого пути
+// не было. Стираем до чтения — ниже `panes` уже разобран, и сброс опоздал бы. Адрес
+// чистим сразу: иначе следующий F5 стёр бы раскладку заново.
+if (new URLSearchParams(location.search).has('reset')) {
+  localStorage.removeItem('panes');
+  history.replaceState(null, '', location.pathname);
+}
 let panes = JSON.parse(localStorage.getItem('panes') || '[]');
 const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 

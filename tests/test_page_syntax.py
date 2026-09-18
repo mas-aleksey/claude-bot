@@ -13,6 +13,21 @@ import pytest
 import webui
 
 
+# Обвязка вокруг блока `dead`: страница целиком в node не поедет, а этому куску нужны
+# только плашка, заголовок вкладки и подставной `fetch` с тремя ответами — данные,
+# страница входа и обрыв связи.
+HARNESS = """
+let banner = true, title = '';
+const $ = () => ({ set hidden(v) { banner = v; } });
+const document = { set title(v) { title = v; } };
+let answer = 'fail';
+const reply = (type) => ({ ok: true, headers: { get: () => type }, json: () => 42 });
+const fetch = () => answer === 'ok' ? Promise.resolve(reply('application/json'))
+            : answer === 'login' ? Promise.resolve(reply('text/html; charset=utf-8'))
+                                 : Promise.reject(new TypeError('failed to fetch'));
+"""
+
+
 def slice_out(tag: str) -> str:
     return webui.PAGE.split(f"<{tag}>")[1].split(f"</{tag}>")[0]
 
@@ -34,6 +49,14 @@ def test_grid_size_matches_between_css_and_script():
     assert f"grid-template-rows:repeat({rows}," in css
 
 
+def test_layout_reset_runs_before_panes_are_read():
+    """`?reset` — единственный выход, когда раскладка испортила вид и до кнопок уже не
+    добраться. Стирать её надо до разбора `panes`: ниже сброс опоздал бы и молча не
+    сделал ничего."""
+    js = slice_out("script")
+    assert js.index("removeItem('panes')") < js.index("let panes = JSON.parse")
+
+
 def test_page_has_both_halves():
     """Разбор по тегам молча отдал бы пустую строку, и проверка выше стала бы холостой."""
     assert "function drawPane" in slice_out("script")
@@ -47,14 +70,7 @@ def test_polling_stops_after_a_run_of_failures(tmp_path):
     живом сервере — нет."""
     body = slice_out("script").split("// --- dead:begin ---")[1].split("// --- dead:end ---")[0]
     js = tmp_path / "dead.js"
-    js.write_text("""
-let banner = true, title = '';
-const $ = () => ({ set hidden(v) { banner = v; } });
-const document = { set title(v) { title = v; } };
-let answer = 'fail';
-const fetch = () => answer === 'ok' ? Promise.resolve({ ok: true, json: () => 42 })
-                                    : Promise.reject(new TypeError('failed to fetch'));
-""" + body + """
+    js.write_text(HARNESS + body + """
 const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
 
 (async () => {
@@ -70,6 +86,25 @@ const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [False, False, True, False, "⚠ claude"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_login_page_instead_of_json_stops_the_tab_at_once(tmp_path):
+    """Протухшая кука — это не обрыв связи: forwardAuth отвечает редиректом, `fetch`
+    проходит его молча и отдаёт 200 со страницей входа. Раньше это считалось успехом,
+    страница оставалась белой и не звала человека войти. Ждать серии тут нечего."""
+    body = slice_out("script").split("// --- dead:begin ---")[1].split("// --- dead:end ---")[0]
+    js = tmp_path / "login.js"
+    js.write_text(HARNESS + body + """
+(async () => {
+  answer = 'login';
+  await get('x').catch(() => {});   // одного ответа достаточно
+  console.log(JSON.stringify([dead, banner, title]));
+})();
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [True, False, "⚠ claude"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
