@@ -1136,6 +1136,12 @@ pre:hover .copy, pre .copy:focus { opacity:.9 }
 /* Раскрытый шаг: аргумент столбиком, как он и был набран. Маркер остаётся штатный —
    свой треугольник рисовать незачем. */
 details.tool summary { cursor:pointer }
+/* Пачка вызовов: одна строка со счётчиком и последним вызовом. Заголовок не переносим —
+   иначе свёрнутая группа занимает столько же места, сколько развёрнутая. */
+.tools > summary { cursor:pointer; opacity:.65; font-size:13px;
+  font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis }
+.tools > :not(summary) { margin:2px 0 0 1.2em }
 details.tool pre { margin:4px 0 0 1.2em; padding:6px; background:#8881; border-radius:4px;
   overflow:auto; white-space:pre-wrap }
 .note { opacity:.45; font-size:12px; font-style:italic }
@@ -2425,18 +2431,25 @@ function linkify(t) {
 
 // --- md:end ---
 
+// Строка вызова. В заголовке группы ссылку не делаем: клик по ней и разворачивал бы
+// пачку, и уводил на страницу разом.
+const toolHead = (it, link) => {
+  const arg = esc(it.text);
+  return `${esc(it.icon)} ${esc(it.name)}: ${link ? linkify(arg) : arg}`;
+};
+
 function renderItem(it) {
   // Подставленный контекст: факт и объём, без содержимого.
   if (it.role === 'note') {
     return `<div class="msg note">↳ ${esc(it.text)}</div>`;
   }
   if (it.role === 'tool') {
-    const head = `${esc(it.icon)} ${esc(it.name)}: ${linkify(esc(it.text))}`;
+    const head = toolHead(it, true);
     // Длинный шаг раскрывается кликом. `details` нативный: разворот, фокус с клавиатуры
     // и Ctrl+F браузера достаются даром, своей кнопки и состояния в JS не нужно.
-    return it.full ? `<details class="msg tool"><summary>${head}</summary>` +
+    return it.full ? `<details class="tool"><summary>${head}</summary>` +
                      `<pre>${esc(it.full)}</pre></details>`
-                   : `<div class="msg tool">${head}</div>`;
+                   : `<div class="tool">${head}</div>`;
   }
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
@@ -2446,6 +2459,28 @@ function renderItem(it) {
   return `<div class="msg assistant"><span class=role>claude</span>` +
          `<div class=body>${md(it.text)}</div></div>`;
 }
+
+// Шаги инструментов идут пачкой между промптом и ответом, и их бывает по полсотни —
+// ответ уезжает за экран, а листать приходится мимо того, что и так уже случилось.
+// Пачка сворачивается в один `details`: в заголовке счётчик и последний вызов, поэтому
+// на бегущем прогоне видно, чем claude занят сейчас, а раскрытие остаётся нативным.
+// Группу закрывает любое другое сообщение: следующий шаг начнёт новую. Дописываем
+// именно в последнего потомка — пачка приезжает батчами по CHUNK и живым потоком, и
+// разрыв между ними не должен рвать группу надвое.
+// --- tools:begin ---
+function pour(box, items) {
+  for (const it of items) {
+    if (it.role !== 'tool') { box.insertAdjacentHTML('beforeend', renderItem(it)); continue; }
+    let g = box.lastElementChild;
+    if (!g || !g.classList.contains('tools')) {
+      box.insertAdjacentHTML('beforeend', '<details class="msg tools"><summary></summary></details>');
+      g = box.lastElementChild;
+    }
+    g.insertAdjacentHTML('beforeend', renderItem(it));
+    g.firstElementChild.innerHTML = `${g.children.length - 1} · ${toolHead(it, false)}`;
+  }
+}
+// --- tools:end ---
 
 // Поток на панель: один EventSource — один транскрипт, и сервер помнит по нему свой
 // оффсет сам. Открывается вместе с панелью, закрывается вместе с ней; переоткрывать
@@ -2493,7 +2528,7 @@ function absorb(p, data) {
   const queue = echoes.get(p.pane) || [];
   const shown = dropEcho(data.items, queue);
   if (!queue.length) echoes.delete(p.pane);
-  box.insertAdjacentHTML('beforeend', shown.map(renderItem).join(''));
+  pour(box, shown);
   wireCopy(box);
   if (wasEnd || first) box.scrollTop = 1e9;
   // Вставка прокрутки не вызывает, поэтому кнопку двигаем руками: лог вырос, и низ

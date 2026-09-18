@@ -309,3 +309,45 @@ def test_sidebars_fold_independently():
     css = slice_out("style")
     assert "body.folded aside:not(.files)" in css
     assert "body.rfolded aside.files { display:none }" in css
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_tool_steps_fold_into_one_group(tmp_path):
+    """Шаги инструментов обязаны складываться в одну группу, а ответ — её закрывать.
+    Иначе панель снова превращается в ленту из полусотни строк, где ответ внизу."""
+    body = slice_out("script").split("// --- tools:begin ---")[1].split("// --- tools:end ---")[0]
+    js = tmp_path / "tools.js"
+    js.write_text("""
+// Минимальный узел: класс берём из разметки регуляркой, больше pour() ничего не трогает.
+const node = (html) => ({
+  html, kids: html.startsWith('<details') ? [node('summary')] : [],
+  classList: { contains: (c) => (html.match(/class="([^"]*)"/)?.[1] || '').split(' ').includes(c) },
+  get children() { return this.kids; },
+  get lastElementChild() { return this.kids[this.kids.length - 1] || null; },
+  get firstElementChild() { return this.kids[0] || null; },
+  insertAdjacentHTML(_, h) { this.kids.push(node(h)); },
+});
+const renderItem = (it) => `<div class="${it.role}">${it.text}</div>`;
+const toolHead = (it) => it.text;
+""" + body + """
+const box = node('<div>');
+pour(box, [
+  { role: 'user', text: 'сделай' },
+  { role: 'tool', text: 'Read a' }, { role: 'tool', text: 'Bash b' },
+  { role: 'assistant', text: 'готово' },
+  { role: 'tool', text: 'Read c' },
+]);
+console.log(JSON.stringify([
+  box.kids.map(k => k.classList.contains('tools') ? 'group' : k.html),
+  box.kids[1].kids.length,
+  box.kids[1].firstElementChild.innerHTML,
+]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    kids, size, head = json.loads(done.stdout)
+    # Промпт, группа из двух шагов, ответ, новая группа: ответ группу закрыл.
+    assert kids == ['<div class="user">сделай</div>', "group",
+                    '<div class="assistant">готово</div>', "group"]
+    assert size == 3  # summary + два шага
+    assert head == "2 · Bash b"  # счётчик и последний вызов
