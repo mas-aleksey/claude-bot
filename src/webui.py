@@ -1258,17 +1258,14 @@ body:not(.folded) #empty .list { display:none }
      телефоне нет. z-index выше сайдбаров (10) и их полосок (11), но ниже плашки `#dead`.
      Свёрнутое разворачивать некуда — там нечего показывать, кроме заголовка. */
   section.zoomed { position:fixed; inset:0; z-index:20; height:auto }
-  section.rolled.zoomed { position:static }
   /* Пока окно развёрнуто, соседей не просто не видно — их нет в отрисовке. Safari на iOS
      уводит `position:fixed` внутри прокручиваемого #panes в отдельный слой, и соседнее
      окно всплывает поверх, хотя z-index у него меньше (первым — заголовок свёрнутого,
      единственное, что от него осталось). Спорить со слоями бесполезно, а скрытое не
-     всплывает.
-     Прячем всех, кроме самого развёрнутого, а не только `:not(.zoomed)`: сворачивание
-     не сбрасывает zoom (`fold.onclick` трогает только `p.roll`), поэтому у свёрнутого
-     соседа класс `zoomed` обычно остаётся — на нём первая версия правила и споткнулась. */
-  #panes:has(> section.zoomed:not(.rolled)) > section { display:none }
-  #panes:has(> section.zoomed:not(.rolled)) > section.zoomed:not(.rolled) { display:flex }
+     всплывает. Прячем всех, кроме самого развёрнутого: соседу мало не иметь класса
+     `zoomed`, он всплывал и свёрнутым, с ним заодно. */
+  #panes:has(> section.zoomed) > section { display:none }
+  #panes:has(> section.zoomed) > section.zoomed { display:flex }
   #tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
   .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
   form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
@@ -1890,17 +1887,32 @@ function drawPane(p) {
 // а отличаются они только телом. Кнопка «закрыть» осталась снаружи: у файла она сначала
 // спрашивает про несохранённые правки.
 function wirePane(p, el) {
-  const max = el.querySelector('header .max');
-  max.onclick = () => { zoom(p); save(); raise(el); };
   const fold = el.querySelector('header .foldbar');
   const drawFold = () => {
     el.classList.toggle('rolled', !!p.roll);
     fold.textContent = p.roll ? '▾' : '▴';
     fold.title = p.roll ? 'развернуть окно' : 'свернуть окно в заголовок';
   };
+  // Свёрнутое и развёрнутое — состояния взаимоисключающие, и держит это здесь, а не
+  // вёрстка. Вместе они дают окно из одного заголовка, которому на телефоне положено
+  // лежать в сетке, а Safari оставляет его в слое от прежнего `position:fixed` — оно
+  // накрывает сайдбар и соседей. Развернуть свёрнутое значит показать его целиком,
+  // свернуть развёрнутое — вернуть в сетку.
+  const max = el.querySelector('header .max');
+  max.onclick = () => {
+    if (p.roll) { p.roll = false; drawFold(); }
+    zoom(p); save(); raise(el);
+  };
   // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
   // остаётся свёрнутой и после F5, как остаётся её место в сетке.
-  fold.onclick = () => { p.roll = !p.roll; save(); drawFold(); };
+  fold.onclick = () => {
+    p.roll = !p.roll;
+    if (p.roll && p.prev) zoom(p);
+    save(); drawFold();
+  };
+  // Панель могла уйти в localStorage ещё в обоих состояниях разом — распрямляем при
+  // первой же отрисовке, иначе она так и висит развёрнутой полоской заголовка.
+  if (p.roll && p.prev) { p.roll = false; save(); }
   drawFold();
   el.style.setProperty('--hue', p.hue ?? HUES[0]);
   el.querySelector('header').classList.add('grip');
