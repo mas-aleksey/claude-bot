@@ -118,9 +118,7 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             # прочитанный кэш и ответ. Суммировать по всей сессии нельзя, контекст не
             # растёт линейно — после `/compact` он падает.
             if role == "assistant" and (u := msg.get("usage")):
-                used = sum(int(u.get(k) or 0) for k in (
-                    "input_tokens", "cache_creation_input_tokens",
-                    "cache_read_input_tokens", "output_tokens"))
+                used = render.tokens_total(u)
                 model = msg.get("model") or model
             content = msg.get("content")
 
@@ -197,9 +195,7 @@ def ctx_of(path: Path) -> dict | None:
                 continue
             msg = ev.get("message") or {}
             if u := msg.get("usage"):
-                used = sum(int(u.get(k) or 0) for k in (
-                    "input_tokens", "cache_creation_input_tokens",
-                    "cache_read_input_tokens", "output_tokens"))
+                used = render.tokens_total(u)
                 model = msg.get("model") or model
     return _ctx(used, model)
 
@@ -236,8 +232,7 @@ def stat_line(ev: dict, model: str | None) -> str:
         bits.append(_secs(ms / 1000))
     if cost := ev.get("total_cost_usd"):
         bits.append(f"${cost:.3f}")
-    if tin := sum(int(u.get(k) or 0) for k in (
-            "input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")):
+    if tin := render.tokens_in(u):
         bits.append(f"↓{_short(tin)}")
     if tout := int(u.get("output_tokens") or 0):
         bits.append(f"↑{_short(tout)}")

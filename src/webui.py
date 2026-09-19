@@ -309,16 +309,19 @@ async def api_skills(req: web.Request) -> web.Response:
     return web.json_response(skills(_project(project) if project else ""))
 
 
+def _row(sid: str, title: str, age: float, **extra) -> dict:
+    """Строка списка сессий. Общая и для списка, и для поиска — в панели это один
+    и тот же элемент, отличается только четвёртое поле."""
+    return {"id": sid, "title": title or sid, "ago": sessions.ago(age), **extra}
+
+
 async def api_sessions(req: web.Request) -> web.Response:
     # Диск, а не asyncio: заголовок сессии читается из транскрипта целиком, а он
     # бывает на десятки мегабайт — в общем event loop это заморозило бы long-poll.
     project = req.query.get("project", "")
     found = await asyncio.to_thread(sessions.recent, project, 30)
-    return web.json_response([
-        {"id": sid, "title": title or sid, "ago": sessions.ago(age),
-         "size": _heavy(project, sid)}
-        for sid, title, age in found
-    ])
+    return web.json_response([_row(sid, title, age, size=_heavy(project, sid))
+                              for sid, title, age in found])
 
 
 async def api_stream(req: web.Request) -> web.StreamResponse:
@@ -383,10 +386,8 @@ async def api_search(req: web.Request) -> web.Response:
     полсекунды на 45 МБ, но держать на это event loop незачем."""
     found = await asyncio.to_thread(
         sessions.search, req.query.get("project", ""), req.query.get("q", ""), 20)
-    return web.json_response([
-        {"id": sid, "title": title or sid, "ago": sessions.ago(age), "snippet": snip}
-        for sid, title, age, snip in found
-    ])
+    return web.json_response([_row(sid, title, age, snippet=snip)
+                              for sid, title, age, snip in found])
 
 
 async def api_purge(req: web.Request) -> web.Response:

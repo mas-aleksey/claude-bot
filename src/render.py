@@ -37,6 +37,20 @@ ANSI = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b[()][AB012]")
 OPEN = re.compile(r"</?(?:b|i|u|s|code|pre)>|<a href=\"[^\"]*\">|</a>")
 
 
+# Ввод оплачивается целиком: и свежий, и записанный в кэш, и прочитанный из него.
+# Ключи перечислены один раз — считают их и Telegram, и панель, и строка контекста.
+IN_KEYS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+
+
+def tokens_in(usage: dict) -> int:
+    return sum(int(usage.get(k) or 0) for k in IN_KEYS)
+
+
+def tokens_total(usage: dict) -> int:
+    """Ввод плюс ответ — столько занято в контексте после этого сообщения."""
+    return tokens_in(usage) + int(usage.get("output_tokens") or 0)
+
+
 def strip_ansi(s: str) -> str:
     return ANSI.sub("", s)
 
@@ -209,7 +223,7 @@ class Run:
             bits = []
             if cost := ev.get("total_cost_usd"):
                 bits.append(f"${cost:.3f}")
-            if tin := u.get("input_tokens"):
+            if tin := tokens_in(u):
                 bits.append(f"↓{tin}")
             if tout := u.get("output_tokens"):
                 bits.append(f"↑{tout}")

@@ -160,18 +160,15 @@ def _plan_lines(lim: dict) -> str:
 
 
 def _until(iso: str) -> str:
-    """`(↻2ч)` — сколько осталось до сброса лимита. Пусто, если времени нет или прошло."""
+    """`(↻2ч)` — сколько осталось до сброса лимита. Пусто, если времени нет или прошло.
+
+    Единицы считает `sessions.ago` — тот же формат, что у возраста сессии в списках,
+    и одно место, где решают, `м` это или `ч`."""
     try:
         secs = (datetime.fromisoformat(iso) - datetime.now(UTC)).total_seconds()
     except (TypeError, ValueError):
         return ""
-    if secs <= 0:
-        return ""
-    if secs < 3600:
-        return f" (↻{int(secs // 60)}м)"
-    if secs < 86400:
-        return f" (↻{int(secs // 3600)}ч)"
-    return f" (↻{int(secs // 86400)}д)"
+    return f" (↻{sessions.ago(secs)})" if secs > 0 else ""
 
 
 async def _context_line(project: str, session_id: str | None) -> str:
@@ -421,8 +418,7 @@ async def _cli_reply(msg: Message, *args: str) -> None:
 @dp.message(Command("mcp"))
 async def cmd_mcp(msg: Message) -> None:
     """Прозрачный проброс в `claude mcp`: подкоманды те же, что в CLI."""
-    arg = (msg.text or "").partition(" ")[2].strip()
-    sub = shlex.split(arg) if arg else ["list"]
+    sub = shlex.split((msg.text or "").partition(" ")[2]) or ["list"]
     if sub[0] == "rm":  # единственная вольность, остальное уходит в CLI как есть
         sub[0] = "remove"
     await _cli_reply(msg, "mcp", *sub)
@@ -431,8 +427,7 @@ async def cmd_mcp(msg: Message) -> None:
 @dp.message(Command("plugin", "plugins"))
 async def cmd_plugin(msg: Message) -> None:
     """Прозрачный проброс в `claude plugin`: подкоманды те же, что в CLI."""
-    arg = (msg.text or "").partition(" ")[2].strip()
-    sub = shlex.split(arg) if arg else ["list"]
+    sub = shlex.split((msg.text or "").partition(" ")[2]) or ["list"]
     # Единственная вольность: rm короче. У плагина это uninstall, у маркетплейса remove.
     if sub[0] == "rm":
         sub[0] = "uninstall"

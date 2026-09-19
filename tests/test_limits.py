@@ -262,3 +262,21 @@ async def test_api_get_shares_one_session(tmp_path, monkeypatch):
     assert seen["headers"]["Authorization"] == "Bearer тк"
     assert seen["headers"]["anthropic-beta"] == "oauth-2025-04-20"
     assert seen["headers"]["anthropic-version"] == "2023-06-01"
+
+
+def test_until_counts_down_in_the_same_units_as_session_age():
+    """Единицы до сброса считает `sessions.ago` — тот же формат, что у возраста сессии.
+    Раньше это был свой каскад if-ов, и он же округлял полминуты в «0м».
+
+    Секунда сверху в каждом сроке — обе реализации отбрасывают дробную часть, а
+    `now()` внутри `_until` вызывается чуть позже здешнего."""
+    from datetime import UTC, datetime, timedelta
+
+    def left(**kw):
+        when = datetime.now(UTC) + timedelta(**kw) + timedelta(seconds=1)
+        return app._until(when.isoformat())
+
+    assert left(hours=2, minutes=5) == " (↻2ч)"
+    assert left(minutes=7) == " (↻7м)"
+    assert left(days=3) == " (↻3д)"
+    assert left(seconds=29) == " (↻29с)"   # прежний каскад показывал тут «0м»

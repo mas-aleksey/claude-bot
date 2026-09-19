@@ -188,6 +188,13 @@ def _clean_history(ids: set[str]) -> int:
     return dropped
 
 
+def _by_age(cwd: str) -> list[Path]:
+    """Транскрипты проекта, свежие сверху. Порядок — общий и для списка, и для поиска:
+    в обоих местах сверху нужна та сессия, в которой работали последней."""
+    return sorted((TRANSCRIPTS / slug(cwd)).glob("*.jsonl"),
+                  key=lambda f: f.stat().st_mtime, reverse=True)
+
+
 def search(cwd: str, query: str, limit: int = 20) -> list[tuple[str, str, float, str]]:
     """[(session_id, заголовок, возраст, фрагмент)] по подстроке, свежие сверху.
 
@@ -207,9 +214,7 @@ def search(cwd: str, query: str, limit: int = 20) -> list[tuple[str, str, float,
         return []
     now = time.time()
     out: list[tuple[str, str, float, str]] = []
-    files = sorted((TRANSCRIPTS / slug(cwd)).glob("*.jsonl"),
-                   key=lambda f: f.stat().st_mtime, reverse=True)
-    for path in files:
+    for path in _by_age(cwd):
         raw = path.read_text("utf-8", "replace")
         if needle not in raw.lower():
             continue
@@ -246,11 +251,8 @@ def _snippet(raw: str, needle: str) -> str:
 
 def recent(cwd: str, limit: int = 10) -> list[tuple[str, str, float]]:
     """[(session_id, заголовок, возраст в секундах)] проекта, свежие сверху."""
-    files = sorted(
-        (TRANSCRIPTS / slug(cwd)).glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True
-    )
     now = time.time()
-    return [(f.stem, title(f), now - f.stat().st_mtime) for f in files[:limit]]
+    return [(f.stem, title(f), now - f.stat().st_mtime) for f in _by_age(cwd)[:limit]]
 
 
 def last_message(path: Path) -> str:
