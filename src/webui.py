@@ -626,280 +626,297 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
             got.set_result(sid)
 
 
+async def index(_: web.Request) -> web.Response:
+    # no-store: страница целиком лежит в образе, и после раскатки вкладка обязана
+    # взять новую. Валидаторов у ответа нет, поэтому без этого заголовка браузер
+    # вправе отдать свою копию, и человек сидит на прошлой версии панели.
+    return web.Response(text=PAGE, content_type="text/html",
+                        headers={"Cache-Control": "no-store"})
+
+
+async def api_peers(_: web.Request) -> web.Response:
+    return web.json_response(peers())
+
+
+async def api_models(_: web.Request) -> web.Response:
+    return web.json_response(await runner.models())
+
+
+async def api_projects(_: web.Request) -> web.Response:
+    return web.json_response(
+        [{"name": p.name, "path": str(p)} for p in sessions.projects()]
+    )
+
+
+async def api_skills(req: web.Request) -> web.Response:
+    # Проект проверяем тем же `_project`: путь уходит в glob, и чужие каталоги тут
+    # читать нечего. Панель со снесённым проектом получит 400 и останется без
+    # подсказки — предлагать ей скиллы всё равно некуда.
+    project = req.query.get("project") or ""
+    return web.json_response(skills(_project(project) if project else ""))
+
+
+async def api_sessions(req: web.Request) -> web.Response:
+    # Диск, а не asyncio: заголовок сессии читается из транскрипта целиком, а он
+    # бывает на десятки мегабайт — в общем event loop это заморозило бы long-poll.
+    project = req.query.get("project", "")
+    found = await asyncio.to_thread(sessions.recent, project, 30)
+    return web.json_response([
+        {"id": sid, "title": title or sid, "ago": sessions.ago(age),
+         "size": _heavy(project, sid)}
+        for sid, title, age in found
+    ])
+
+
+async def api_stream(req: web.Request) -> web.StreamResponse:
+    """Хвост транскрипта, пока панель открыта: сервер сам говорит о новых строках.
+
+    Оффсет едет в `id:` каждого кадра. Браузер при обрыве переподключается сам и
+    возвращает его в `Last-Event-ID` — поэтому переподключение продолжает с места,
+    хотя адрес потока остался прежним и `from` в нём давно устарел.
+
+    Отсутствие файла — нормальное состояние, а не ошибка: id новой сессии известен
+    раньше, чем claude успевает создать транскрипт. Поток просто ждёт.
+    """
+    path = transcript(req.query.get("project", ""), req.query.get("id", ""))
+    off = _int(req.headers.get("Last-Event-ID") or req.query.get("from"))
+    res = web.StreamResponse(headers={
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-store",
+        # Traefik ответ не собирает, но заголовок стоит копейку и страхует от прокси,
+        # который решит иначе: тогда панель молчала бы до конца потока, то есть всегда.
+        "X-Accel-Buffering": "no",
+    })
+    await res.prepare(req)
+    idle = 0
+    try:
+        while True:
+            found: list[dict] = []
+            ctx = None
+            reset = False
+            try:
+                size = path.stat().st_size
+            except OSError:
+                size = None  # транскрипта ещё нет, claude его вот-вот создаст
+            if size is not None:
+                # Файл короче нашего оффсета — его переписали или подменили. `seek`
+                # за его конец молчит вечно, и панель выглядит зависшей при живом
+                # потоке. Читаем сначала и просим панель очистить лог: показанное
+                # относится к прежнему содержимому файла и уже неверно.
+                if size < off:
+                    off, reset = 0, True
+                # Диск в потоке: первый заход читает сессию целиком, а она бывает на
+                # десятки мегабайт — в общем event loop это заморозило бы все панели.
+                off, found, ctx = await asyncio.to_thread(items, path, off)
+            if found or ctx:
+                body = json.dumps({"next": off, "items": found, "ctx": ctx,
+                                   "reset": reset})
+                await res.write(f"id: {off}\ndata: {body}\n\n".encode())
+            if found:
+                idle = 0
+                continue  # кусок мог упереться в CHUNK — дочитываем без паузы
+            # Комментарий раз в ~20 секунд: молчащее соединение рвут и прокси, и
+            # мобильная сеть, а браузер комментарий молча выбрасывает.
+            if (idle := idle + 1) % PING_EVERY == 0:
+                await res.write(b": ping\n\n")
+            await asyncio.sleep(TAIL_TICK)
+    except ConnectionResetError:
+        pass  # вкладку закрыли — обычный конец потока, а не сбой
+    return res
+
+
+async def api_search(req: web.Request) -> web.Response:
+    """Поиск по сессиям проекта. Диск в потоке: скан всех транскриптов проекта —
+    полсекунды на 45 МБ, но держать на это event loop незачем."""
+    found = await asyncio.to_thread(
+        sessions.search, req.query.get("project", ""), req.query.get("q", ""), 20)
+    return web.json_response([
+        {"id": sid, "title": title or sid, "ago": sessions.ago(age), "snippet": snip}
+        for sid, title, age, snip in found
+    ])
+
+
+async def api_purge(req: web.Request) -> web.Response:
+    """GET — предпросмотр, POST — удаление. Разными методами не ради красоты:
+    удаление необратимо, и промах адресной строкой не должен его запускать."""
+    days = _days(req.query.get("days") if req.method == "GET"
+                 else (await req.json()).get("days"))
+    older = days * 86400
+    if req.method == "GET":
+        doomed = await asyncio.to_thread(sessions.stale, older)
+        return web.json_response({"days": days, "sessions": doomed,
+                                  "bytes": sum(r["bytes"] for r in doomed)})
+
+    killed = await run_purge(older)
+    log.info("purge: старше %.1f дн, снесено %s", days, killed)
+    return web.json_response(killed)
+
+
+async def api_upload(req: web.Request) -> web.Response:
+    """Файл из браузера — на диск, наружу только путь. Дальше он уходит в промпт
+    текстом, как это делает бот с файлами из Telegram: claude читает файл сам, и
+    содержимое через нас гонять не надо.
+
+    Размер режет сам aiohttp по client_max_size ниже — до нашего кода такой запрос
+    не доходит вовсе.
+    """
+    data = await req.post()
+    field = data.get("file")
+    if not hasattr(field, "filename"):
+        raise web.HTTPBadRequest(text="нужен файл в поле file")
+    name = _filename(field.filename)
+    INBOX.mkdir(parents=True, exist_ok=True)
+    dest = INBOX / f"{int(time.time())}-{name}"
+    await asyncio.to_thread(dest.write_bytes, field.file.read())
+    log.info("upload: %s (%d байт)", dest, dest.stat().st_size)
+    return web.json_response({"path": str(dest)})
+
+
+async def api_roots(_: web.Request) -> web.Response:
+    return web.json_response([{"name": r.name, "path": str(r)} for r in roots()])
+
+
+async def api_files(req: web.Request) -> web.Response:
+    """Листинг каталога. Скрытые файлы отдаём все — прячет их переключатель в
+    панели. Чёрного списка имён тут нет сознательно: его пришлось бы вести руками,
+    он молча прятал бы нужный файл, а закрывать им нечего — claude читает те же
+    файлы сам, и в панель пускает allowlist."""
+    path = _inside(req.query.get("path", ""))
+    if not path.is_dir():
+        raise web.HTTPBadRequest(text="не каталог")
+    try:
+        entries = await asyncio.to_thread(_entries, path)
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"не прочитать каталог: {err}") from err
+    return web.json_response({"path": str(path), "entries": entries})
+
+
+async def api_file(req: web.Request) -> web.Response:
+    """Содержимое файла для редактора.
+
+    Отказ отдаётся полем `why`, а не кодом ошибки: панель показывает имя, размер и
+    причину, а не пустое окно. Не-utf8 отклоняем до декодирования с `replace` —
+    сохранение такого текста переписало бы файл испорченным.
+    """
+    path = _inside(req.query.get("path", ""))
+    try:
+        st = path.stat()
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"нет файла: {err}") from err
+    if not path.is_file():
+        raise web.HTTPBadRequest(text="не файл")
+    head = {"path": str(path), "size": st.st_size, "version": _version(st)}
+    if st.st_size > MAX_EDIT:
+        return web.json_response({**head, "why": "больше 1 МБ"})
+    try:
+        data = await asyncio.to_thread(path.read_bytes)
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"не прочитать: {err}") from err
+    try:
+        text = data.decode()
+    except UnicodeDecodeError:
+        return web.json_response({**head, "why": "не текст в utf-8"})
+    if b"\x00" in data:
+        return web.json_response({**head, "why": "двоичный файл"})
+    return web.json_response({**head, "text": text})
+
+
+async def api_save(req: web.Request) -> web.Response:
+    """Запись поверх существующего файла.
+
+    Версия из чтения возвращается назад и сверяется: claude правит те же файлы, и
+    без этой сверки правка человека молча затирала бы его правку. Расхождение —
+    409, панель предлагает перечитать.
+
+    Создания, удаления и переименования тут нет: это умеет claude в соседней
+    панели, а редактору хватает существующего файла. Открытие идёт по тому же
+    inode, поэтому владелец и права остаются чужими — новых root-файлов в проекте
+    не появляется.
+    """
+    data = await req.json()
+    path = _inside(data.get("path") or "")
+    text = data.get("text")
+    if not isinstance(text, str):
+        raise web.HTTPBadRequest(text="нужен text")
+    if not path.is_file():
+        raise web.HTTPBadRequest(text="нет такого файла")
+    if _version(path.stat()) != data.get("version"):
+        raise web.HTTPConflict(text="файл изменился на диске")
+    try:
+        await asyncio.to_thread(path.write_text, text, encoding="utf-8")
+    except OSError as err:
+        # Сюда попадает и `:ro`-монтирование: `/root/.claude/CLAUDE.md` в песочнице
+        # примонтирован только на чтение, и текст системы об этом честнее нашего.
+        raise web.HTTPBadRequest(text=f"не записать: {err}") from err
+    return web.json_response({"version": _version(path.stat())})
+
+
+async def api_status(_: web.Request) -> web.Response:
+    """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
+    что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
+    его гоняют из топика под другим скоупом.
+
+    Общая модель — оттуда же, откуда её берёт `_drive` при пустом выборе в панели.
+    Без неё в селекте стояло безымянное «модель», и что именно поедет в claude,
+    из панели было не видно.
+
+    Лимиты подписки едут тем же ответом, а не своим роутом: он уже опрашивается
+    раз в три секунды, а `runner.limits` держит свой минутный кеш — выходит один
+    запрос в API на минуту на все открытые вкладки.
+    """
+    return web.json_response({"runs": runner.active(), "errors": _errors,
+                              "local": _local, "stats": _stats,
+                              "queued": runner.waiting(),
+                              "limits": await runner.limits(),
+                              "model": await runner.resolve_model(
+                                  store.get("model") or runner.default_model())})
+
+
+async def api_prompt(req: web.Request) -> web.Response:
+    data = await req.json()
+    prompt = (data.get("prompt") or "").strip()
+    pane = data.get("pane") or ""
+    session_id = data.get("session") or None
+    if not prompt or not PANE_RE.match(pane):
+        raise web.HTTPBadRequest(text="нужны prompt и pane")
+    if session_id and not SESSION_RE.match(session_id):
+        raise web.HTTPBadRequest(text="плохой id сессии")
+    model = (data.get("model") or "").strip() or None
+    if model and not MODEL_RE.match(model):
+        raise web.HTTPBadRequest(text="плохое имя модели")
+    project = _project(data.get("project") or "")
+
+    scope = f"web:{pane}"
+    queued = runner.ahead(scope)
+
+    got: asyncio.Future = asyncio.get_running_loop().create_future()
+    # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
+    # продолжается в фоне и виден ей через транскрипт.
+    task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model,
+                                      adopt=bool(queued) and session_id is None))
+    _tasks.add(task)
+    task.add_done_callback(_tasks.discard)
+    if queued:
+        # Ждать нечего: прогон начнётся после предыдущего, а id новой сессии панель
+        # подберёт из /api/status по своему скоупу — в том числе после F5.
+        return web.json_response({"queued": queued, "session": session_id})
+    try:
+        sid = await asyncio.wait_for(asyncio.shield(got), INIT_TIMEOUT)
+    except TimeoutError:
+        sid = None
+    return web.json_response({"session": sid})
+
+
+async def api_cancel(req: web.Request) -> web.Response:
+    data = await req.json()
+    pane = data.get("pane") or ""
+    if not PANE_RE.match(pane):
+        raise web.HTTPBadRequest(text="нужен pane")
+    stopped, dropped = await runner.cancel(f"web:{pane}")
+    return web.json_response({"stopped": stopped, "dropped": dropped})
+
+
 def build() -> web.Application:
-    async def index(_: web.Request) -> web.Response:
-        # no-store: страница целиком лежит в образе, и после раскатки вкладка обязана
-        # взять новую. Валидаторов у ответа нет, поэтому без этого заголовка браузер
-        # вправе отдать свою копию, и человек сидит на прошлой версии панели.
-        return web.Response(text=PAGE, content_type="text/html",
-                            headers={"Cache-Control": "no-store"})
-
-    async def api_peers(_: web.Request) -> web.Response:
-        return web.json_response(peers())
-
-    async def api_models(_: web.Request) -> web.Response:
-        return web.json_response(await runner.models())
-
-    async def api_projects(_: web.Request) -> web.Response:
-        return web.json_response(
-            [{"name": p.name, "path": str(p)} for p in sessions.projects()]
-        )
-
-    async def api_skills(req: web.Request) -> web.Response:
-        # Проект проверяем тем же `_project`: путь уходит в glob, и чужие каталоги тут
-        # читать нечего. Панель со снесённым проектом получит 400 и останется без
-        # подсказки — предлагать ей скиллы всё равно некуда.
-        project = req.query.get("project") or ""
-        return web.json_response(skills(_project(project) if project else ""))
-
-    async def api_sessions(req: web.Request) -> web.Response:
-        # Диск, а не asyncio: заголовок сессии читается из транскрипта целиком, а он
-        # бывает на десятки мегабайт — в общем event loop это заморозило бы long-poll.
-        project = req.query.get("project", "")
-        found = await asyncio.to_thread(sessions.recent, project, 30)
-        return web.json_response([
-            {"id": sid, "title": title or sid, "ago": sessions.ago(age),
-             "size": _heavy(project, sid)}
-            for sid, title, age in found
-        ])
-
-    async def api_stream(req: web.Request) -> web.StreamResponse:
-        """Хвост транскрипта, пока панель открыта: сервер сам говорит о новых строках.
-
-        Оффсет едет в `id:` каждого кадра. Браузер при обрыве переподключается сам и
-        возвращает его в `Last-Event-ID` — поэтому переподключение продолжает с места,
-        хотя адрес потока остался прежним и `from` в нём давно устарел.
-
-        Отсутствие файла — нормальное состояние, а не ошибка: id новой сессии известен
-        раньше, чем claude успевает создать транскрипт. Поток просто ждёт.
-        """
-        path = transcript(req.query.get("project", ""), req.query.get("id", ""))
-        off = _int(req.headers.get("Last-Event-ID") or req.query.get("from"))
-        res = web.StreamResponse(headers={
-            "Content-Type": "text/event-stream",
-            "Cache-Control": "no-store",
-            # Traefik ответ не собирает, но заголовок стоит копейку и страхует от прокси,
-            # который решит иначе: тогда панель молчала бы до конца потока, то есть всегда.
-            "X-Accel-Buffering": "no",
-        })
-        await res.prepare(req)
-        idle = 0
-        try:
-            while True:
-                found: list[dict] = []
-                ctx = None
-                reset = False
-                try:
-                    size = path.stat().st_size
-                except OSError:
-                    size = None  # транскрипта ещё нет, claude его вот-вот создаст
-                if size is not None:
-                    # Файл короче нашего оффсета — его переписали или подменили. `seek`
-                    # за его конец молчит вечно, и панель выглядит зависшей при живом
-                    # потоке. Читаем сначала и просим панель очистить лог: показанное
-                    # относится к прежнему содержимому файла и уже неверно.
-                    if size < off:
-                        off, reset = 0, True
-                    # Диск в потоке: первый заход читает сессию целиком, а она бывает на
-                    # десятки мегабайт — в общем event loop это заморозило бы все панели.
-                    off, found, ctx = await asyncio.to_thread(items, path, off)
-                if found or ctx:
-                    body = json.dumps({"next": off, "items": found, "ctx": ctx,
-                                       "reset": reset})
-                    await res.write(f"id: {off}\ndata: {body}\n\n".encode())
-                if found:
-                    idle = 0
-                    continue  # кусок мог упереться в CHUNK — дочитываем без паузы
-                # Комментарий раз в ~20 секунд: молчащее соединение рвут и прокси, и
-                # мобильная сеть, а браузер комментарий молча выбрасывает.
-                if (idle := idle + 1) % PING_EVERY == 0:
-                    await res.write(b": ping\n\n")
-                await asyncio.sleep(TAIL_TICK)
-        except ConnectionResetError:
-            pass  # вкладку закрыли — обычный конец потока, а не сбой
-        return res
-
-    async def api_search(req: web.Request) -> web.Response:
-        """Поиск по сессиям проекта. Диск в потоке: скан всех транскриптов проекта —
-        полсекунды на 45 МБ, но держать на это event loop незачем."""
-        found = await asyncio.to_thread(
-            sessions.search, req.query.get("project", ""), req.query.get("q", ""), 20)
-        return web.json_response([
-            {"id": sid, "title": title or sid, "ago": sessions.ago(age), "snippet": snip}
-            for sid, title, age, snip in found
-        ])
-
-    async def api_purge(req: web.Request) -> web.Response:
-        """GET — предпросмотр, POST — удаление. Разными методами не ради красоты:
-        удаление необратимо, и промах адресной строкой не должен его запускать."""
-        days = _days(req.query.get("days") if req.method == "GET"
-                     else (await req.json()).get("days"))
-        older = days * 86400
-        if req.method == "GET":
-            doomed = await asyncio.to_thread(sessions.stale, older)
-            return web.json_response({"days": days, "sessions": doomed,
-                                      "bytes": sum(r["bytes"] for r in doomed)})
-
-        killed = await run_purge(older)
-        log.info("purge: старше %.1f дн, снесено %s", days, killed)
-        return web.json_response(killed)
-
-    async def api_upload(req: web.Request) -> web.Response:
-        """Файл из браузера — на диск, наружу только путь. Дальше он уходит в промпт
-        текстом, как это делает бот с файлами из Telegram: claude читает файл сам, и
-        содержимое через нас гонять не надо.
-
-        Размер режет сам aiohttp по client_max_size ниже — до нашего кода такой запрос
-        не доходит вовсе.
-        """
-        data = await req.post()
-        field = data.get("file")
-        if not hasattr(field, "filename"):
-            raise web.HTTPBadRequest(text="нужен файл в поле file")
-        name = _filename(field.filename)
-        INBOX.mkdir(parents=True, exist_ok=True)
-        dest = INBOX / f"{int(time.time())}-{name}"
-        await asyncio.to_thread(dest.write_bytes, field.file.read())
-        log.info("upload: %s (%d байт)", dest, dest.stat().st_size)
-        return web.json_response({"path": str(dest)})
-
-    async def api_roots(_: web.Request) -> web.Response:
-        return web.json_response([{"name": r.name, "path": str(r)} for r in roots()])
-
-    async def api_files(req: web.Request) -> web.Response:
-        """Листинг каталога. Скрытые файлы отдаём все — прячет их переключатель в
-        панели. Чёрного списка имён тут нет сознательно: его пришлось бы вести руками,
-        он молча прятал бы нужный файл, а закрывать им нечего — claude читает те же
-        файлы сам, и в панель пускает allowlist."""
-        path = _inside(req.query.get("path", ""))
-        if not path.is_dir():
-            raise web.HTTPBadRequest(text="не каталог")
-        try:
-            entries = await asyncio.to_thread(_entries, path)
-        except OSError as err:
-            raise web.HTTPBadRequest(text=f"не прочитать каталог: {err}") from err
-        return web.json_response({"path": str(path), "entries": entries})
-
-    async def api_file(req: web.Request) -> web.Response:
-        """Содержимое файла для редактора.
-
-        Отказ отдаётся полем `why`, а не кодом ошибки: панель показывает имя, размер и
-        причину, а не пустое окно. Не-utf8 отклоняем до декодирования с `replace` —
-        сохранение такого текста переписало бы файл испорченным.
-        """
-        path = _inside(req.query.get("path", ""))
-        try:
-            st = path.stat()
-        except OSError as err:
-            raise web.HTTPBadRequest(text=f"нет файла: {err}") from err
-        if not path.is_file():
-            raise web.HTTPBadRequest(text="не файл")
-        head = {"path": str(path), "size": st.st_size, "version": _version(st)}
-        if st.st_size > MAX_EDIT:
-            return web.json_response({**head, "why": "больше 1 МБ"})
-        try:
-            data = await asyncio.to_thread(path.read_bytes)
-        except OSError as err:
-            raise web.HTTPBadRequest(text=f"не прочитать: {err}") from err
-        try:
-            text = data.decode()
-        except UnicodeDecodeError:
-            return web.json_response({**head, "why": "не текст в utf-8"})
-        if b"\x00" in data:
-            return web.json_response({**head, "why": "двоичный файл"})
-        return web.json_response({**head, "text": text})
-
-    async def api_save(req: web.Request) -> web.Response:
-        """Запись поверх существующего файла.
-
-        Версия из чтения возвращается назад и сверяется: claude правит те же файлы, и
-        без этой сверки правка человека молча затирала бы его правку. Расхождение —
-        409, панель предлагает перечитать.
-
-        Создания, удаления и переименования тут нет: это умеет claude в соседней
-        панели, а редактору хватает существующего файла. Открытие идёт по тому же
-        inode, поэтому владелец и права остаются чужими — новых root-файлов в проекте
-        не появляется.
-        """
-        data = await req.json()
-        path = _inside(data.get("path") or "")
-        text = data.get("text")
-        if not isinstance(text, str):
-            raise web.HTTPBadRequest(text="нужен text")
-        if not path.is_file():
-            raise web.HTTPBadRequest(text="нет такого файла")
-        if _version(path.stat()) != data.get("version"):
-            raise web.HTTPConflict(text="файл изменился на диске")
-        try:
-            await asyncio.to_thread(path.write_text, text, encoding="utf-8")
-        except OSError as err:
-            # Сюда попадает и `:ro`-монтирование: `/root/.claude/CLAUDE.md` в песочнице
-            # примонтирован только на чтение, и текст системы об этом честнее нашего.
-            raise web.HTTPBadRequest(text=f"не записать: {err}") from err
-        return web.json_response({"version": _version(path.stat())})
-
-    async def api_status(_: web.Request) -> web.Response:
-        """Живые запуски и упавшие прогоны. Запуски берутся из тех же `runner._runs`,
-        что у Telegram, и несут id сессии — по нему панель узнаёт свой сеанс, даже если
-        его гоняют из топика под другим скоупом.
-
-        Общая модель — оттуда же, откуда её берёт `_drive` при пустом выборе в панели.
-        Без неё в селекте стояло безымянное «модель», и что именно поедет в claude,
-        из панели было не видно.
-
-        Лимиты подписки едут тем же ответом, а не своим роутом: он уже опрашивается
-        раз в три секунды, а `runner.limits` держит свой минутный кеш — выходит один
-        запрос в API на минуту на все открытые вкладки.
-        """
-        return web.json_response({"runs": runner.active(), "errors": _errors,
-                                  "local": _local, "stats": _stats,
-                                  "queued": runner.waiting(),
-                                  "limits": await runner.limits(),
-                                  "model": await runner.resolve_model(
-                                      store.get("model") or runner.default_model())})
-
-    async def api_prompt(req: web.Request) -> web.Response:
-        data = await req.json()
-        prompt = (data.get("prompt") or "").strip()
-        pane = data.get("pane") or ""
-        session_id = data.get("session") or None
-        if not prompt or not PANE_RE.match(pane):
-            raise web.HTTPBadRequest(text="нужны prompt и pane")
-        if session_id and not SESSION_RE.match(session_id):
-            raise web.HTTPBadRequest(text="плохой id сессии")
-        model = (data.get("model") or "").strip() or None
-        if model and not MODEL_RE.match(model):
-            raise web.HTTPBadRequest(text="плохое имя модели")
-        project = _project(data.get("project") or "")
-
-        scope = f"web:{pane}"
-        queued = runner.ahead(scope)
-
-        got: asyncio.Future = asyncio.get_running_loop().create_future()
-        # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
-        # продолжается в фоне и виден ей через транскрипт.
-        task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model,
-                                          adopt=bool(queued) and session_id is None))
-        _tasks.add(task)
-        task.add_done_callback(_tasks.discard)
-        if queued:
-            # Ждать нечего: прогон начнётся после предыдущего, а id новой сессии панель
-            # подберёт из /api/status по своему скоупу — в том числе после F5.
-            return web.json_response({"queued": queued, "session": session_id})
-        try:
-            sid = await asyncio.wait_for(asyncio.shield(got), INIT_TIMEOUT)
-        except TimeoutError:
-            sid = None
-        return web.json_response({"session": sid})
-
-    async def api_cancel(req: web.Request) -> web.Response:
-        data = await req.json()
-        pane = data.get("pane") or ""
-        if not PANE_RE.match(pane):
-            raise web.HTTPBadRequest(text="нужен pane")
-        stopped, dropped = await runner.cancel(f"web:{pane}")
-        return web.json_response({"stopped": stopped, "dropped": dropped})
-
     # client_max_size — предел на тело запроса. По умолчанию у aiohttp мегабайт, и
     # загрузка файла падала бы с 413 раньше нашего кода.
     app = web.Application(client_max_size=MAX_UPLOAD)
