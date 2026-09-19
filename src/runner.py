@@ -63,6 +63,24 @@ def _remembered(key: str, default):
         return default
 
 
+async def _api_get(*urls: str, extra: dict | None = None) -> list:
+    """GET по адресам аккаунта токеном подписки. Несколько адресов — одной сессией.
+
+    Заголовки и таймаут одни на всех: и лимиты, и каталог моделей ходят на тот же
+    хост тем же OAuth-токеном, и собирать их по второму разу значило разъехаться в
+    день, когда `anthropic-beta` сменится.
+    """
+    headers = {"Authorization": f"Bearer {_oauth_token()}",
+               "anthropic-beta": "oauth-2025-04-20", **(extra or {})}
+    out = []
+    async with aiohttp.ClientSession(
+            headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
+        for url in urls:
+            async with s.get(url) as r:
+                out.append(await r.json())
+    return out
+
+
 def _oauth_token() -> str:
     """Токен подписки из CREDS. Протухший не отдаём вовсе.
 
@@ -584,14 +602,7 @@ async def limits() -> dict:
         return _limits[1]
     out: dict = {}
     try:
-        token = _oauth_token()
-        headers = {"Authorization": f"Bearer {token}", "anthropic-beta": "oauth-2025-04-20"}
-        async with aiohttp.ClientSession(
-                headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
-            async with s.get(f"{OAUTH_API}/usage") as r:
-                usage = await r.json()
-            async with s.get(f"{OAUTH_API}/profile") as r:
-                profile = await r.json()
+        usage, profile = await _api_get(f"{OAUTH_API}/usage", f"{OAUTH_API}/profile")
         if bars := _bars(usage):
             out = {"email": (profile.get("account") or {}).get("email") or "",
                    "plan": _plan(profile), "bars": bars, "at": time.time()}
@@ -631,14 +642,7 @@ async def models() -> list[dict]:
         return _models[1]
     out: list[dict] = []
     try:
-        token = _oauth_token()
-        headers = {"Authorization": f"Bearer {token}",
-                   "anthropic-beta": "oauth-2025-04-20",
-                   "anthropic-version": "2023-06-01"}
-        async with aiohttp.ClientSession(
-                headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s, \
-                s.get(MODELS_URL) as r:
-            body = await r.json()
+        body, = await _api_get(MODELS_URL, extra={"anthropic-version": "2023-06-01"})
         out = [{"id": m["id"], "name": (m.get("display_name") or m["id"]).removeprefix("Claude ")}
                for m in body.get("data") or [] if m.get("id")]
     except Exception as e:

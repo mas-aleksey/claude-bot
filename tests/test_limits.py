@@ -218,3 +218,47 @@ async def test_context_line(tmp_path, monkeypatch):
     assert await app._context_line("/projects/x", None) == "—"
     # Сессия есть, а транскрипта ещё нет — обычное состояние сразу после /new.
     assert await app._context_line("/projects/x", "ffffffff-0000-0000-0000-000000000000") == "—"
+
+
+async def test_api_get_shares_one_session(tmp_path, monkeypatch):
+    """Два адреса лимитов ходят одной сессией и одними заголовками — их собирают в
+    одном месте, чтобы не разъехаться в день, когда сменится `anthropic-beta`."""
+    creds = tmp_path / "creds.json"
+    creds.write_text(json.dumps({"claudeAiOauth": {
+        "accessToken": "тк", "expiresAt": (time.time() + 600) * 1000}}), encoding="utf-8")
+    monkeypatch.setattr(runner, "CREDS", str(creds))
+
+    seen = {"sessions": 0, "urls": [], "headers": None}
+
+    class FakeReply:
+        def __init__(self, url):
+            self.url = url
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        async def json(self):
+            return {"откуда": self.url}
+
+    class FakeSession:
+        def __init__(self, headers=None, timeout=None):
+            seen["sessions"] += 1
+            seen["headers"] = headers
+        async def __aenter__(self):
+            return self
+        async def __aexit__(self, *a):
+            return False
+        def get(self, url):
+            seen["urls"].append(url)
+            return FakeReply(url)
+
+    monkeypatch.setattr(runner.aiohttp, "ClientSession", FakeSession)
+    got = await runner._api_get("https://a/one", "https://a/two",
+                                extra={"anthropic-version": "2023-06-01"})
+
+    assert got == [{"откуда": "https://a/one"}, {"откуда": "https://a/two"}]
+    assert seen["sessions"] == 1                       # одна сессия на оба адреса
+    assert seen["urls"] == ["https://a/one", "https://a/two"]
+    assert seen["headers"]["Authorization"] == "Bearer тк"
+    assert seen["headers"]["anthropic-beta"] == "oauth-2025-04-20"
+    assert seen["headers"]["anthropic-version"] == "2023-06-01"
