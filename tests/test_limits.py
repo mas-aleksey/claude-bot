@@ -196,3 +196,25 @@ async def test_model_catalog_survives_a_failed_fetch(tmp_path, monkeypatch):
     store.put(runner.MODELS_KEY, None)
     monkeypatch.setattr(runner, "_models", (float("-inf"), []))
     assert await runner.models() == []
+
+
+async def test_context_line(tmp_path, monkeypatch):
+    """Строка контекста в `/status`. Регрессия: вызов ушёл в несуществующее имя после
+    переименования в webui, и `/status` при живой сессии падал AttributeError."""
+    import sessions
+    import webui
+
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path)
+    monkeypatch.setattr(store, "get", lambda key, default=None: None)
+    path = webui.transcript("/projects/x", "0123abcd-0000-0000-0000-000000000000")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"type": "assistant", "message": {
+        "model": "claude-opus-5", "content": [{"type": "text", "text": "x"}],
+        "usage": {"input_tokens": 1_000, "cache_creation_input_tokens": 0,
+                  "cache_read_input_tokens": 11_300, "output_tokens": 0}}}) + "\n",
+        encoding="utf-8")
+
+    assert await app._context_line("/projects/x", path.stem) == "12k/200k? (6%)"
+    assert await app._context_line("/projects/x", None) == "—"
+    # Сессия есть, а транскрипта ещё нет — обычное состояние сразу после /new.
+    assert await app._context_line("/projects/x", "ffffffff-0000-0000-0000-000000000000") == "—"

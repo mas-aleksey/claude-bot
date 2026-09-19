@@ -332,3 +332,29 @@ def test_ctx_takes_last_assistant_usage(tmp_path, monkeypatch):
     empty = tmp_path / "empty.jsonl"
     empty.write_text("", encoding="utf-8")
     assert webui.items(empty, 0)[2] is None
+
+
+def test_ctx_of_reads_the_whole_session(tmp_path, monkeypatch):
+    """`/status` в Telegram считает контекст своим проходом, а не `items`.
+
+    `items` останавливается на `CHUNK` элементов и у длинной сессии вернул бы контекст
+    её начала. Порог тут занижен до двух — писать в тест три тысячи событий незачем.
+    """
+    path = tmp_path / "s.jsonl"
+
+    def ev(read):
+        return json.dumps({"type": "assistant", "message": {
+            "model": "claude-opus-5", "content": [{"type": "text", "text": "x"}],
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": read, "output_tokens": 0}}})
+
+    path.write_text("\n".join([ev(90_000), ev(500), ev(1_000)]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(webui.store, "get", lambda key, default=None: None)
+    monkeypatch.setattr(webui, "CHUNK", 2)
+
+    assert webui.items(path, 0)[2]["used"] == 500      # успел дойти только до второго
+    assert webui.ctx_of(path)["used"] == 1_000         # а тут последний ответ
+
+    empty = tmp_path / "empty.jsonl"
+    empty.write_text("", encoding="utf-8")
+    assert webui.ctx_of(empty) is None

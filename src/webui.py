@@ -225,6 +225,37 @@ def _ctx(used: int | None, model: str | None) -> dict | None:
             "guess": not window}
 
 
+def ctx_of(path: Path) -> dict | None:
+    """Занятость контекста готовой сессии — то же, что `items` считает попутно.
+
+    Своим проходом, а не `items(path, 0)[2]`: тот останавливается на `CHUNK` элементов
+    и у длинной сессии посчитал бы контекст по её началу. Нужен последний `assistant`:
+    контекст не растёт линейно, после `/compact` он падает.
+
+    Дешёвый отсев по подстроке — как в `sessions.title`: json.loads на каждой строке
+    транскрипта дороже самого чтения. Файл бывает на десятки мегабайт, поэтому
+    вызывающий обязан звать это из потока, а не с event loop.
+    """
+    used = model = None
+    with path.open("rb") as f:
+        for raw in f:
+            if b'"usage"' not in raw:
+                continue
+            try:
+                ev = json.loads(raw.decode("utf-8", "replace"))
+            except ValueError:
+                continue
+            if ev.get("type") != "assistant":
+                continue
+            msg = ev.get("message") or {}
+            if u := msg.get("usage"):
+                used = sum(int(u.get(k) or 0) for k in (
+                    "input_tokens", "cache_creation_input_tokens",
+                    "cache_read_input_tokens", "output_tokens"))
+                model = msg.get("model") or model
+    return _ctx(used, model)
+
+
 def _short(n: int) -> str:
     """Токены человеческим числом: 950, 12.3k, 1.4M."""
     for div, suffix in ((1_000_000, "M"), (1_000, "k")):

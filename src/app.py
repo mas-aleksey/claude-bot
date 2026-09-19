@@ -137,7 +137,7 @@ async def cmd_status(msg: Message) -> None:
         f"проект: {Path(here).name} ({here})\n"
         f"модель: {store.get('model', 'default')}\n"
         f"сессия: {sid or 'новая'}\n"
-        f"контекст: {_context_line(here, sid)}\n"
+        f"контекст: {await _context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
         f"{_plan_lines(await runner.limits())}\n"
         f"занят: {runner.busy(sc)}{f', в очереди {queued}' if queued else ''}\n"
@@ -172,13 +172,17 @@ def _until(iso: str) -> str:
     return f" (↻{int(secs // 86400)}д)"
 
 
-def _context_line(project: str, session_id: str | None) -> str:
+async def _context_line(project: str, session_id: str | None) -> str:
     """Занятость контекста строкой. Полоски, как в панели браузера, в Telegram нет —
-    и числа тут смотрят реже, поэтому одна строка в /status, а не в каждом ответе."""
+    и числа тут смотрят реже, поэтому одна строка в /status, а не в каждом ответе.
+
+    Диск в потоке: транскрипт бывает на десятки мегабайт, и читать его на event loop
+    значит подморозить long-polling ровно на `/status`.
+    """
     if not session_id:
         return "—"
     path = webui.transcript(project, session_id)
-    ctx = webui.ctx_of(path) if path.is_file() else None
+    ctx = await asyncio.to_thread(webui.ctx_of, path) if path.is_file() else None
     if not ctx:
         return "—"
     k = round(ctx["used"] / 1000)
