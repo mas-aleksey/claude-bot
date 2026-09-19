@@ -4,12 +4,15 @@ CLI листинга не даёт (`claude project` — про state, не пр
 Один .jsonl на сессию, имя файла = session_id.
 """
 
+import asyncio
 import json
 import os
 import re
 import shutil
 import time
 from pathlib import Path
+
+import store
 
 TRANSCRIPTS = Path(os.environ.get("CLAUDE_TRANSCRIPTS", "/root/.claude/projects"))
 PROJECTS_DIR = Path(os.environ.get("PROJECTS_DIR", "/projects"))
@@ -27,7 +30,7 @@ def projects() -> list[Path]:
     return sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
 
 
-def _slug(cwd: str) -> str:
+def slug(cwd: str) -> str:
     """Slug папки транскриптов. Не только `/`: любой не-алфанумерик → `-`
     (`my_project` → `my-project`). Путь резолвим — slug строится от realpath
     (`/tmp` → `/private/tmp`). Промах по slug = молча пустой список, поэтому тест
@@ -204,7 +207,7 @@ def search(cwd: str, query: str, limit: int = 20) -> list[tuple[str, str, float,
         return []
     now = time.time()
     out: list[tuple[str, str, float, str]] = []
-    files = sorted((TRANSCRIPTS / _slug(cwd)).glob("*.jsonl"),
+    files = sorted((TRANSCRIPTS / slug(cwd)).glob("*.jsonl"),
                    key=lambda f: f.stat().st_mtime, reverse=True)
     for path in files:
         raw = path.read_text("utf-8", "replace")
@@ -244,7 +247,7 @@ def _snippet(raw: str, needle: str) -> str:
 def recent(cwd: str, limit: int = 10) -> list[tuple[str, str, float]]:
     """[(session_id, заголовок, возраст в секундах)] проекта, свежие сверху."""
     files = sorted(
-        (TRANSCRIPTS / _slug(cwd)).glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True
+        (TRANSCRIPTS / slug(cwd)).glob("*.jsonl"), key=lambda f: f.stat().st_mtime, reverse=True
     )
     now = time.time()
     return [(f.stem, title(f), now - f.stat().st_mtime) for f in files[:limit]]
@@ -275,3 +278,32 @@ def last_message(path: Path) -> str:
             if text.strip():
                 found = text.strip()
     return found
+
+
+# Порог в днях. Пол — половина суток: `days=0` снесло бы всё, включая сегодняшнюю
+# работу, а «удалить всё» — это не то же самое, что «удалить старое».
+MIN_DAYS = 0.5
+DEFAULT_DAYS = 2.0
+
+
+def days(raw) -> float:
+    try:
+        return max(MIN_DAYS, float(raw))
+    except (TypeError, ValueError):
+        return DEFAULT_DAYS
+
+
+async def run_purge(older: float) -> dict:
+    """Удаление файлов плюс снятие указателей. Одной функцией, потому что вызывают из
+    двух мест: кнопка в браузере и /purge в Telegram.
+
+    Файлы сносим в потоке, а `store` трогаем на event loop: соединение sqlite создано
+    в главном потоке, и обращение к нему из другого — ProgrammingError.
+
+    Указатели снимаются по списку из отчёта: заново их не найти, транскриптов уже нет.
+    Порядок именно такой — если удаление упадёт на середине, лишний указатель
+    безобиднее потерянного при живом транскрипте.
+    """
+    killed = await asyncio.to_thread(purge, older)
+    killed["pointers"] = store.forget_sessions(killed.pop("ids"))
+    return killed

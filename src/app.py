@@ -23,10 +23,12 @@ from aiogram.types import (
     TelegramObject,
 )
 
+import files
 import render
 import runner
 import sessions
 import store
+import transcript
 import webui
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -36,7 +38,7 @@ TOKEN = os.environ["TG_BOT_TOKEN"]
 ALLOWED = {int(x) for x in os.environ.get("TG_ALLOWED_USER_ID", "").split(",") if x.strip()}
 PROJECTS_DIR = sessions.PROJECTS_DIR
 AUDIT = Path(os.environ.get("AUDIT_LOG", "/data/audit.log"))
-INBOX = webui.INBOX  # один каталог для файлов из Telegram и из браузера
+INBOX = files.INBOX  # один каталог для файлов из Telegram и из браузера
 # Пусто — рабочее пространство в браузере не поднимается. Порт нужен не всем инстансам:
 # ассистенту он ни к чему, песочнице — только если её пробросили через Traefik.
 WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
@@ -181,8 +183,8 @@ async def _context_line(project: str, session_id: str | None) -> str:
     """
     if not session_id:
         return "—"
-    path = webui.transcript(project, session_id)
-    ctx = await asyncio.to_thread(webui.ctx_of, path) if path.is_file() else None
+    path = transcript.path_of(project, session_id)
+    ctx = await asyncio.to_thread(transcript.ctx_of, path) if path.is_file() else None
     if not ctx:
         return "—"
     k = round(ctx["used"] / 1000)
@@ -258,7 +260,7 @@ async def cb_resume(cb: CallbackQuery) -> None:
     # Хвост последнего ответа: иначе после переключения на экране один id, и о чём был
     # разговор, видно только в читалке. Шлём последний кусок split — верх длинного
     # ответа при возврате в сессию не нужен, нужен тот, на чём она остановилась.
-    path = webui.transcript(here, sid)
+    path = transcript.path_of(here, sid)
     if not path.is_file():
         return
     last = await asyncio.to_thread(sessions.last_message, path)
@@ -294,7 +296,7 @@ async def cmd_purge(msg: Message) -> None:
     """Удаление старых сессий во всех проектах. Без `yes` — только предпросмотр:
     действие необратимо, и одна опечатка в числе не должна ничего снести."""
     args = (msg.text or "").split()[1:]
-    days = webui._days(args[0] if args and args[0] != "yes" else None)
+    days = sessions.days(args[0] if args and args[0] != "yes" else None)
     older = days * 86400
 
     doomed = await asyncio.to_thread(sessions.stale, older)
@@ -312,7 +314,7 @@ async def cmd_purge(msg: Message) -> None:
             f"удалить безвозвратно: <code>/purge {days:g} yes</code>", parse_mode="HTML")
         return
 
-    killed = await webui.run_purge(older)
+    killed = await sessions.run_purge(older)
     await msg.answer(
         f"удалено {killed['sessions']} сессий, {total:.1f} МБ\n"
         f"окружений {killed['env']}, осиротевших {killed['orphans']}, "

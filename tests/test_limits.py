@@ -14,7 +14,9 @@ os.environ.setdefault("TG_BOT_TOKEN", "x")  # app читает env на импо
 
 import app
 import runner
+import sessions
 import store
+import transcript
 
 USAGE = {
     "five_hour": {"utilization": 0.0},
@@ -201,12 +203,10 @@ async def test_model_catalog_survives_a_failed_fetch(tmp_path, monkeypatch):
 async def test_context_line(tmp_path, monkeypatch):
     """Строка контекста в `/status`. Регрессия: вызов ушёл в несуществующее имя после
     переименования в webui, и `/status` при живой сессии падал AttributeError."""
-    import sessions
-    import webui
 
     monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path)
     monkeypatch.setattr(store, "get", lambda key, default=None: None)
-    path = webui.transcript("/projects/x", "0123abcd-0000-0000-0000-000000000000")
+    path = transcript.path_of("/projects/x", "0123abcd-0000-0000-0000-000000000000")
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"type": "assistant", "message": {
         "model": "claude-opus-5", "content": [{"type": "text", "text": "x"}],

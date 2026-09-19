@@ -20,13 +20,13 @@ def write(dir_, sid, *events):
 def test_slug_replaces_every_non_alnum():
     # Не только `/`: подчёркивание в пути ломало поиск папки и давало пустой список.
     # Хвост, а не всю строку: на macOS realpath дописывает /System/Volumes/Data.
-    assert sessions._slug("/home/user_1/my.proj").endswith("-home-user-1-my-proj")
+    assert sessions.slug("/home/user_1/my.proj").endswith("-home-user-1-my-proj")
 
 
 def test_recent_title_and_order(transcripts, tmp_path):
     cwd = tmp_path / "proj"
     cwd.mkdir()
-    d = transcripts / sessions._slug(str(cwd))
+    d = transcripts / sessions.slug(str(cwd))
     write(d, "old", {"type": "last-prompt", "lastPrompt": "первый"})
     write(d, "new", {"type": "last-prompt", "lastPrompt": "второй"},
           {"type": "ai-title", "aiTitle": "Заголовок"})
@@ -57,7 +57,7 @@ def test_title_prefers_ai_title_over_prompt(transcripts, tmp_path):
     # headless-запуски бота пишут только last-prompt, интерактивные — ещё и ai-title
     cwd = tmp_path / "p"
     cwd.mkdir()
-    d = transcripts / sessions._slug(str(cwd))
+    d = transcripts / sessions.slug(str(cwd))
     write(d, "s", {"type": "last-prompt", "lastPrompt": "промпт"})
     assert sessions.title(d / "s.jsonl") == "промпт"
 

@@ -16,9 +16,11 @@ from aiohttp.test_utils import TestClient, TestServer
 
 os.environ.setdefault("TG_BOT_TOKEN", "x")  # app читает env на импорте
 
+import files
 import runner
 import sessions
 import store
+import transcript
 import webui
 
 
@@ -202,7 +204,7 @@ async def test_stream_waits_for_the_transcript_then_tails_it(client, tmp_path, m
     with pytest.raises(TimeoutError):
         await _frame(r, 0.2)  # файла ещё нет — говорить нечего
 
-    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path = transcript.path_of(str(tmp_path / "proj"), sid)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n",
                     encoding="utf-8")
@@ -226,7 +228,7 @@ async def test_stream_resumes_from_last_event_id(client, tmp_path, monkeypatch):
     устарел. Без чтения Last-Event-ID панель получила бы всю историю второй раз."""
     monkeypatch.setattr(webui, "TAIL_TICK", 0.02)
     sid = "11111111-2222-3333-4444-555555555555"
-    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path = transcript.path_of(str(tmp_path / "proj"), sid)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n",
                     encoding="utf-8")
@@ -321,7 +323,7 @@ async def test_stderr_text_goes_to_panel(client, monkeypatch, tmp_path, stderr, 
 
 async def test_search_endpoint_returns_snippets(client, tmp_path, monkeypatch):
     cwd = tmp_path / "proj"
-    d = tmp_path / "transcripts" / sessions._slug(str(cwd))
+    d = tmp_path / "transcripts" / sessions.slug(str(cwd))
     d.mkdir(parents=True)
     (d / "11111111-2222-3333-4444-555555555555.jsonl").write_text(
         json.dumps({"type": "user", "message": {"role": "user", "content": "почини докер"}},
@@ -343,7 +345,7 @@ async def test_session_list_shows_size_only_for_heavy(client, tmp_path, monkeypa
     """Цифра у каждой сессии — шум: у большинства она одинаково мелкая. Показываем
     только те, что открываются заметно дольше."""
     cwd = tmp_path / "proj"
-    d = tmp_path / "transcripts" / sessions._slug(str(cwd))
+    d = tmp_path / "transcripts" / sessions.slug(str(cwd))
     d.mkdir(parents=True)
     line = json.dumps({"type": "user", "message": {"role": "user", "content": "x"}}) + "\n"
     (d / "aaaaaaaa-2222-3333-4444-555555555555.jsonl").write_text(line)
@@ -401,7 +403,7 @@ async def test_purge_post_deletes_and_clears_pointers(client, stale_home, monkey
 def test_days_has_a_floor(raw, want):
     """days=0 снесло бы и сегодняшнюю работу. «Удалить всё» — не то же самое, что
     «удалить старое»."""
-    assert webui._days(raw) == want
+    assert sessions.days(raw) == want
 
 
 async def test_run_tags_session_from_the_stream(monkeypatch, tmp_path):
@@ -507,7 +509,7 @@ async def test_prompt_rejects_bad_model(client, fake_run, tmp_path, model):
 
 
 async def test_upload_saves_file_and_returns_path(client, tmp_path, monkeypatch):
-    monkeypatch.setattr(webui, "INBOX", tmp_path / "inbox")
+    monkeypatch.setattr(files, "INBOX", tmp_path / "inbox")
     form = {"file": ("привет".encode(), "note.txt")}
 
     import aiohttp
@@ -524,7 +526,7 @@ async def test_upload_saves_file_and_returns_path(client, tmp_path, monkeypatch)
 
 async def test_upload_strips_directories_from_name(client, tmp_path, monkeypatch):
     """`../` в имени увёл бы файл из inbox."""
-    monkeypatch.setattr(webui, "INBOX", tmp_path / "inbox")
+    monkeypatch.setattr(files, "INBOX", tmp_path / "inbox")
     import aiohttp
     data = aiohttp.FormData()
     data.add_field("file", b"x", filename="../../etc/passwd")
@@ -553,7 +555,7 @@ async def test_upload_without_file_is_400(client):
     ("a" * 200 + ".txt", ("a" * 80)),
 ])
 def test_upload_filename_is_cleaned(raw, want):
-    assert webui._filename(raw) == want
+    assert files._filename(raw) == want
 
 
 async def test_store_survives_a_worker_thread(tmp_path, monkeypatch):
@@ -570,7 +572,7 @@ async def test_stream_recovers_when_the_transcript_shrinks(client, tmp_path, mon
     панель выглядит зависшей, хотя поток жив и ошибок нет."""
     monkeypatch.setattr(webui, "TAIL_TICK", 0.02)
     sid = "11111111-2222-3333-4444-555555555555"
-    path = webui.transcript(str(tmp_path / "proj"), sid)
+    path = transcript.path_of(str(tmp_path / "proj"), sid)
     path.parent.mkdir(parents=True, exist_ok=True)
     line = json.dumps({"type": "user", "message": {"content": "раз"}}) + "\n"
     path.write_text(line * 3, encoding="utf-8")

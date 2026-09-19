@@ -159,7 +159,7 @@ def _inline(s: str) -> str:
     return re.sub(r"\x00(\d+)\x00", lambda m: holes[int(m.group(1))], s)
 
 
-def _first_arg(name: str, args: dict) -> str:
+def first_arg(name: str, args: dict) -> str:
     for key in ("file_path", "command", "pattern", "path", "url", "query", "prompt", "description"):
         if val := args.get(key):
             return str(val)
@@ -195,7 +195,7 @@ class Run:
             for block in ev.get("message", {}).get("content", []):
                 if block.get("type") == "tool_use":
                     name = block.get("name", "?")
-                    arg = _first_arg(name, block.get("input") or {})
+                    arg = first_arg(name, block.get("input") or {})
                     self.steps.append(f"{ICONS.get(name, '🔧')} {name}: {clip(arg, 60)}")
             return
 

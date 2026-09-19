@@ -17,7 +17,7 @@ def project(tmp_path, monkeypatch):
 
 
 def write(cwd, sid, *events):
-    d = sessions.TRANSCRIPTS / sessions._slug(str(cwd))
+    d = sessions.TRANSCRIPTS / sessions.slug(str(cwd))
     d.mkdir(parents=True, exist_ok=True)
     # ensure_ascii=False — как пишет сам claude: в его транскриптах текст лежит
     # литералами UTF-8, а не escape-последовательностями. На это опирается быстрый
@@ -74,7 +74,7 @@ def test_limit_and_order(project, monkeypatch):
     import os
     for i, sid in enumerate(["1111", "2222", "3333"]):
         write(project, sid, prompt("докер"))
-        path = sessions.TRANSCRIPTS / sessions._slug(str(project)) / f"{sid}.jsonl"
+        path = sessions.TRANSCRIPTS / sessions.slug(str(project)) / f"{sid}.jsonl"
         os.utime(path, (1000 + i, 1000 + i))  # свежесть задаём явно: overlayfs огрубляет mtime
 
     got = sessions.search(str(project), "докер", limit=2)

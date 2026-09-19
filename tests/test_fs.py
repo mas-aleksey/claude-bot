@@ -9,6 +9,7 @@ import pytest
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
+import files
 import sessions
 import webui
 
@@ -20,7 +21,7 @@ def roots(tmp_path, monkeypatch):
     (projects / "demo").mkdir(parents=True)
     config.mkdir()
     monkeypatch.setattr(sessions, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(webui, "FILE_ROOTS", [config, tmp_path / "нет-такого"])
+    monkeypatch.setattr(files, "FILE_ROOTS", [config, tmp_path / "нет-такого"])
     return projects / "demo", config
 
 
@@ -34,18 +35,18 @@ async def client(roots):
 
 def test_roots_skip_missing_paths(roots):
     demo, config = roots
-    assert [str(p) for p in webui.roots()] == [str(demo), str(config)]
+    assert [str(p) for p in files.roots()] == [str(demo), str(config)]
 
 
 def test_path_outside_roots_is_refused(roots):
     with pytest.raises(web.HTTPBadRequest):
-        webui._inside("/etc/passwd")
+        files.inside("/etc/passwd")
 
 
 def test_traversal_out_of_a_root_is_refused(roots):
     demo, _ = roots
     with pytest.raises(web.HTTPBadRequest):
-        webui._inside(str(demo / ".." / ".." / ".." / "etc"))
+        files.inside(str(demo / ".." / ".." / ".." / "etc"))
 
 
 def test_symlink_into_another_root_opens(roots):
@@ -55,14 +56,14 @@ def test_symlink_into_another_root_opens(roots):
     (demo / "SKILL.md").write_text("текст")
     (config / "skills").mkdir()
     (config / "skills" / "demo").symlink_to(demo)
-    assert webui._inside(str(config / "skills" / "demo" / "SKILL.md")).read_text() == "текст"
+    assert files.inside(str(config / "skills" / "demo" / "SKILL.md")).read_text() == "текст"
 
 
 def test_symlink_out_of_all_roots_is_refused(roots):
     _, config = roots
     (config / "escape").symlink_to("/etc")
     with pytest.raises(web.HTTPBadRequest):
-        webui._inside(str(config / "escape" / "passwd"))
+        files.inside(str(config / "escape" / "passwd"))
 
 
 def test_entries_put_directories_first(roots):
@@ -70,7 +71,7 @@ def test_entries_put_directories_first(roots):
     (demo / "b.txt").write_text("x")
     (demo / "a").mkdir()
     (demo / ".hidden").write_text("y")  # скрытые отдаём все, прячет их панель
-    assert [e["name"] for e in webui._entries(demo)] == ["a", ".hidden", "b.txt"]
+    assert [e["name"] for e in files._entries(demo)] == ["a", ".hidden", "b.txt"]
 
 
 async def test_listing_answers_with_entries(client, roots):
@@ -87,7 +88,7 @@ async def test_listing_outside_roots_is_400(client):
 
 async def test_big_file_comes_without_text(client, roots):
     demo, _ = roots
-    (demo / "big.log").write_bytes(b"a" * (webui.MAX_EDIT + 1))
+    (demo / "big.log").write_bytes(b"a" * (files.MAX_EDIT + 1))
     body = await (await client.get("/api/file", params={"path": str(demo / "big.log")})).json()
     assert body["why"] and "text" not in body
 
@@ -135,7 +136,7 @@ async def test_save_to_readonly_mount_answers_400(client, roots, monkeypatch):
     def boom(*a, **kw):
         raise OSError(30, "Read-only file system")
 
-    monkeypatch.setattr(webui.Path, "write_text", boom)
+    monkeypatch.setattr(files.Path, "write_text", boom)
     res = await client.post("/api/file", json={"path": str(f), "text": "стало",
                                                "version": read["version"]})
     assert res.status == 400
