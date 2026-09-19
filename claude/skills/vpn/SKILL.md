@@ -21,24 +21,24 @@ sandbox: stop and say so, the tunnels here are not yours to touch.
 ## Where everything lives
 
 ```
-/projects/.vpn/docker-compose.yml   one service per tunnel
-/projects/.vpn/<name>.ovpn          config, mounted into the container as /data/vpn/
-/projects/.vpn/<name>-pass.txt      key passphrase, if the key is encrypted
+/data/vpn/docker-compose.yml   one service per tunnel
+/data/vpn/<name>.ovpn          config; the container sees it at the same path
+/data/vpn/<name>-pass.txt      key passphrase, if the key is encrypted
 ```
 
-The directory sits next to the work repositories, not inside one — secrets must not
-end up under `git add` of a project. It is mounted from the host, so the files
-survive anything you do to your docker.
+The directory sits outside `/projects` on purpose: that tree is git repositories
+only, and secrets must not end up under `git add` of a project. It is mounted from
+the host, so the files survive anything you do to your docker.
 
 `network_mode: host` in that file means the netns of dind, which is also yours: a
-tunnel started there shows up in your own `ip route`. `/projects` is the only path
-both you and your docker daemon see, which is why the configs live here and not
-under `/data`.
+tunnel started there shows up in your own `ip route`. `/data/vpn` is mounted into
+you and into your docker daemon at the same path, which is why the configs live
+here: the daemon resolves `-v` paths itself and sees nothing else under `/data`.
 
 ## Everyday commands
 
 ```bash
-C="docker compose -f /projects/.vpn/docker-compose.yml"
+C="docker compose -f /data/vpn/docker-compose.yml"
 $C ps                    # what is up
 $C up -d <tunnel>        # start one
 $C stop <tunnel>         # stop it — its routes leave with the interface
@@ -66,7 +66,7 @@ and silently routes nothing. Never diagnose this from `docker ps`; read the log.
 
 ```bash
 ip route                                      # subnets already claimed
-grep -E '^(route|redirect-gateway)' /projects/.vpn/<new>.ovpn
+grep -E '^(route|redirect-gateway)' /data/vpn/<new>.ovpn
 $C logs <running> | grep 'ip route add'       # what the running one pulled
 ```
 
@@ -87,7 +87,7 @@ proof. `File exists` means you hit the conflict above.
 
 ## Adding a tunnel
 
-1. Put `<name>.ovpn` in `/projects/.vpn/`, `chmod 600`.
+1. Put `<name>.ovpn` in `/data/vpn/`, `chmod 600`.
 2. Copy a service block in the compose file, change `container_name` and
    `VPN_CONFIG_FILE`. Keep `KILL_SWITCH: "off"`.
 3. The image takes neither a key passphrase nor pull filters through env — those go
