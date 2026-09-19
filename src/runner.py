@@ -2,6 +2,7 @@
 
 import asyncio
 import contextlib
+import dataclasses
 import json
 import logging
 import os
@@ -106,16 +107,30 @@ _models: tuple[float, list] = (float("-inf"), [])
 # словарями, — так они не разъедутся.
 _runs: dict[str, tuple[asyncio.subprocess.Process, float, str | None]] = {}
 
-# Очередь скоупа. Занятая панель (или топик) не отказывает, а копит: следующий промпт
-# ждёт своего места и уходит в claude, как только предыдущий прогон закончился.
-# Порядок даёт сам asyncio.Lock — он будит ожидающих в порядке постановки, поэтому
-# своего deque не нужно, нужен только счётчик ждущих для интерфейса.
-_slots: dict[str, asyncio.Lock] = {}
-_waiting: dict[str, int] = {}
-# Поколение очереди: `cancel` его двигает, и ожидающие, проснувшись, понимают, что их
-# отбросили. Разбудить их иначе нечем — они висят на том же локе, который держит
-# текущий прогон, и просыпаются только после его смерти.
-_epoch: dict[str, int] = {}
+@dataclasses.dataclass
+class _Queue:
+    """Очередь одного скоупа. Занятая панель (или топик) не отказывает, а копит:
+    следующий промпт ждёт своего места и уходит в claude, как только предыдущий
+    прогон закончился.
+
+    Порядок даёт сам `asyncio.Lock` — он будит ожидающих в порядке постановки, поэтому
+    своего deque не нужно, нужен только счётчик ждущих для интерфейса.
+
+    `epoch` двигает `cancel`, и ожидающие, проснувшись, понимают, что их отбросили.
+    Разбудить их иначе нечем — они висят на том же локе, который держит текущий
+    прогон, и просыпаются только после его смерти.
+
+    Три поля вместе, а не три словаря по скоупу: они заводятся одним вызовом и
+    выкидываются одним, и держать этот инвариант в трёх контейнерах значило каждый
+    раз не забыть третий `pop`.
+    """
+
+    lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
+    waiting: int = 0
+    epoch: int = 0
+
+
+_queues: dict[str, _Queue] = {}
 # Последняя сессия скоупа. Промпт, вставший в очередь к новой сессии, её id ещё не знает:
 # claude придумает его в предыдущем прогоне, уже после постановки.
 _last: dict[str, str] = {}
@@ -210,13 +225,13 @@ def ahead(scope: str) -> int:
     Считаем по локу, а не по `busy`: держатель слота попадает в `_runs` только когда
     доберётся до первого события claude, и в этом зазоре очередь бы отвечала «свободно».
     """
-    lock = _slots.get(scope)
-    return (1 if lock and lock.locked() else 0) + _waiting.get(scope, 0)
+    q = _queues.get(scope)
+    return 0 if q is None else (1 if q.lock.locked() else 0) + q.waiting
 
 
 def waiting() -> dict[str, int]:
     """Непустые очереди по скоупам — панели, чтобы показать глубину после перезагрузки."""
-    return {scope: n for scope, n in _waiting.items() if n}
+    return {scope: q.waiting for scope, q in _queues.items() if q.waiting}
 
 
 def last_session(scope: str) -> str | None:
@@ -230,25 +245,25 @@ async def slot(scope: str) -> AsyncIterator[None]:
     Счётчик ждущих растёт до `acquire`, поэтому вызывающий должен спросить `ahead`
     ДО входа сюда — иначе он посчитает в очереди сам себя.
     """
-    lock = _slots.setdefault(scope, asyncio.Lock())
-    epoch = _epoch.get(scope, 0)
-    _waiting[scope] = _waiting.get(scope, 0) + 1
+    # Запись держим ссылкой, а не перечитываем из словаря: пока мы числимся ждущими,
+    # выкинуть её некому, а после `acquire` это ровно та очередь, в которую мы встали.
+    q = _queues.setdefault(scope, _Queue())
+    epoch = q.epoch
+    q.waiting += 1
     try:
-        await lock.acquire()
+        await q.lock.acquire()
     finally:
-        _waiting[scope] -= 1
+        q.waiting -= 1
     try:
-        if _epoch.get(scope, 0) != epoch:
+        if q.epoch != epoch:
             raise Dropped
         yield
     finally:
-        lock.release()
+        q.lock.release()
         # Пусто — выкидываем состояние скоупа целиком: панелей за месяцы заводят много,
-        # а живут они по одному промпту. Ждущих нет, значит на этот лок никто не смотрит.
-        if not _waiting.get(scope):
-            _slots.pop(scope, None)
-            _waiting.pop(scope, None)
-            _epoch.pop(scope, None)
+        # а живут они по одному промпту. Ждущих нет, значит на эту очередь никто не смотрит.
+        if not q.waiting:
+            _queues.pop(scope, None)
 
 
 def _tag(scope: str, session_id: str) -> None:
@@ -414,9 +429,10 @@ async def cancel(scope: str) -> tuple[bool, int]:
     следом сама собой поедет следующая задача. Возвращает (убит ли прогон, сколько
     промптов отброшено).
     """
-    dropped = _waiting.get(scope, 0)
+    q = _queues.get(scope)
+    dropped = q.waiting if q else 0
     if dropped:
-        _epoch[scope] = _epoch.get(scope, 0) + 1
+        q.epoch += 1
     entry = _runs.get(scope)
     proc = entry[0] if entry else None
     if proc is None or proc.returncode is not None:

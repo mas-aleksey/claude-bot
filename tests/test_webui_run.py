@@ -41,7 +41,7 @@ async def client(tmp_path, monkeypatch):
 def clean_scopes():
     """Очередь и `_last` живут в модуле, а скоуп `web:pane-1` во всех тестах один."""
     yield
-    for d in (runner._slots, runner._waiting, runner._epoch, runner._last, runner._runs):
+    for d in (runner._queues, runner._last, runner._runs):
         d.clear()
 
 
