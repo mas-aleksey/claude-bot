@@ -411,3 +411,52 @@ console.log(JSON.stringify({ symlink, prefix, plain }));
     assert got["prefix"] == [["database", " / ", "x"], "/database"]
     # Обычный случай не изменился.
     assert got["plain"] == ["demo", " / ", "src", " / ", "app.py"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_upload_reports_progress_and_failures(tmp_path):
+    """Ход отправки берётся из XHR: `fetch` его не отдаёт вовсе, и на мобильной сети
+    большой файл уходил в тишину. Проверяем три исхода — проценты, успех и отказ."""
+    body = webui.PAGE.split("function upload")[1].split("\nasync function attach")[0]
+    js = tmp_path / "upload.js"
+    js.write_text("""
+let sent = null, mode = 'ok';
+class FormData { append(k, v) { this.k = k; this.v = v; } }
+class XMLHttpRequest {
+  constructor() { this.upload = {}; this.status = 0; this.responseText = ''; }
+  open(method, url) { this.url = url; }
+  send(form) {
+    sent = form;
+    this.upload.onprogress({ lengthComputable: true, loaded: 5, total: 10 });
+    this.upload.onprogress({ lengthComputable: false });
+    if (mode === 'boom') return this.onerror();
+    this.status = mode === 'ok' ? 200 : 400;
+    this.responseText = mode === 'ok' ? '{"path":"/data/inbox/1-a.png"}' : 'нужен файл в поле file';
+    this.onload();
+  }
+}
+
+function upload""" + body + """
+(async () => {
+  const seen = [];
+  const out = { ok: null, bad: null, dead: null };
+
+  out.ok = (await upload({ name: 'a.png' }, (v) => seen.push(v))).path;
+  mode = 'fail';
+  out.bad = await upload({}, () => {}).catch(e => e.message);
+  mode = 'boom';
+  out.dead = await upload({}, () => {}).catch(e => e.message);
+
+  console.log(JSON.stringify({ ...out, seen, field: sent.k }));
+})();
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    assert got["ok"] == "/data/inbox/1-a.png"
+    assert got["bad"] == "нужен файл в поле file"   # текст сервера, а не голый код
+    assert got["dead"] == "обрыв связи"
+    # Половина отправлена, дальше длина неизвестна — это не ноль, а «процента нет».
+    assert got["seen"] == [0.5, None]
+    assert got["field"] == "file"                   # имя поля то же, что ждёт api_upload

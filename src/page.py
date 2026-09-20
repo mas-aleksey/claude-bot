@@ -200,7 +200,7 @@ section.zoomed header .max::before { content:'\2921' }
    поверх текста. Полупрозрачная нарочно — сквозь неё видно последнюю строку, поэтому
    низ лога не читается как обрыв, а промахнуться по ней нельзя даже пальцем.
    Видна, только пока лог отлистан от низа. */
-.down { position:absolute; left:0; right:0; bottom:0; height:18px; padding:0;
+.down { position:absolute; left:0; right:0; bottom:0; height:25px; padding:0;
   display:grid; place-items:center; border:0; border-radius:0; font-size:11px;
   line-height:1; opacity:.75; background:oklch(0.62 0.18 var(--hue,250) / .35) }
 .down:hover { opacity:1; background:oklch(0.62 0.18 var(--hue,250) / .55) }
@@ -220,11 +220,15 @@ section.zoomed header .max::before { content:'\2921' }
 .body pre { position:relative; margin:.4em 0; padding:8px; overflow:auto;
   background:#8881; border-radius:4px }
 /* Кнопка появляется по наведению: в узкой панели постоянная отнимала бы место у кода.
-   Прилипает к правому краю самого блока, поэтому не уезжает при его прокрутке. */
-pre .copy { position:sticky; float:right; top:0; right:0; opacity:0;
+   Лежит в обёртке НАД блоком кода, а не внутри него. Внутри стоял `position:sticky`, но
+   у прилипшего элемента блок-контейнер совпадает со скроллпортом `<pre>` — двигаться
+   некуда, и при горизонтальной прокрутке кнопка уезжала влево вместе с кодом. Обёртка
+   не прокручивается, поэтому кнопка держится за свой угол. */
+.codebox { position:relative }
+.codebox .copy { position:absolute; top:4px; right:4px; z-index:1; opacity:0;
   font:inherit; font-size:11px; padding:1px 5px; cursor:pointer; color:inherit;
   background:Canvas; border:1px solid #8884; border-radius:3px }
-pre:hover .copy, pre .copy:focus { opacity:.9 }
+.codebox:hover .copy, .codebox .copy:focus { opacity:.9 }
 .body code { font-family:ui-monospace,monospace; font-size:.92em }
 .body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
 .body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }
@@ -1338,25 +1342,60 @@ function wireCopy(box) {
       }
       setTimeout(() => { btn.textContent = 'копировать'; }, 1200);
     };
-    pre.prepend(btn);
+    // Оборачиваем, а не кладём внутрь: кнопка обязана остаться на месте, когда код
+    // листают вбок.
+    const box = document.createElement('div');
+    box.className = 'codebox';
+    pre.replaceWith(box);
+    box.append(pre, btn);
   }
 }
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
 // поле ввода. Отдельной строкой, чтобы промпт остался читаемым.
-async function attach(p, ta, files) {
-  for (const file of files || []) {
+// Отправка файла ходом наружу. `fetch` хода отправки не отдаёт вовсе — только XHR, и
+// это единственная причина держать его здесь. На мобильной сети и файле в несколько
+// мегабайт без этого кажется, что нажатие вообще не сработало.
+function upload(file, onProgress) {
+  return new Promise((resolve, reject) => {
     const form = new FormData();
     form.append('file', file);
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', 'api/upload');
+    // lengthComputable бывает false на потоковом теле — тогда процента просто нет, и
+    // строка остаётся на «идёт отправка».
+    xhr.upload.onprogress = (e) => onProgress(e.lengthComputable ? e.loaded / e.total : null);
+    xhr.onload = () => xhr.status === 200
+      ? resolve(JSON.parse(xhr.responseText))
+      : reject(new Error(xhr.responseText || ('код ' + xhr.status)));
+    xhr.onerror = () => reject(new Error('обрыв связи'));
+    xhr.send(form);
+  });
+}
+
+async function attach(p, ta, files) {
+  for (const file of files || []) {
+    // Строка в логе, а не отдельная плашка: лог и так на виду, а место под панелью
+    // занято полем промпта. textContent вместо разметки — имя файла приходит от
+    // человека и экранировать его иначе пришлось бы руками.
+    const row = log(p, '<div class="msg note"></div>');
+    const size = kb(file.size);
+    const show = (part) => {
+      if (row) row.textContent = part === null
+        ? `отправляю ${file.name} (${size})…`
+        : `отправляю ${file.name} (${size}) — ${Math.round(part * 100)}%`;
+    };
+    show(0);
     try {
-      const r = await fetch('api/upload', { method: 'POST', body: form });
-      if (!r.ok) throw new Error(await r.text());
-      const { path } = await r.json();
+      const { path } = await upload(file, show);
+      row?.remove();   // путь уже в поле промпта, строке в логе больше нечего сказать
       ta.value = (ta.value ? ta.value.replace(/\s*$/, '\n') : '') + path + '\n';
       grow(ta);
       ta.focus();
     } catch (e) {
-      log(p, `<div class="msg err">файл не загрузился: ${esc(String(e).slice(0, 200))}</div>`);
+      const text = `файл не загрузился: ${String(e).slice(0, 200)}`;
+      if (row) { row.className = 'msg err'; row.textContent = text; }
+      else log(p, `<div class="msg err">${esc(text)}</div>`);
     }
   }
 }
