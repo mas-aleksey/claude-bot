@@ -185,7 +185,7 @@ header button { padding:1px 6px; line-height:1.2 }
    пропускает жест, начатый на кнопке. */
 @media (pointer: coarse) {
   header { padding:6px 8px; gap:8px }
-  header button { min-width:40px; min-height:40px; padding:4px 10px }
+  header button { min-width:36px; min-height:36px; padding:4px 10px }
 }
 /* Значок разворота — через `content`, чтобы состояние окна рисовал CSS, а не переписывал
    скрипт: та же механика, что у полоски сайдбара. */
