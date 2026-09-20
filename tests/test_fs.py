@@ -141,3 +141,39 @@ async def test_save_to_readonly_mount_answers_400(client, roots, monkeypatch):
                                                "version": read["version"]})
     assert res.status == 400
     assert "Read-only" in await res.text()
+
+
+async def test_new_file_opens_empty_and_shows_up_in_listing(client, roots):
+    demo, _ = roots
+    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "заметка.md"})
+    assert r.status == 200
+    made = await r.json()
+    assert made["path"] == str(demo / "заметка.md")
+    assert (demo / "заметка.md").read_text() == ""
+    # Версия отдаётся сразу — редактор сохраняет поверх без лишнего чтения.
+    assert made["version"]
+
+    listing = await (await client.get(f"/api/files?path={demo}")).json()
+    assert "заметка.md" in [e["name"] for e in listing["entries"]]
+
+
+async def test_new_file_refuses_to_overwrite(client, roots):
+    demo, _ = roots
+    (demo / "есть.txt").write_text("важное", encoding="utf-8")
+    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "есть.txt"})
+    assert r.status == 400
+    assert "уже есть" in await r.text()
+    assert (demo / "есть.txt").read_text() == "важное"   # не тронут
+
+
+async def test_new_file_stays_inside_roots(client, roots):
+    """Имя чистится `_filename`, поэтому каталоги из него не выходят, а сам каталог
+    проверяется `inside` — снаружи корней создать нечего."""
+    demo, _ = roots
+    r = await client.post("/api/file/new", json={"dir": "/etc", "name": "passwd2"})
+    assert r.status == 400
+
+    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "../беглец"})
+    assert r.status == 200
+    assert (demo / "беглец").is_file()          # имя схлопнулось в своё же
+    assert not (demo.parent / "беглец").exists()

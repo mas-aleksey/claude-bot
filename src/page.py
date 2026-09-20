@@ -76,6 +76,9 @@ body.rfolded #rfold::before { content:'\2039' }
   text-decoration:none; color:inherit; font-size:13px }
 #peers a[aria-current=page] { background:#8884; font-weight:600 }
 aside select, aside button.new, aside input { margin:8px 8px 0; padding:6px }
+aside .row { display:flex }
+aside .row button.new { flex:1 }
+aside .row button.new + button.new { margin-left:0 }
 aside input { background:none; color:inherit; border:1px solid #8884; border-radius:4px;
   font:inherit }
 #list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
@@ -407,7 +410,10 @@ body:not(.folded) #empty .list { display:none }
 <button id=rfold title="дерево файлов" aria-label="скрыть или показать дерево файлов"></button>
 <aside class=files>
   <select id=root title="корень дерева"></select>
-  <button class=new id=dots title="показывать файлы с точкой в начале">скрытые: вкл</button>
+  <div class=row>
+    <button class=new id=dots title="показывать файлы с точкой в начале">скрытые: вкл</button>
+    <button class=new id=newfile title="создать файл в открытом каталоге">+ файл</button>
+  </div>
   <div id=crumb></div>
   <div id=tree></div>
 </aside>
@@ -1128,8 +1134,11 @@ async function loadRoots() {
   return openDir(start).catch(() => openDir(sel.value));
 }
 
+let atDir = '';
+
 async function openDir(path) {
   const data = await get('api/files?path=' + encodeURIComponent(path));
+  atDir = data.path;
   localStorage.setItem('dir', data.path);
   drawCrumb(data.path);
   drawTree(data.entries);
@@ -1139,8 +1148,22 @@ const treeFail = (e) => { $('tree').innerHTML = '<div class=none>не откры
 
 // Путь от корня кнопками. Выше корня подниматься нечем и не нужно: сервер такой путь
 // всё равно отклонит, а в дереве видно только примонтированное.
+//
+// Корень ищем по самому пути, а не берём выбранный в списке: сервер отвечает путём
+// после resolve(), и симлинк уводит в другой корень — `/root/.claude/skills/end` это
+// на самом деле `/opt/skills/10-base/end`. Раньше такой путь не совпадал с выбранным
+// корнем, `rest` оставался пустым, и от крошек оставалась одна кнопка корня.
+// Сравниваем с `/` на конце: иначе `/data` считался бы корнем для `/database`.
 function drawCrumb(path) {
-  const root = $('root').value;
+  const roots = [...$('root').options].map(o => o.value);
+  const root = roots.filter(r => path === r || path.startsWith(r + '/'))
+                    .sort((a, b) => b.length - a.length)[0] || $('root').value;
+  // Выпадашка идёт следом за путём — иначе она показывает один корень, а дерево стоит
+  // в другом, и после перезагрузки страницы место теряется.
+  if (root !== $('root').value && roots.includes(root)) {
+    $('root').value = root;
+    localStorage.setItem('root', root);
+  }
   const rest = path.startsWith(root) ? path.slice(root.length).split('/').filter(Boolean) : [];
   let at = root;
   const parts = [`<button data-at="${esc(root)}">${esc(root.split('/').pop() || '/')}</button>`];
@@ -1882,6 +1905,21 @@ $('dots').onclick = () => {
   openDir(localStorage.getItem('dir') || $('root').value).catch(treeFail);
 };
 drawDots();
+// Создание файла: пустой файл в открытом каталоге, дальше он сам открывается панелью
+// редактора. Каталогов и удаления тут нет — это к claude в соседней панели, там об
+// этом можно сказать словами.
+$('newfile').onclick = async () => {
+  const name = prompt('имя файла в ' + (atDir || '?'));
+  if (!name || !name.trim()) return;
+  const r = await fetch('api/file/new', { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dir: atDir, name: name.trim() }) });
+  const body = await r.text();
+  if (!r.ok) return alert(body || ('не создать: ' + r.status));
+  await openDir(atDir).catch(treeFail);
+  addPane({ pane: uid(), file: JSON.parse(body).path });
+};
+
 $('root').onchange = () => {
   localStorage.setItem('root', $('root').value);
   openDir($('root').value).catch(treeFail);

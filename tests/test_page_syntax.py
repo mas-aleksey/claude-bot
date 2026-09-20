@@ -350,3 +350,64 @@ console.log(JSON.stringify([
                     '<div class="assistant">готово</div>', "group"]
     assert size == 3  # summary + два шага
     assert head == "2 · Bash b"  # счётчик и последний вызов
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_crumbs_survive_a_symlink_into_another_root(tmp_path):
+    """Сервер отвечает путём после `resolve()`, и скилл из `/root/.claude/skills`
+    оказывается в `/opt/skills`. Раньше такой путь не совпадал с выбранным корнем, и
+    от крошек оставалась одна кнопка — жалоба «крошки иногда пропадают».
+
+    Заодно проверяем `/data` против `/database`: сравнение по префиксу без слеша
+    выбрало бы не тот корень.
+    """
+    body = webui.PAGE.split("// --- files:begin ---")[1].split("// --- files:end ---")[0]
+    drawCrumb = body.split("function drawCrumb")[1].split("\nfunction drawTree")[0]
+    js = tmp_path / "crumb.js"
+    js.write_text("""
+let ROOTS = [], picked = '', html = '';
+const store = {};
+const localStorage = { setItem: (k, v) => { store[k] = v; } };
+const esc = (s) => String(s);
+const crumb = {
+  set innerHTML(v) { html = v; },
+  querySelectorAll: () => [],
+};
+const $ = (id) => id === 'crumb' ? crumb : {
+  get value() { return picked; },
+  set value(v) { picked = v; },
+  options: ROOTS.map(v => ({ value: v })),
+};
+const openDir = () => Promise.resolve();
+const treeFail = () => {};
+
+function drawCrumb""" + drawCrumb + """
+const names = () => html.match(/>([^<]+)</g).map(s => s.slice(1, -1));
+
+ROOTS = ['/root/.claude', '/opt/skills'];
+picked = '/root/.claude';
+drawCrumb('/opt/skills/10-base/end');
+const symlink = [names(), picked];
+
+ROOTS = ['/data', '/database'];
+picked = '/data';
+drawCrumb('/database/x');
+const prefix = [names(), picked];
+
+ROOTS = ['/projects/demo'];
+picked = '/projects/demo';
+drawCrumb('/projects/demo/src/app.py');
+const plain = names();
+
+console.log(JSON.stringify({ symlink, prefix, plain }));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    # Симлинк: крошки ведут по настоящему корню, выпадашка идёт следом за ними.
+    assert got["symlink"] == [["skills", " / ", "10-base", " / ", "end"], "/opt/skills"]
+    # `/database` не считается лежащим в `/data`.
+    assert got["prefix"] == [["database", " / ", "x"], "/database"]
+    # Обычный случай не изменился.
+    assert got["plain"] == ["demo", " / ", "src", " / ", "app.py"]

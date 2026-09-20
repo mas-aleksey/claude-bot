@@ -148,10 +148,9 @@ async def api_save(req: web.Request) -> web.Response:
     без этой сверки правка человека молча затирала бы его правку. Расхождение —
     409, панель предлагает перечитать.
 
-    Создания, удаления и переименования тут нет: это умеет claude в соседней
-    панели, а редактору хватает существующего файла. Открытие идёт по тому же
-    inode, поэтому владелец и права остаются чужими — новых root-файлов в проекте
-    не появляется.
+    Удаления и переименования тут нет: это умеет claude в соседней панели. Запись
+    идёт по тому же inode, поэтому владелец и права остаются чужими — существующий
+    файл не становится root-овым от правки из браузера.
     """
     data = await req.json()
     path = inside(data.get("path") or "")
@@ -169,6 +168,35 @@ async def api_save(req: web.Request) -> web.Response:
         # примонтирован только на чтение, и текст системы об этом честнее нашего.
         raise web.HTTPBadRequest(text=f"не записать: {err}") from err
     return web.json_response({"version": _version(path.stat())})
+
+
+async def api_new(req: web.Request) -> web.Response:
+    """Создать пустой файл и отдать его панели — дальше он открывается редактором.
+
+    Только файл и только в существующем каталоге: `mkdir` и удаление остаются за
+    claude в соседней панели, там об этом можно сказать словами.
+
+    Владельца берём у каталога. Бот работает root-ом, и без этого новый файл в
+    `/projects` человек на хосте не смог бы поправить — та же грабля, из-за которой
+    правка существующего файла идёт по его inode.
+    """
+    data = await req.json()
+    where = inside(data.get("dir") or "")
+    name = _filename(data.get("name"))
+    if not where.is_dir():
+        raise web.HTTPBadRequest(text="нет такого каталога")
+    # Ещё раз через `inside`: имя очищено, но каталог мог оказаться симлинком наружу.
+    path = inside(str(where / name))
+    if path.exists():
+        raise web.HTTPBadRequest(text="такой файл уже есть")
+    try:
+        await asyncio.to_thread(path.touch)
+        st = where.stat()
+        os.chown(path, st.st_uid, st.st_gid)
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"не создать: {err}") from err
+    log.info("new file: %s", path)
+    return web.json_response({"path": str(path), "version": _version(path.stat())})
 
 
 def _filename(raw: str | None) -> str:

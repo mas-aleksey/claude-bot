@@ -487,6 +487,7 @@ def build() -> web.Application:
         web.get("/api/files", files.api_files),
         web.get("/api/file", files.api_file),
         web.post("/api/file", files.api_save),
+        web.post("/api/file/new", files.api_new),
         web.get("/api/purge", api_purge),
         web.post("/api/purge", api_purge),
         web.get("/api/stream", api_stream),
