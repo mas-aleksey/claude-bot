@@ -178,6 +178,15 @@ header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
   background:oklch(0.62 0.18 var(--hue,250)) }
 header .ctx.full { background:#e55 }
 header button { padding:1px 6px; line-height:1.2 }
+/* Пальцем в кнопку высотой 21 пиксель не попасть — растим сами кнопки, заголовок
+   поднимается следом. Признак — `pointer: coarse`, а не ширина экрана: на планшете в
+   альбомной ориентации экран широкий, а палец тот же. По этому же признаку скрипт не
+   отправляет промпт по Enter. Перенос окна от этого не страдает: `wireGrab` и так
+   пропускает жест, начатый на кнопке. */
+@media (pointer: coarse) {
+  header { padding:6px 8px; gap:8px }
+  header button { min-width:40px; min-height:40px; padding:4px 10px }
+}
 /* Значок разворота — через `content`, чтобы состояние окна рисовал CSS, а не переписывал
    скрипт: та же механика, что у полоски сайдбара. */
 header .max::before { content:'\2922' }
