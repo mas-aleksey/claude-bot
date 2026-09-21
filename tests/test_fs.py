@@ -145,7 +145,7 @@ async def test_save_to_readonly_mount_answers_400(client, roots, monkeypatch):
 
 async def test_new_file_opens_empty_and_shows_up_in_listing(client, roots):
     demo, _ = roots
-    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "заметка.md"})
+    r = await client.post("/api/new", json={"dir": str(demo), "name": "заметка.md"})
     assert r.status == 200
     made = await r.json()
     assert made["path"] == str(demo / "заметка.md")
@@ -160,7 +160,7 @@ async def test_new_file_opens_empty_and_shows_up_in_listing(client, roots):
 async def test_new_file_refuses_to_overwrite(client, roots):
     demo, _ = roots
     (demo / "есть.txt").write_text("важное", encoding="utf-8")
-    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "есть.txt"})
+    r = await client.post("/api/new", json={"dir": str(demo), "name": "есть.txt"})
     assert r.status == 400
     assert "уже есть" in await r.text()
     assert (demo / "есть.txt").read_text() == "важное"   # не тронут
@@ -170,10 +170,34 @@ async def test_new_file_stays_inside_roots(client, roots):
     """Имя чистится `_filename`, поэтому каталоги из него не выходят, а сам каталог
     проверяется `inside` — снаружи корней создать нечего."""
     demo, _ = roots
-    r = await client.post("/api/file/new", json={"dir": "/etc", "name": "passwd2"})
+    r = await client.post("/api/new", json={"dir": "/etc", "name": "passwd2"})
     assert r.status == 400
 
-    r = await client.post("/api/file/new", json={"dir": str(demo), "name": "../беглец"})
+    r = await client.post("/api/new", json={"dir": str(demo), "name": "../беглец"})
     assert r.status == 200
     assert (demo / "беглец").is_file()          # имя схлопнулось в своё же
     assert not (demo.parent / "беглец").exists()
+
+
+async def test_new_folder_opens_in_the_tree(client, roots):
+    demo, _ = roots
+    r = await client.post("/api/new", json={"dir": str(demo), "name": "черновики",
+                                            "folder": True})
+    assert r.status == 200
+    made = await r.json()
+    assert made == {"path": str(demo / "черновики"), "dir": True}   # версии у папки нет
+    assert (demo / "черновики").is_dir()
+
+    # В неё сразу можно зайти — панель так и делает после создания.
+    listing = await (await client.get(f"/api/files?path={demo / 'черновики'}")).json()
+    assert listing["entries"] == []
+
+
+async def test_new_folder_refuses_an_occupied_name(client, roots):
+    demo, _ = roots
+    (demo / "занято").write_text("файл, не папка", encoding="utf-8")
+    r = await client.post("/api/new", json={"dir": str(demo), "name": "занято",
+                                            "folder": True})
+    assert r.status == 400
+    assert "уже есть" in await r.text()
+    assert (demo / "занято").is_file()   # не подменили файл папкой

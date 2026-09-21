@@ -426,8 +426,8 @@ body:not(.folded) #empty .list { display:none }
 <aside class=files>
   <select id=root title="корень дерева"></select>
   <div class=row>
-    <button class=new id=dots title="показывать файлы с точкой в начале">скрытые: вкл</button>
     <button class=new id=newfile title="создать файл в открытом каталоге">+ файл</button>
+    <button class=new id=newdir title="создать папку в открытом каталоге">+ папка</button>
   </div>
   <div id=crumb></div>
   <div id=tree></div>
@@ -1145,9 +1145,8 @@ const kb = (n) => n < 1024 ? n + ' Б'
                 : n < 1048576 ? Math.round(n / 1024) + ' КБ'
                 : (n / 1048576).toFixed(1) + ' МБ';
 
-// Скрытые файлы показаны по умолчанию: в /root/.claude половина интересного начинается
-// с точки. Переключатель их прячет, память — в localStorage.
-const showDots = () => localStorage.getItem('dots') !== '0';
+// Файлы с точки показываем всегда: в /root/.claude половина интересного начинается
+// именно с неё. Переключатель тут стоял и не пригодился ни разу — снят 2026-09-21.
 
 async function loadRoots() {
   const list = await get('api/roots');
@@ -1204,8 +1203,7 @@ function drawCrumb(path) {
 }
 
 function drawTree(entries) {
-  const rows = entries.filter(e => showDots() || !e.name.startsWith('.'));
-  $('tree').innerHTML = rows.map(e =>
+  $('tree').innerHTML = entries.map(e =>
     `<button class="${e.dir ? 'dir' : ''}" data-path="${esc(e.path)}" data-dir="${e.dir ? 1 : ''}">`
     + esc(e.name) + (e.dir ? '/' : `<span class=size>${kb(e.size)}</span>`) + '</button>').join('')
     || '<div class=none>пусто</div>';
@@ -1960,27 +1958,26 @@ $('rfold').onclick = () => {
   document.body.classList.toggle('rfolded', on);
   localStorage.setItem('rfolded', on ? '1' : '0');
 };
-const drawDots = () => { $('dots').textContent = 'скрытые: ' + (showDots() ? 'вкл' : 'выкл'); };
-$('dots').onclick = () => {
-  localStorage.setItem('dots', showDots() ? '0' : '1');
-  drawDots();
-  openDir(localStorage.getItem('dir') || $('root').value).catch(treeFail);
-};
-drawDots();
-// Создание файла: пустой файл в открытом каталоге, дальше он сам открывается панелью
-// редактора. Каталогов и удаления тут нет — это к claude в соседней панели, там об
-// этом можно сказать словами.
-$('newfile').onclick = async () => {
-  const name = prompt('имя файла в ' + (atDir || '?'));
+// Создание в открытом каталоге: файл открывается редактором, папка открывается в
+// дереве — в обоих случаях оказываешься там, где только что создал. Удаления и
+// переименования нет: это к claude в соседней панели, там об этом можно сказать
+// словами, а необратимое действие требует разговора, а не кнопки.
+const create = (folder) => async () => {
+  const name = prompt((folder ? 'имя папки в ' : 'имя файла в ') + (atDir || '?'));
   if (!name || !name.trim()) return;
-  const r = await fetch('api/file/new', { method: 'POST',
+  const r = await fetch('api/new', { method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dir: atDir, name: name.trim() }) });
+    body: JSON.stringify({ dir: atDir, name: name.trim(), folder }) });
   const body = await r.text();
   if (!r.ok) return alert(body || ('не создать: ' + r.status));
+  const made = JSON.parse(body);
+  if (folder) return openDir(made.path).catch(treeFail);
   await openDir(atDir).catch(treeFail);
-  addPane({ pane: uid(), file: JSON.parse(body).path });
+  addPane({ pane: uid(), file: made.path });
 };
+
+$('newfile').onclick = create(false);
+$('newdir').onclick = create(true);
 
 $('root').onchange = () => {
   localStorage.setItem('root', $('root').value);

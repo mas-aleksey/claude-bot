@@ -171,10 +171,14 @@ async def api_save(req: web.Request) -> web.Response:
 
 
 async def api_new(req: web.Request) -> web.Response:
-    """Создать пустой файл и отдать его панели — дальше он открывается редактором.
+    """Создать пустой файл или каталог в открытом каталоге дерева.
 
-    Только файл и только в существующем каталоге: `mkdir` и удаление остаются за
-    claude в соседней панели, там об этом можно сказать словами.
+    Одним обработчиком на оба: проверки у них общие до единственной строки, а
+    расходятся только `touch` и `mkdir` — держать это двумя роутами значило бы
+    переписать проверку пути дважды.
+
+    Удаления и переименования нет: это к claude в соседней панели, там об этом можно
+    сказать словами, а необратимое действие требует разговора, а не кнопки.
 
     Владельца берём у каталога. Бот работает root-ом, и без этого новый файл в
     `/projects` человек на хосте не смог бы поправить — та же грабля, из-за которой
@@ -183,20 +187,25 @@ async def api_new(req: web.Request) -> web.Response:
     data = await req.json()
     where = inside(data.get("dir") or "")
     name = _filename(data.get("name"))
+    folder = bool(data.get("folder"))
     if not where.is_dir():
         raise web.HTTPBadRequest(text="нет такого каталога")
     # Ещё раз через `inside`: имя очищено, но каталог мог оказаться симлинком наружу.
     path = inside(str(where / name))
     if path.exists():
-        raise web.HTTPBadRequest(text="такой файл уже есть")
+        raise web.HTTPBadRequest(text="папка с таким именем уже есть" if folder
+                                 else "такой файл уже есть")
     try:
-        await asyncio.to_thread(path.touch)
+        await asyncio.to_thread(path.mkdir if folder else path.touch)
         st = where.stat()
         os.chown(path, st.st_uid, st.st_gid)
     except OSError as err:
         raise web.HTTPBadRequest(text=f"не создать: {err}") from err
-    log.info("new file: %s", path)
-    return web.json_response({"path": str(path), "version": _version(path.stat())})
+    log.info("new %s: %s", "dir" if folder else "file", path)
+    out = {"path": str(path), "dir": folder}
+    if not folder:
+        out["version"] = _version(path.stat())
+    return web.json_response(out)
 
 
 def _filename(raw: str | None) -> str:
