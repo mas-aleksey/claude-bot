@@ -113,15 +113,28 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill.warn { background:#e90 }
 #plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
-/* Размер и карандаш — один плавающий блок, а не два. Порознь они спорили за правый
-   угол: карандаш поверх размера, размер на вторую строку. Одна плавашка высотой в
-   строку 11px ниже строки заголовка, поэтому строка списка от неё не растёт. */
+/* Кнопки строки — один плавающий блок высотой в строку 11px, поэтому строка списка от
+   них не растёт. Размер сессии жил тут же и снят: он предупреждал о долгой загрузке,
+   которой нет. */
 #list .meta { float:right; margin-left:8px; opacity:.5; font-size:11px; white-space:nowrap }
 /* Класс `rename`, а не `edit`: `.edit` — это textarea редактора файла, и карандаш
    молча забирал её рамку с отступами по 8px. В списке это выглядело кружком вокруг
    значка, а строка вырастала на эти же 8px сверху и снизу. */
-#list .meta .rename { font-size:13px; padding:0 2px; cursor:pointer }
-#list .meta .rename:hover { opacity:1 }
+/* Цель клика — 25px, а не размер значка: в 13px не попасть ни пальцем, ни мышью.
+   Отрицательный отступ по вертикали гасит вклад в высоту строки, иначе список и дерево
+   разъезжаются в лестницу из-за кнопки, которой в обычной строке даже не видно. */
+#list .meta .rename, #list .meta .rm, #tree .rm {
+  display:inline-block; width:25px; height:25px; line-height:25px; text-align:center;
+  font-size:14px; padding:0; margin:-3px 0; cursor:pointer }
+#tree .rm { float:right; margin:-3px 0 -3px 4px }
+/* Кнопки строки прячутся до наведения, но только там, где наведение есть. На тачскрине
+   его нет вовсе: скрытая кнопка там недостижима навсегда, поэтому видна сразу. */
+@media (hover: hover) {
+  #list .rename, #list .rm, #tree .rm { opacity:0 }
+  #list button:hover .rename, #list button:hover .rm, #tree button:hover .rm { opacity:.7 }
+}
+#list .rename:hover, #list .rm:hover, #tree .rm:hover { opacity:1 }
+#list .rm:hover, #tree .rm:hover { color:#e55 }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
@@ -398,7 +411,7 @@ body:not(.folded) #empty .list { display:none }
      `zoomed`, он всплывал и свёрнутым, с ним заодно. */
   #panes:has(> section.zoomed) > section { display:none }
   #panes:has(> section.zoomed) > section.zoomed { display:flex }
-  #tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
+  header .tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
   .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
   form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
   .h { display:none }
@@ -414,12 +427,8 @@ body:not(.folded) #empty .list { display:none }
 <aside>
   <nav id=peers></nav>
   <select id=proj></select>
-  <button class=new id=new>+ новая сессия</button>
-  <button class=new id=tile title="расставить открытые окна поровну, без перекрытий">
-    разложить окна</button>
+  <button class=new id=new>+ сессия</button>
   <input id=find type=search placeholder="поиск по сессиям проекта">
-  <button class=new id=purge title="удалить старые сессии во всех проектах">
-    очистить старше 2 дней</button>
   <div id=list></div>
   <div id=plan hidden></div>
 </aside>
@@ -615,15 +624,20 @@ async function loadPeers() {
 async function loadProjects() {
   const ps = await get('api/projects');
   $('proj').innerHTML = ps.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('');
-  if (panes.length) $('proj').value = panes[panes.length - 1].project || ps[0]?.path;
+  // Выбор переживает F5: сохранённый проект, если он ещё в списке, иначе проект последней
+  // панели, иначе первый. Раньше без панелей выпадашка молча съезжала на первый проект.
+  const saved = localStorage.getItem('proj');
+  $('proj').value = ps.some(p => p.path === saved) ? saved
+                  : (panes.length && panes[panes.length - 1].project) || ps[0]?.path || '';
   if (ps.length) loadSessions();
 }
 
 function fillList(project, rows, empty) {
   $('list').innerHTML = rows.map(s =>
     `<button data-id="${s.id}" data-title="${esc(s.title)}">` +
-    `<span class=meta>${s.size ? esc(s.size) + ' ' : ''}` +
-      `<span class=rename title="переименовать">\u270e\ufe0e</span></span>` +
+    `<span class=meta>` +
+      `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
+      `<span class=rm title="удалить сессию">\u2715</span></span>` +
     `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
     (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
     `<div style="padding:10px;opacity:.5">${empty}</div>`;
@@ -639,6 +653,20 @@ function fillList(project, rows, empty) {
       const name = prompt('имя сессии, пустое снимет', b.dataset.title);
       if (name === null) return;
       await post('api/name', { session: b.dataset.id, name });
+      runFind();
+    };
+    // Удаление необратимо, поэтому спрашиваем именем сессии, а не «вы уверены?»:
+    // строки в списке похожи, и промах мышью по соседней стоил бы транскрипта.
+    // Панели этой сессии закрываем — читать им больше нечего.
+    b.querySelector('.rm').onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('удалить сессию «' + b.dataset.title.slice(0, 60) + '»? это навсегда'))
+        return;
+      const r = await fetch('api/drop', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project, session: b.dataset.id }) });
+      if (!r.ok) return alert((await r.text()) || ('не удалить: ' + r.status));
+      panes.filter(x => x.session === b.dataset.id).forEach(closePane);
       runFind();
     };
   }
@@ -951,6 +979,7 @@ function drawPane(p) {
     <header>
       <span class=who></span>
       <span class=timer></span>
+      <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
       <button class=max title="во весь экран"></button>
       <button class=foldbar title="свернуть окно в заголовок">▾</button>
       <button class=close title="закрыть панель">×</button>
@@ -1045,6 +1074,10 @@ function wirePane(p, el) {
   // лежать в сетке, а Safari оставляет его в слое от прежнего `position:fixed` — оно
   // накрывает сайдбар и соседей. Развернуть свёрнутое значит показать его целиком,
   // свернуть развёрнутое — вернуть в сетку.
+  // Раскладка глобальная: кнопка в любой шапке кладёт в сетку все окна разом. Жила в
+  // сайдбаре и переехала сюда 2026-09-21 — это действие над окнами, и место ему среди
+  // кнопок окна, а не среди списка сессий.
+  el.querySelector('header .tile').onclick = () => { retile(); save(); };
   const max = el.querySelector('header .max');
   max.onclick = () => {
     if (p.roll) { p.roll = false; drawFold(); }
@@ -1084,6 +1117,7 @@ function drawFile(p) {
   el.innerHTML = `
     <header>
       <span class=who></span>
+      <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
       <button class=max title="во весь экран"></button>
       <button class=foldbar title="свернуть окно в заголовок">▾</button>
       <button class=close title="закрыть окно">×</button>
@@ -1211,11 +1245,25 @@ function drawCrumb(path) {
 function drawTree(entries) {
   $('tree').innerHTML = entries.map(e =>
     `<button class="${e.dir ? 'dir' : ''}" data-path="${esc(e.path)}" data-dir="${e.dir ? 1 : ''}">`
+    + `<span class=rm title="удалить">\u2715</span>`
     + esc(e.name) + (e.dir ? '/' : `<span class=size>${kb(e.size)}</span>`) + '</button>').join('')
     || '<div class=none>пусто</div>';
-  for (const b of $('tree').querySelectorAll('button'))
+  for (const b of $('tree').querySelectorAll('button')) {
     b.onclick = () => b.dataset.dir ? openDir(b.dataset.path).catch(treeFail)
                                     : addPane({ pane: uid(), file: b.dataset.path });
+    // Крестик внутри той же кнопки — всплытие обрываем, иначе удаление заодно открывало
+    // бы файл. Непустую папку отобьёт сервер: рекурсии у него нет.
+    b.querySelector('.rm').onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm('удалить ' + b.dataset.path + '? это навсегда')) return;
+      const r = await fetch('api/rm', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: b.dataset.path }) });
+      if (!r.ok) return alert((await r.text()) || ('не удалить: ' + r.status));
+      panes.filter(x => x.file === b.dataset.path).forEach(closePane);
+      openDir(atDir).catch(treeFail);
+    };
+  }
 }
 // --- files:end ---
 
@@ -1885,23 +1933,6 @@ async function tick() {
   if (++ticks % 5 === 0 && !$('find').value.trim()) loadSessions().catch(() => {});
 }
 
-// Удаление необратимо, поэтому две ступени: сначала сервер говорит, что уйдёт, и
-// только подтверждение запускает. Порог фиксированный — число в кнопке и есть договор.
-$('purge').onclick = async () => {
-  const days = 2;
-  let plan;
-  try { plan = await get('api/purge?days=' + days); } catch (e) { return; }
-  if (!plan.sessions.length) return alert(`нет сессий старше ${days} дней`);
-  const mb = (plan.bytes / 1048576).toFixed(1);
-  const head = plan.sessions.slice(0, 12).map(s => `${s.ago} · ${s.title.slice(0, 44)}`);
-  const more = plan.sessions.length > 12 ? `\n…и ещё ${plan.sessions.length - 12}` : '';
-  if (!confirm(`Удалить безвозвратно ${plan.sessions.length} сессий (${mb} МБ)?\n\n` +
-               head.join('\n') + more)) return;
-  const killed = await post('api/purge', { days });
-  alert(`удалено ${killed.sessions} сессий, ${(killed.bytes / 1048576).toFixed(1)} МБ`);
-  loadSessions();
-};
-
 // Сайдбар: состояние переживает перезагрузку, но записывается только по клику. Первый
 // заход решается шириной экрана — на телефоне 280 пикселей из 390 забирал список сессий,
 // и на панель оставалось меньше трети. Записывай мы и этот выбор, один заход с телефона
@@ -1965,9 +1996,9 @@ $('rfold').onclick = () => {
   localStorage.setItem('rfolded', on ? '1' : '0');
 };
 // Создание в открытом каталоге: файл открывается редактором, папка открывается в
-// дереве — в обоих случаях оказываешься там, где только что создал. Удаления и
-// переименования нет: это к claude в соседней панели, там об этом можно сказать
-// словами, а необратимое действие требует разговора, а не кнопки.
+// дереве — в обоих случаях оказываешься там, где только что создал. Удаляет крестик на
+// строке дерева, но только файл и пустую папку; переименование по-прежнему к claude в
+// соседней панели.
 const create = (folder) => async () => {
   const name = prompt((folder ? 'имя папки в ' : 'имя файла в ') + (atDir || '?'));
   if (!name || !name.trim()) return;
@@ -1991,11 +2022,10 @@ $('root').onchange = () => {
 };
 
 $('reload').onclick = () => location.reload();
-$('proj').onchange = () => { $('find').value = ''; loadSessions(); };
+$('proj').onchange = () => { localStorage.setItem('proj', $('proj').value); $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
 $('empty').querySelector('.list').onclick = () => $('fold').click();
 $('empty').querySelector('.fresh').onclick = () => $('new').click();
-$('tile').onclick = () => { retile(); save(); };
 $('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadModels();

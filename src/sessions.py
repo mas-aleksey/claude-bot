@@ -116,13 +116,24 @@ def stale(older_than: float) -> list[dict]:
 
 
 def purge(older_than: float) -> dict:
-    """Удалить старые сессии со всеми следами. Возвращает отчёт о том, что снесено.
+    """Удалить старые сессии со всеми следами. Возвращает отчёт о том, что снесено."""
+    return drop(stale(older_than), older_than)
+
+
+def drop(doomed: list[dict], orphans_older: float = float("inf")) -> dict:
+    """Снести перечисленные сессии со всеми следами. Строки — как отдаёт `stale`:
+    нужны `id`, `project` (слаг каталога) и `bytes`.
+
+    Отдельно от `stale`, потому что вызывающих два: кнопка «очистить старше N дней»
+    отбирает по возрасту, кнопка на строке списка — одну выбранную. Удаление следов у
+    них общее до буквы, и разводить его по двум функциям значило бы забыть в одной из
+    них `history.jsonl`.
 
     Осиротевшие `session-env` подчищаются тем же проходом, но только если сами старше
-    порога: у только что начатой сессии транскрипта может ещё не быть, и без этой
-    оговорки мы снесли бы окружение живого запуска.
+    `orphans_older`: у только что начатой сессии транскрипта может ещё не быть, и без
+    этой оговорки мы снесли бы окружение живого запуска. Поштучное удаление чужих
+    сирот не касается вовсе — отсюда бесконечность по умолчанию.
     """
-    doomed = stale(older_than)
     ids = {r["id"] for r in doomed}
     freed = sum(r["bytes"] for r in doomed)
     # `ids` в отчёте не для красоты: по ним вызывающий снимает указатели в store, а
@@ -145,7 +156,7 @@ def purge(older_than: float) -> dict:
             continue
         if path.name in ids:
             killed["env"] += 1
-        elif path.name not in alive and now - path.stat().st_mtime > older_than:
+        elif path.name not in alive and now - path.stat().st_mtime > orphans_older:
             killed["orphans"] += 1
         else:
             continue
@@ -302,9 +313,9 @@ def days(raw) -> float:
         return DEFAULT_DAYS
 
 
-async def run_purge(older: float) -> dict:
+async def run_drop(doomed: list[dict], orphans_older: float = float("inf")) -> dict:
     """Удаление файлов плюс снятие указателей. Одной функцией, потому что вызывают из
-    двух мест: кнопка в браузере и /purge в Telegram.
+    трёх мест: кнопка «очистить», кнопка на строке сессии и /purge в Telegram.
 
     Файлы сносим в потоке, а `store` трогаем на event loop: соединение sqlite создано
     в главном потоке, и обращение к нему из другого — ProgrammingError.
@@ -313,6 +324,10 @@ async def run_purge(older: float) -> dict:
     Порядок именно такой — если удаление упадёт на середине, лишний указатель
     безобиднее потерянного при живом транскрипте.
     """
-    killed = await asyncio.to_thread(purge, older)
+    killed = await asyncio.to_thread(drop, doomed, orphans_older)
     killed["pointers"] = store.forget_sessions(killed.pop("ids"))
     return killed
+
+
+async def run_purge(older: float) -> dict:
+    return await run_drop(await asyncio.to_thread(stale, older), older)

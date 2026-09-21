@@ -180,8 +180,8 @@ async def api_new(req: web.Request) -> web.Response:
     расходятся только `touch` и `mkdir` — держать это двумя роутами значило бы
     переписать проверку пути дважды.
 
-    Удаления и переименования нет: это к claude в соседней панели, там об этом можно
-    сказать словами, а необратимое действие требует разговора, а не кнопки.
+    Переименования нет: это к claude в соседней панели. Удаление есть, но узкое —
+    см. `api_rm`.
 
     Владельца берём у каталога. Бот работает root-ом, и без этого новый файл в
     `/projects` человек на хосте не смог бы поправить — та же грабля, из-за которой
@@ -209,6 +209,34 @@ async def api_new(req: web.Request) -> web.Response:
     if not folder:
         out["version"] = _version(path.stat())
     return web.json_response(out)
+
+
+async def api_rm(req: web.Request) -> web.Response:
+    """Удалить файл или пустой каталог.
+
+    Рекурсии нет намеренно: кнопка закрывает случай «снёс то, что сам же и создал», а
+    снести дерево одним промахом мышью она не должна. Непустой каталог — это к claude в
+    соседней панели, там можно сказать словами.
+
+    Сам корень не удаляется: список корней задан в окружении, и панель без него
+    показывает пустое дерево без способа вернуть его из браузера.
+
+    Путь резолвится в `inside`, поэтому удаляется цель симлинка, а не сам симлинк.
+    Скиллам это не грозит — каталог скилла не пуст, и `rmdir` по нему откажет.
+    """
+    path = inside((await req.json()).get("path") or "")
+    if path in [r.resolve() for r in roots()]:
+        raise web.HTTPBadRequest(text="корень дерева не удаляется")
+    if not path.exists():
+        raise web.HTTPBadRequest(text="уже нет")
+    if path.is_dir() and any(path.iterdir()):
+        raise web.HTTPBadRequest(text="папка не пуста")
+    try:
+        await asyncio.to_thread(path.rmdir if path.is_dir() else path.unlink)
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"не удалить: {err}") from err
+    log.info("rm: %s", path)
+    return web.json_response({"path": str(path)})
 
 
 def _filename(raw: str | None) -> str:

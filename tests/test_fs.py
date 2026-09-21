@@ -213,3 +213,41 @@ async def test_new_folder_refuses_an_occupied_name(client, roots):
     assert r.status == 400
     assert "уже есть" in await r.text()
     assert (demo / "занято").is_file()   # не подменили файл папкой
+
+
+async def test_rm_takes_a_file_and_an_empty_dir(client, roots):
+    demo, _ = roots
+    (demo / "мусор.txt").write_text("x")
+    (demo / "пусто").mkdir()
+
+    assert (await client.post("/api/rm", json={"path": str(demo / "мусор.txt")})).status == 200
+    assert (await client.post("/api/rm", json={"path": str(demo / "пусто")})).status == 200
+    assert not (demo / "мусор.txt").exists()
+    assert not (demo / "пусто").exists()
+
+
+async def test_rm_refuses_a_dir_with_anything_inside(client, roots):
+    """Рекурсии у кнопки нет намеренно: промах мышью не должен стоить дерева."""
+    demo, _ = roots
+    (demo / "проект").mkdir()
+    (demo / "проект" / "main.py").write_text("print(1)")
+
+    r = await client.post("/api/rm", json={"path": str(demo / "проект")})
+    assert r.status == 400
+    assert "не пуста" in await r.text()
+    assert (demo / "проект" / "main.py").exists()
+
+
+async def test_rm_refuses_the_root_itself(client, roots):
+    demo, _ = roots
+    r = await client.post("/api/rm", json={"path": str(demo.parent)})
+    assert r.status == 400
+    assert demo.parent.is_dir()
+
+
+async def test_rm_outside_roots_is_refused(client, tmp_path):
+    посторонний = tmp_path / "чужое.txt"
+    посторонний.write_text("x")
+    r = await client.post("/api/rm", json={"path": str(посторонний)})
+    assert r.status == 400
+    assert посторонний.exists()

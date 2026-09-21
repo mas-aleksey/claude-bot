@@ -341,9 +341,9 @@ async def test_search_without_query_is_empty(client, tmp_path):
     assert await r.json() == []
 
 
-async def test_session_list_shows_size_only_for_heavy(client, tmp_path, monkeypatch):
-    """Цифра у каждой сессии — шум: у большинства она одинаково мелкая. Показываем
-    только те, что открываются заметно дольше."""
+async def test_session_list_has_no_size_field(client, tmp_path, monkeypatch):
+    """Размер сессии в строке не показывается: он предупреждал о долгой загрузке, а её
+    нет — разбор 4 МБ транскрипта занимает 35 мс."""
     cwd = tmp_path / "proj"
     d = tmp_path / "transcripts" / sessions.slug(str(cwd))
     d.mkdir(parents=True)
@@ -353,10 +353,9 @@ async def test_session_list_shows_size_only_for_heavy(client, tmp_path, monkeypa
         line + "#" * (2 << 20))
     monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "transcripts")
 
-    rows = {r["id"][:8]: r["size"] for r in
-            await (await client.get("/api/sessions", params={"project": str(cwd)})).json()}
-    assert rows["aaaaaaaa"] == ""
-    assert rows["bbbbbbbb"].endswith("МБ")
+    rows = await (await client.get("/api/sessions", params={"project": str(cwd)})).json()
+    assert len(rows) == 2
+    assert all("size" not in r for r in rows)
 
 
 @pytest.fixture
@@ -375,22 +374,14 @@ def stale_home(tmp_path, monkeypatch):
     return tmp_path
 
 
-async def test_purge_preview_does_not_delete(client, stale_home):
-    r = await client.get("/api/purge", params={"days": "2"})
-    plan = await r.json()
-    assert [s["id"][:8] for s in plan["sessions"]] == ["aaaaaaaa"]
-    assert plan["bytes"] > 0
-    # Файл на месте: GET обязан быть безопасным.
-    assert (stale_home / "projects" / "-projects-proj" /
-            "aaaaaaaa-1111-4111-8111-111111111111.jsonl").exists()
-
-
-async def test_purge_post_deletes_and_clears_pointers(client, stale_home, monkeypatch):
+async def test_purge_deletes_the_old_and_clears_pointers(stale_home, monkeypatch):
+    """`/purge` в Telegram — единственный, кто зовёт эту дорогу: кнопка в панели и её
+    ручка сняты 2026-09-21, сессии удаляются по одной крестиком в строке."""
     monkeypatch.setattr(store, "DB_PATH", str(stale_home / "bot.db"))
     monkeypatch.setattr(store, "_local", threading.local())
     store.save_session("0", "/projects/proj", "aaaaaaaa-1111-4111-8111-111111111111")
 
-    killed = await (await client.post("/api/purge", json={"days": 2})).json()
+    killed = await sessions.run_purge(2 * 86400)
     assert killed["sessions"] == 1
     assert killed["pointers"] == 1
     assert store.session_of("0", "/projects/proj") is None

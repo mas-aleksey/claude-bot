@@ -6,8 +6,11 @@ import os
 import time
 
 import pytest
+from aiohttp.test_utils import TestClient, TestServer
 
+import runner
 import sessions
+import webui
 
 DAY = 86400
 SID_OLD = "aaaaaaaa-1111-4111-8111-111111111111"
@@ -148,3 +151,44 @@ def test_subagents_are_not_sessions_and_go_with_the_parent(home, tmp_path):
     assert not agent.exists(), "субагент пережил удаление родителя"
     assert not (proj / SID_OLD).exists()
     assert (proj / f"{SID_NEW}.jsonl").exists(), "снесли свежую сессию"
+
+
+@pytest.fixture
+async def client(home):
+    c = TestClient(TestServer(webui.build()))
+    await c.start_server()
+    yield c
+    await c.close()
+
+
+PROJECT = "/projects/rp"   # слаг этого пути — каталог `-projects-rp` в фикстуре
+
+
+async def test_drop_takes_the_named_session_only(client, home):
+    """Кнопка на строке списка сносит одну сессию со всеми следами. Молодая сессия и
+    чужая сирота остаются: у поштучного удаления порога возраста нет вовсе."""
+    r = await client.post("/api/drop", json={"project": PROJECT, "session": SID_OLD})
+    assert r.status == 200
+
+    proj = home / "projects" / "-projects-rp"
+    assert not (proj / f"{SID_OLD}.jsonl").exists()
+    assert (proj / f"{SID_NEW}.jsonl").exists()
+    assert not (home / "session-env" / SID_OLD).exists()
+    assert not (home / "file-history" / SID_OLD).exists()
+    assert SID_OLD not in (home / "history.jsonl").read_text()
+    assert (home / "session-env" / SID_GONE).exists()   # старая сирота, но не наша
+
+
+async def test_drop_refuses_a_session_under_a_running_prompt(client, home, monkeypatch):
+    """Единственная защита живой сессии тут — `runner.active`: в `purge` её роль играет
+    mtime транскрипта, а здесь порога возраста нет."""
+    monkeypatch.setattr(runner, "active", lambda: [{"scope": "web:1", "secs": 1,
+                                                    "session": SID_OLD}])
+    r = await client.post("/api/drop", json={"project": PROJECT, "session": SID_OLD})
+    assert r.status == 409
+    assert (home / "projects" / "-projects-rp" / f"{SID_OLD}.jsonl").exists()
+
+
+async def test_drop_of_an_unknown_session_is_404(client):
+    r = await client.post("/api/drop", json={"project": PROJECT, "session": SID_GONE})
+    assert r.status == 404

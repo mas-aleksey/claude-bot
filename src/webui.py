@@ -171,10 +171,6 @@ def _int(value: str | None) -> int:
 MODEL_RE = re.compile(r"[a-zA-Z0-9._-]{2,64}\Z")
 
 
-# Ниже этого размера цифра в списке — шум: у большинства сессий она одинаково мелкая.
-# Выше — предупреждение, что панель будет открываться заметно дольше.
-HEAVY = 1 << 20
-
 
 def _path(project: str, session_id: str) -> Path:
     """Путь к транскрипту с клиентскими параметрами. `transcript` про HTTP не знает и
@@ -183,15 +179,6 @@ def _path(project: str, session_id: str) -> Path:
         return transcript.path_of(project, session_id)
     except ValueError as err:
         raise web.HTTPBadRequest(text=str(err)) from err
-
-
-def _heavy(project: str, session_id: str) -> str:
-    """Размер транскрипта, но только если он большой. Пустая строка — не показывать."""
-    try:
-        size = transcript.path_of(project, session_id).stat().st_size
-    except (OSError, ValueError):
-        return ""
-    return f"{size / HEAVY:.1f} МБ" if size >= HEAVY else ""
 
 
 def _project(raw: str) -> str:
@@ -320,8 +307,9 @@ async def api_sessions(req: web.Request) -> web.Response:
     # бывает на десятки мегабайт — в общем event loop это заморозило бы long-poll.
     project = req.query.get("project", "")
     found = await asyncio.to_thread(sessions.recent, project, 30)
-    return web.json_response([_row(sid, title, age, size=_heavy(project, sid))
-                              for sid, title, age in found])
+    # Размер сессии в строке не показываем: ставили его как предупреждение «откроется
+    # дольше», а разбор 4 МБ занимает 35 мс — предупреждать не о чем. Снят 2026-09-21.
+    return web.json_response([_row(sid, title, age) for sid, title, age in found])
 
 
 async def api_name(req: web.Request) -> web.Response:
@@ -404,19 +392,28 @@ async def api_search(req: web.Request) -> web.Response:
                               for sid, title, age, snip in found])
 
 
-async def api_purge(req: web.Request) -> web.Response:
-    """GET — предпросмотр, POST — удаление. Разными методами не ради красоты:
-    удаление необратимо, и промах адресной строкой не должен его запускать."""
-    days = sessions.days(req.query.get("days") if req.method == "GET"
-                 else (await req.json()).get("days"))
-    older = days * 86400
-    if req.method == "GET":
-        doomed = await asyncio.to_thread(sessions.stale, older)
-        return web.json_response({"days": days, "sessions": doomed,
-                                  "bytes": sum(r["bytes"] for r in doomed)})
+async def api_drop(req: web.Request) -> web.Response:
+    """Удалить одну сессию со всеми следами — кнопка в строке списка.
 
-    killed = await sessions.run_purge(older)
-    log.info("purge: старше %.1f дн, снесено %s", days, killed)
+    Только POST и только с id, прошедшим `SESSION_RE`: из него собирается путь к файлу,
+    который тут же удаляется.
+
+    Живую сессию отбиваем 409. В `purge` от неё защищает mtime транскрипта — работающая
+    сессия под порог возраста не попадает, — а здесь порога нет вовсе, поэтому проверка
+    своя: `runner.active()` знает сессию каждого идущего прогона, чей бы он ни был.
+    """
+    data = await req.json()
+    sid = data.get("session") or ""
+    if not transcript.SESSION_RE.match(sid):
+        return web.json_response({"error": "bad session"}, status=400)
+    path = _path(data.get("project", ""), sid)
+    if not path.is_file():
+        return web.json_response({"error": "нет такой сессии"}, status=404)
+    if any(r["session"] == sid for r in runner.active()):
+        return web.json_response({"error": "над сессией идёт прогон"}, status=409)
+    killed = await sessions.run_drop([{"id": sid, "project": path.parent.name,
+                                       "bytes": path.stat().st_size}])
+    log.info("drop: сессия %s, снесено %s", sid, killed)
     return web.json_response(killed)
 
 
@@ -503,8 +500,8 @@ def build() -> web.Application:
         web.get("/api/file", files.api_file),
         web.post("/api/file", files.api_save),
         web.post("/api/new", files.api_new),
-        web.get("/api/purge", api_purge),
-        web.post("/api/purge", api_purge),
+        web.post("/api/rm", files.api_rm),
+        web.post("/api/drop", api_drop),
         web.get("/api/stream", api_stream),
         web.get("/api/status", api_status),
         web.post("/api/prompt", api_prompt),
