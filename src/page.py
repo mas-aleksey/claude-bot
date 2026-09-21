@@ -113,8 +113,12 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill.warn { background:#e90 }
 #plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
-#list .size { float:right; opacity:.5; font-size:11px }
-#list .edit { float:right; margin-left:6px; opacity:.35 }
+#list .size { float:right; opacity:.5; font-size:11px; margin-right:16px }
+/* Карандаш вне потока: плавающий отъедал ширину у заголовка, тот переносился лишней
+   строкой, и строка списка становилась выше. Место под него держит отступ у `.size` —
+   первая строка до угла не достаёт, а ниже карандаша уже нет. */
+#list button { position:relative }
+#list .edit { position:absolute; right:8px; top:7px; opacity:.4; font-size:12px }
 #list .edit:hover { opacity:1 }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
