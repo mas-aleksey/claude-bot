@@ -113,13 +113,15 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill.warn { background:#e90 }
 #plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
-#list .size { float:right; opacity:.5; font-size:11px; margin-right:16px }
-/* Карандаш вне потока: плавающий отъедал ширину у заголовка, тот переносился лишней
-   строкой, и строка списка становилась выше. Место под него держит отступ у `.size` —
-   первая строка до угла не достаёт, а ниже карандаша уже нет. */
-#list button { position:relative }
-#list .edit { position:absolute; right:8px; top:7px; opacity:.4; font-size:12px }
-#list .edit:hover { opacity:1 }
+/* Размер и карандаш — один плавающий блок, а не два. Порознь они спорили за правый
+   угол: карандаш поверх размера, размер на вторую строку. Одна плавашка высотой в
+   строку 11px ниже строки заголовка, поэтому строка списка от неё не растёт. */
+#list .meta { float:right; margin-left:8px; opacity:.5; font-size:11px; white-space:nowrap }
+/* Класс `rename`, а не `edit`: `.edit` — это textarea редактора файла, и карандаш
+   молча забирал её рамку с отступами по 8px. В списке это выглядело кружком вокруг
+   значка, а строка вырастала на эти же 8px сверху и снизу. */
+#list .meta .rename { font-size:13px; padding:0 2px; cursor:pointer }
+#list .meta .rename:hover { opacity:1 }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
@@ -620,9 +622,9 @@ async function loadProjects() {
 function fillList(project, rows, empty) {
   $('list').innerHTML = rows.map(s =>
     `<button data-id="${s.id}" data-title="${esc(s.title)}">` +
-    `<span class=edit title="переименовать">\u270e</span>` +
+    `<span class=meta>${s.size ? esc(s.size) + ' ' : ''}` +
+      `<span class=rename title="переименовать">\u270e\ufe0e</span></span>` +
     `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
-    (s.size ? `<span class=size>${esc(s.size)}</span>` : '') +
     (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
     `<div style="padding:10px;opacity:.5">${empty}</div>`;
   for (const b of $('list').querySelectorAll('button')) {
@@ -632,7 +634,7 @@ function fillList(project, rows, empty) {
     // заодно открывало бы сессию в новой панели. Диалог ввода браузерный — своей формы
     // ради одной строки текста тут не надо. Обновляем через `runFind`, а не
     // `loadSessions`: он сам знает, список сейчас на экране или результаты поиска.
-    b.querySelector('.edit').onclick = async (e) => {
+    b.querySelector('.rename').onclick = async (e) => {
       e.stopPropagation();
       const name = prompt('имя сессии, пустое снимет', b.dataset.title);
       if (name === null) return;
