@@ -16,12 +16,13 @@ import webui
 
 @pytest.fixture
 def roots(tmp_path, monkeypatch):
-    """Два корня: проект и конфиг. Ровно то, что видит панель в песочнице."""
+    """Два корня: `/projects` целиком и конфиг. Ровно то, что видит панель в песочнице —
+    проект отдельным корнем не стоит, в него заходят из дерева."""
     projects, config = tmp_path / "projects", tmp_path / "config"
     (projects / "demo").mkdir(parents=True)
     config.mkdir()
     monkeypatch.setattr(sessions, "PROJECTS_DIR", projects)
-    monkeypatch.setattr(files, "FILE_ROOTS", [config, tmp_path / "нет-такого"])
+    monkeypatch.setattr(files, "FILE_ROOTS", [projects, config, tmp_path / "нет-такого"])
     return projects / "demo", config
 
 
@@ -35,7 +36,18 @@ async def client(roots):
 
 def test_roots_skip_missing_paths(roots):
     demo, config = roots
-    assert [str(p) for p in files.roots()] == [str(demo), str(config)]
+    assert [str(p) for p in files.roots()] == [str(demo.parent), str(config)]
+
+
+async def test_projects_root_opens_itself(client, roots):
+    """Сам `/projects` открывается и перечисляет проекты. Раньше он отдавал «путь вне
+    корней»: корнями были проекты по отдельности, и родитель в список не попадал."""
+    demo, _ = roots
+    r = await client.get(f"/api/files?path={demo.parent}")
+    assert r.status == 200
+    listing = await r.json()
+    assert [e["name"] for e in listing["entries"]] == ["demo"]
+    assert listing["entries"][0]["dir"] is True
 
 
 def test_path_outside_roots_is_refused(roots):
