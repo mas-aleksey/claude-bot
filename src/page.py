@@ -114,6 +114,8 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
 #list .size { float:right; opacity:.5; font-size:11px }
+#list .edit { float:right; margin-left:6px; opacity:.35 }
+#list .edit:hover { opacity:1 }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
@@ -489,7 +491,7 @@ function offline() {
 // --- dead:end ---
 const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body) }).then(payload);
-const esc = (s) => String(s).replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
 // Оттенки для панелей: шесть штук по кругу, светлота и насыщенность заданы в CSS.
@@ -614,6 +616,7 @@ async function loadProjects() {
 function fillList(project, rows, empty) {
   $('list').innerHTML = rows.map(s =>
     `<button data-id="${s.id}" data-title="${esc(s.title)}">` +
+    `<span class=edit title="переименовать">\u270e</span>` +
     `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
     (s.size ? `<span class=size>${esc(s.size)}</span>` : '') +
     (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
@@ -621,6 +624,17 @@ function fillList(project, rows, empty) {
   for (const b of $('list').querySelectorAll('button')) {
     b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0,
                                 title: b.dataset.title });
+    // Карандаш живёт внутри кнопки, поэтому всплытие обрываем: иначе переименование
+    // заодно открывало бы сессию в новой панели. Диалог ввода браузерный — своей формы
+    // ради одной строки текста тут не надо. Обновляем через `runFind`, а не
+    // `loadSessions`: он сам знает, список сейчас на экране или результаты поиска.
+    b.querySelector('.edit').onclick = async (e) => {
+      e.stopPropagation();
+      const name = prompt('имя сессии, пустое снимет', b.dataset.title);
+      if (name === null) return;
+      await post('api/name', { session: b.dataset.id, name });
+      runFind();
+    };
   }
   markList();
   syncTitles();

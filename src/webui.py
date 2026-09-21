@@ -324,6 +324,20 @@ async def api_sessions(req: web.Request) -> web.Response:
                               for sid, title, age in found])
 
 
+async def api_name(req: web.Request) -> web.Response:
+    """Имя сессии из панели — то же, что `/name` в Telegram, тот же ключ в `state`.
+
+    Id проверяем тем же `SESSION_RE`, что и запуск: из него собирается ключ в базе, и
+    принимать туда произвольную строку от браузера незачем. Пустое имя снимает ключ.
+    """
+    data = await req.json()
+    sid = data.get("session") or ""
+    if not transcript.SESSION_RE.match(sid):
+        return web.json_response({"error": "bad session"}, status=400)
+    store.put(f"name:{sid}", (data.get("name") or "").strip() or None)
+    return web.json_response({"ok": True})
+
+
 async def api_stream(req: web.Request) -> web.StreamResponse:
     """Хвост транскрипта, пока панель открыта: сервер сам говорит о новых строках.
 
@@ -482,6 +496,7 @@ def build() -> web.Application:
         web.get("/api/projects", api_projects),
         web.get("/api/skills", api_skills),
         web.get("/api/sessions", api_sessions),
+        web.post("/api/name", api_name),
         web.get("/api/search", api_search),
         web.get("/api/roots", files.api_roots),
         web.get("/api/files", files.api_files),

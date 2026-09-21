@@ -627,3 +627,26 @@ async def test_normal_answer_does_not_ride_the_local_channel(client, monkeypatch
 
     got = await (await client.get("/api/status")).json()
     assert got["local"] == {}
+
+
+async def test_session_name_from_panel(client, tmp_path):
+    """Имя из панели видно в списке, пустое его снимает, чужой id не принимается.
+
+    Список сервер собирает в потоке, а имя лежит в sqlite — заодно проверяем, что
+    чтение из рабочего потока не падает на чужом соединении.
+    """
+    proj = str(tmp_path / "proj")
+    d = tmp_path / "transcripts" / sessions.slug(proj)
+    d.mkdir(parents=True)
+    sid = "11111111-2222-3333-4444-555555555555"
+    (d / f"{sid}.jsonl").write_text(json.dumps({"type": "last-prompt", "lastPrompt": "ну ещё раз"}))
+    url = "/api/sessions?project=" + proj
+
+    assert (await client.post("/api/name", json={"session": sid, "name": "разбор логов"})).status == 200
+    assert [r["title"] for r in await (await client.get(url)).json()] == ["разбор логов"]
+
+    await client.post("/api/name", json={"session": sid, "name": "  "})
+    assert [r["title"] for r in await (await client.get(url)).json()] == ["ну ещё раз"]
+
+    bad = await client.post("/api/name", json={"session": "../../etc/passwd", "name": "x"})
+    assert bad.status == 400

@@ -90,6 +90,10 @@ def forget_sessions(ids: list[str]) -> int:
         return 0
     marks = ",".join("?" * len(ids))
     cur = conn().execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", tuple(ids))
+    # Имя лежит в `state` и по транскрипту уже не находится: не снять его здесь — значит
+    # копить ключи мёртвых сессий вечно, потому что искать их потом будет не по чему.
+    conn().execute(f"DELETE FROM state WHERE key IN ({marks})",
+                   tuple(f"name:{sid}" for sid in ids))
     return cur.rowcount
 
 

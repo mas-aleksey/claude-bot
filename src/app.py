@@ -92,6 +92,7 @@ HELP = [
     ("clone", "<git-url> [name] — склонировать репозиторий в проекты"),
     ("sessions", "последние сессии проекта — переключиться"),
     ("new", "сбросить сессию текущего проекта"),
+    ("name", "<текст> — назвать текущую сессию, без текста снять имя"),
     ("purge", "[дней] — удалить старые сессии; без yes только предпросмотр"),
     ("cancel", "убить активный запуск или прервать логин"),
     ("model", "[алиас|полный id] — показать или сменить модель"),
@@ -271,6 +272,24 @@ async def cmd_new(msg: Message) -> None:
     sc = scope(msg)
     store.drop_session(sc, cwd(sc))
     await msg.answer("сессия сброшена")
+
+
+@dp.message(Command("name"))
+async def cmd_name(msg: Message) -> None:
+    """Имя текущей сессии скоупа. Заголовок в списках считается из последнего промпта, и
+    выбрать по нему нужную строку невозможно — там «ну попробуй ещё раз».
+
+    Переименование — это тот же вызов: ключ на сессию один, второй `/name` его
+    перезаписывает. Пустой аргумент снимает имя и возвращает вычисленный заголовок.
+    """
+    sc = scope(msg)
+    sid = store.session_of(sc, cwd(sc))
+    if not sid:
+        await msg.answer("сессия новая — называть нечего")
+        return
+    text = (msg.text or "").partition(" ")[2].strip()
+    store.put(f"name:{sid}", text or None)
+    await msg.answer(f"имя: {text}" if text else "имя снято")
 
 
 @dp.message(Command("cancel"))

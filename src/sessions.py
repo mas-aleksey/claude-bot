@@ -39,8 +39,15 @@ def slug(cwd: str) -> str:
 
 
 def title(path: Path) -> str:
-    """Заголовок сессии. `ai-title` есть только у интерактивных запусков — у наших
-    headless (`-p`) его не пишут, поэтому основной источник `last-prompt`."""
+    """Заголовок сессии. Имя, заданное человеком, старше всего остального: его для того
+    и задают, что вычисленный заголовок нечитаем. Дальше `ai-title` — он есть только у
+    интерактивных запусков, у наших headless (`-p`) его не пишут, — и `last-prompt`.
+
+    Одно место на все списки: через `title` идут и `/sessions` в Telegram, и поиск, и
+    предпросмотр `/purge`, и панель в браузере. Цена имени — точечный запрос в sqlite
+    на строку списка."""
+    if name := store.get(f"name:{path.stem}"):
+        return name
     found = ""
     for line in path.read_text("utf-8", "replace").splitlines():
         if '"ai-title"' not in line and '"last-prompt"' not in line:

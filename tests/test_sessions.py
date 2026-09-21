@@ -4,6 +4,7 @@ import os
 import pytest
 
 import sessions
+import store
 
 
 @pytest.fixture
@@ -60,6 +61,26 @@ def test_title_prefers_ai_title_over_prompt(transcripts, tmp_path):
     d = transcripts / sessions.slug(str(cwd))
     write(d, "s", {"type": "last-prompt", "lastPrompt": "промпт"})
     assert sessions.title(d / "s.jsonl") == "промпт"
+
+
+def test_title_prefers_saved_name(transcripts, tmp_path):
+    # Имя, заданное человеком, старше вычисленного заголовка: за этим его и задают.
+    cwd = tmp_path / "p"
+    cwd.mkdir()
+    d = transcripts / sessions.slug(str(cwd))
+    write(d, "s", {"type": "last-prompt", "lastPrompt": "ну попробуй ещё раз"})
+    store.put("name:s", "разбор логов")
+    assert sessions.title(d / "s.jsonl") == "разбор логов"
+    store.put("name:s", None)  # снятое имя возвращает прежний заголовок
+    assert sessions.title(d / "s.jsonl") == "ну попробуй ещё раз"
+
+
+def test_forget_sessions_drops_name():
+    # Иначе ключи имён копятся вечно: транскрипта уже нет, и искать их будет не по чему.
+    store.save_session("0", "/projects/p", "sid-1")
+    store.put("name:sid-1", "разбор логов")
+    assert store.forget_sessions(["sid-1"]) == 1
+    assert store.get("name:sid-1") is None
 
 
 def msg(role, *blocks):
