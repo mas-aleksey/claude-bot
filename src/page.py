@@ -79,6 +79,8 @@ aside select, aside button.new, aside input { margin:8px 8px 0; padding:6px }
 aside .row { display:flex }
 aside .row button.new { flex:1 }
 aside .row button.new + button.new { margin-left:0 }
+/* Значок, а не кнопка во всю долю: ширина по содержимому, соседи делят остаток. */
+aside .row button.rescan { flex:none; width:32px; margin-left:8px }
 aside input { background:none; color:inherit; border:1px solid #8884; border-radius:4px;
   font:inherit }
 #list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
@@ -113,6 +115,20 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill.warn { background:#e90 }
 #plan .fill.hot { background:#e55 }
 #list .ago { opacity:.6; font-size:12px }
+/* Дерево проектов. Строка проекта — та же кнопка списка, только жирнее и со своими
+   плавашками справа: счётчик сессий и «+». Сессии под ней сдвинуты отступом, чтобы
+   вложенность читалась без линий и рамок. */
+#list .head { font-weight:600 }
+#list .head .caret { display:inline-block; width:12px; opacity:.6; font-size:11px }
+#list .head .n { float:right; opacity:.45; font-size:11px; margin-left:8px }
+#list .head .add { float:right; width:25px; height:25px; line-height:25px; text-align:center;
+  margin:-3px 0 -3px 4px; font-size:15px; opacity:.6; cursor:pointer }
+#list .head .add:hover { opacity:1 }
+#list .kids button { padding-left:24px }
+#list .none { padding:10px 10px 10px 24px; opacity:.5; font-size:12px }
+/* Подпись проекта у строки поиска: результаты приходят из разных веток, и без неё
+   непонятно, к какому проекту относится найденное. */
+#list .pj { display:block; font-size:11px; opacity:.5; margin-top:2px }
 /* Кнопки строки — один плавающий блок высотой в строку 11px, поэтому строка списка от
    них не растёт. Размер сессии жил тут же и снят: он предупреждал о долгой загрузке,
    которой нет. */
@@ -123,17 +139,27 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 /* Цель клика — 25px, а не размер значка: в 13px не попасть ни пальцем, ни мышью.
    Отрицательный отступ по вертикали гасит вклад в высоту строки, иначе список и дерево
    разъезжаются в лестницу из-за кнопки, которой в обычной строке даже не видно. */
-#list .meta .rename, #list .meta .rm, #tree .rm {
+#list .meta .rename, #list .meta .rm, #tree .rm, #tree .mv, #tree .cp {
   display:inline-block; width:25px; height:25px; line-height:25px; text-align:center;
   font-size:14px; padding:0; margin:-3px 0; cursor:pointer }
-#tree .rm { float:right; margin:-3px 0 -3px 4px }
+#tree .rm, #tree .mv, #tree .cp { float:right; margin:-3px 0 -3px 4px }
+/* Заголовок окна кликабелен: у сессии это переименование, у файла — путь в буфер. Та же
+   пара живёт кнопкой в начале строки — заголовок ещё и ручка переноса, и по нему жмут
+   не только ради этого. */
+header .who { cursor:pointer }
+header .ren { opacity:.6; padding:1px 4px }
+header .ren:hover { opacity:1 }
+header .dl { text-decoration:none; opacity:.7 }
+header .dl:hover { opacity:1 }
 /* Кнопки строки прячутся до наведения, но только там, где наведение есть. На тачскрине
    его нет вовсе: скрытая кнопка там недостижима навсегда, поэтому видна сразу. */
 @media (hover: hover) {
-  #list .rename, #list .rm, #tree .rm { opacity:0 }
-  #list button:hover .rename, #list button:hover .rm, #tree button:hover .rm { opacity:.7 }
+  #list .rename, #list .rm, #tree .rm, #tree .mv, #tree .cp { opacity:0 }
+  #list button:hover .rename, #list button:hover .rm, #tree button:hover .rm,
+  #tree button:hover .mv, #tree button:hover .cp { opacity:.7 }
 }
-#list .rename:hover, #list .rm:hover, #tree .rm:hover { opacity:1 }
+#list .rename:hover, #list .rm:hover, #tree .rm:hover, #tree .mv:hover,
+#tree .cp:hover { opacity:1 }
 #list .rm:hover, #tree .rm:hover { color:#e55 }
 /* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
    любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
@@ -216,7 +242,9 @@ section.zoomed header .max::before { content:'\2921' }
    абсолютная кнопка уехала бы вместе с прокруткой, а снаружи ей не на что опереться —
    высота лога известна только здесь. */
 .logbox { position:relative; flex:1; min-height:0; display:flex }
-.log { flex:1; overflow:auto; padding:12px 14px }
+/* `user-select` задан явно: у соседей по окну он снят (заголовок — ручка переноса), и
+   выделение в логе не должно зависеть от того, что унаследуется сверху. */
+.log { flex:1; overflow:auto; padding:12px 14px; user-select:text; -webkit-user-select:text }
 /* Полоска во всю ширину лога, устроена как #termbar у окна: узкая, в тоне панели,
    поверх текста. Полупрозрачная нарочно — сквозь неё видно последнюю строку, поэтому
    низ лога не читается как обрыв, а промахнуться по ней нельзя даже пальцем.
@@ -295,6 +323,10 @@ header .foldbar { display:none }
   border:1px solid #8886; border-radius:8px; font:12px/1.45 ui-monospace,monospace;
   white-space:pre; overflow:auto }
 .edit:focus { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Картинка на месте редактора: вписывается целиком, зума нет. Клетчатый фон нужен
+   прозрачным png — иначе белый логотип на тёмной теме выглядит пустым окном. */
+.view { flex:1; min-height:0; margin:8px; object-fit:contain; border-radius:8px;
+  background:repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0/16px 16px }
 .filebar { display:flex; gap:8px; align-items:center; margin:0 8px 8px }
 .filebar .state { flex:1; font-size:12px; opacity:.6; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis }
@@ -325,7 +357,10 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 /* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
 .bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
   border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
-.bar .model { appearance:none; width:auto }
+.bar .model, .bar .effort { appearance:none; width:auto }
+.bar .effort { border:0; background:none; opacity:.65; padding:3px 6px; border-radius:8px;
+  font:inherit; font-size:12px; color:inherit; cursor:pointer }
+.bar .effort:hover { background:#8882; opacity:1 }
 /* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
 .bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
   border-radius:50%; font-size:18px; line-height:1 }
@@ -339,8 +374,14 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 .bar .send:hover { background:oklch(0.68 0.20 var(--hue,250)) }
 /* Пустое поле — бледная кнопка, без JS: `:placeholder-shown` и есть признак пустоты. */
 textarea:placeholder-shown ~ .bar .send { opacity:.35 }
-.bar .stop, section.busy .bar .send { display:none }
-section.busy .bar .stop { display:grid; background:#e90; color:#000 }
+/* «Стоп» появляется рядом с «отправить», а не вместо неё. Пряталась она зря: с
+   телефона Enter-а нет, и поставить промпт в очередь к идущему прогону было нечем. */
+.bar .stop { display:none }
+section.busy .bar .stop { display:grid; background:#e90; color:#000; margin-left:6px }
+/* Нажатая «стоп»: прогон ещё гаснет, но кнопка уже отвечает — гасим её и снимаем мигание
+   заголовка, иначе окно выглядит так же, как до нажатия. */
+section.stopping .bar .stop { background:#8884; color:inherit; cursor:default }
+section.stopping header { animation:none }
 /* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
 section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
 /* Пустая область — не надпись, а два действия: открыть список и завести сессию. Текст
@@ -396,7 +437,7 @@ body:not(.folded) #empty .list { display:none }
   header .foldbar { display:revert }
   section.rolled { height:auto }
   section.rolled .logbox, section.rolled form { display:none }
-  section.rolled .edit, section.rolled .filebar { display:none }
+  section.rolled .edit, section.rolled .view, section.rolled .filebar { display:none }
   /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
      раньше просто ничего не делала. Окно выходит из потока и накрывает экран целиком,
      включая полоску терминала: это единственный способ растянуть лог, раз ресайза на
@@ -426,16 +467,13 @@ body:not(.folded) #empty .list { display:none }
 <div id=top>
 <aside>
   <nav id=peers></nav>
-  <select id=proj></select>
-  <button class=new id=new>+ сессия</button>
-  <input id=find type=search placeholder="поиск по сессиям проекта">
+  <input id=find type=search placeholder="поиск по всем проектам">
   <div id=list></div>
   <div id=plan hidden></div>
 </aside>
 <button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
 <div id=panes><div id=empty>
   <button class=list>список сессий</button>
-  <button class=fresh>+ новая сессия</button>
 </div></div>
 <button id=rfold title="дерево файлов" aria-label="скрыть или показать дерево файлов"></button>
 <aside class=files>
@@ -443,6 +481,9 @@ body:not(.folded) #empty .list { display:none }
   <div class=row>
     <button class=new id=newfile title="создать файл в открытом каталоге">+ файл</button>
     <button class=new id=newdir title="создать папку в открытом каталоге">+ папка</button>
+    <!-- Значок символом, а не escape-последовательностью: это статическая разметка, а не
+         шаблонная строка JS, и `\u21bb` тут осталось бы текстом. -->
+    <button class="new rescan" id=rescan title="перечитать каталог">↻</button>
   </div>
   <div id=crumb></div>
   <div id=tree></div>
@@ -514,6 +555,10 @@ const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random(
 // Первые четыре разнесены максимально: синий, красно-оранжевый, зелёный, пурпурный.
 // Дальше циан и янтарный. Насыщенность и светлота заданы в CSS одинаковыми для всех,
 // поэтому панели отличаются только тоном и выглядят одной семьёй.
+// Усилие новых окон. `high` — осознанный выбор человека, а не дефолт CLI: тот не назван
+// ни в `--help`, ни в событии init, и молча меняться может с версией.
+const EFFORT = 'high';
+
 const HUES = [250, 25, 145, 305, 195, 60];
 const freeHue = () => {
   const used = new Set([...panes.map(x => x.hue), ...Object.values(hues)]);
@@ -621,33 +666,90 @@ async function loadPeers() {
   }).join('');
 }
 
-async function loadProjects() {
+// --- tree:begin ---
+// Сайдбар — дерево проектов, а не список одного из них. Выпадашка стояла тут до
+// 2026-09-25 и была единственной дорогой к чужой сессии: переключил — потерял из виду
+// всё остальное. Теперь проекты лежат строками, раскрытые показывают свои сессии, а «+»
+// в строке заводит сессию именно в этом проекте.
+//
+// Раскрытые помним между заходами: набор путей в localStorage. Первый заход раскрывает
+// последний использованный проект — тот самый ключ `proj`, что помнила выпадашка.
+const open = new Set(JSON.parse(localStorage.getItem('open') || '[]'));
+const saveOpen = () => localStorage.setItem('open', JSON.stringify([...open]));
+
+// Последний ответ сервера: по нему перерисовываем дерево на раскрытии и сворачивании,
+// не дёргая сервер. Данные те же, меняется только что показано.
+let TREE = { projects: [], lists: [] };
+
+// ponytail: списки всех проектов тянем разом, ленивой подгрузки по раскрытию нет.
+// Замер 2026-09-25: 12–18 мс на проект, четыре проекта — 60 мс. Проектов станет три
+// десятка — грузить только раскрытые.
+async function loadTree() {
   const ps = await get('api/projects');
-  $('proj').innerHTML = ps.map(p => `<option value="${esc(p.path)}">${esc(p.name)}</option>`).join('');
-  // Выбор переживает F5: сохранённый проект, если он ещё в списке, иначе проект последней
-  // панели, иначе первый. Раньше без панелей выпадашка молча съезжала на первый проект.
-  const saved = localStorage.getItem('proj');
-  $('proj').value = ps.some(p => p.path === saved) ? saved
-                  : (panes.length && panes[panes.length - 1].project) || ps[0]?.path || '';
-  if (ps.length) loadSessions();
+  const lists = await Promise.all(ps.map(
+    x => get('api/sessions?project=' + encodeURIComponent(x.path)).catch(() => [])));
+  TREE = { projects: ps, lists };
+  if (!open.size) {
+    const saved = localStorage.getItem('proj');
+    const first = ps.some(x => x.path === saved) ? saved : ps[0]?.path;
+    if (first) { open.add(first); saveOpen(); }
+  }
+  drawProjects();
 }
 
-function fillList(project, rows, empty) {
-  $('list').innerHTML = rows.map(s =>
-    `<button data-id="${s.id}" data-title="${esc(s.title)}">` +
-    `<span class=meta>` +
-      `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
-      `<span class=rm title="удалить сессию">\u2715</span></span>` +
-    `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
-    (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>').join('') ||
-    `<div style="padding:10px;opacity:.5">${empty}</div>`;
-  for (const b of $('list').querySelectorAll('button')) {
+// Строка сессии. `data-project` на самой строке, а не в замыкании: те же строки рисует
+// поиск, а у него каждая может быть из своего проекта.
+const rowHTML = (s, project, withName) =>
+  `<button data-id="${s.id}" data-project="${esc(project)}" data-title="${esc(s.title)}">` +
+  `<span class=meta>` +
+    `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
+    `<span class=rm title="удалить сессию">\u2715</span></span>` +
+  `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
+  (withName ? `<span class=pj>${esc(project.split('/').pop())}</span>` : '') +
+  (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>';
+
+function drawProjects() {
+  const { projects: ps, lists } = TREE;
+  $('list').innerHTML = ps.map((x, i) => {
+    const on = open.has(x.path);
+    const rows = lists[i] || [];
+    return `<div class=node><button class=head data-path="${esc(x.path)}">` +
+      `<span class=add title="новая сессия в ${esc(x.name)}">+</span>` +
+      `<span class=n>${rows.length}</span>` +
+      `<span class=caret>${on ? '\u25be' : '\u25b8'}</span> ${esc(x.name)}</button>` +
+      (on ? `<div class=kids>` +
+            (rows.map(s => rowHTML(s, x.path)).join('') ||
+             '<div class=none>сессий нет</div>') + '</div>' : '') + '</div>';
+  }).join('') || '<div class=none>проектов нет</div>';
+
+  for (const h of $('list').querySelectorAll('.head')) {
+    const path = h.dataset.path;
+    h.onclick = () => {
+      open.has(path) ? open.delete(path) : open.add(path);
+      saveOpen();
+      drawProjects();
+    };
+    // «+» внутри строки проекта: всплытие обрываем, иначе заведение сессии заодно
+    // сворачивало бы проект, из которого её завели.
+    h.querySelector('.add').onclick = (e) => {
+      e.stopPropagation();
+      localStorage.setItem('proj', path);
+      addPane({ pane: uid(), project: path, session: null, next: 0 });
+    };
+  }
+  wireRows();
+}
+// --- tree:end ---
+
+function wireRows() {
+  for (const b of $('list').querySelectorAll('button[data-id]')) {
+    const project = b.dataset.project;
     b.onclick = () => addPane({ pane: uid(), project, session: b.dataset.id, next: 0,
                                 title: b.dataset.title });
     // Карандаш живёт внутри кнопки, поэтому всплытие обрываем: иначе переименование
     // заодно открывало бы сессию в новой панели. Диалог ввода браузерный — своей формы
     // ради одной строки текста тут не надо. Обновляем через `runFind`, а не
-    // `loadSessions`: он сам знает, список сейчас на экране или результаты поиска.
+    // `loadTree`: он сам знает, дерево сейчас на экране или результаты поиска.
     b.querySelector('.rename').onclick = async (e) => {
       e.stopPropagation();
       const name = prompt('имя сессии, пустое снимет', b.dataset.title);
@@ -679,7 +781,7 @@ function fillList(project, rows, empty) {
 //   заливка   — эта сессия открыта в панели, вот она на экране;
 //   мигание   — над сессией идёт запуск, чей угодно: панели, закрытой панели, Telegram;
 //   точка     — запуск кончился, а окна не было, то есть ответ никто не видел.
-// Метки кладём отдельным проходом, а не в разметку строки в `fillList`: список
+// Метки кладём отдельным проходом, а не в разметку строки в `rowHTML`: дерево
 // перерисовывается целиком каждый пятый тик, и вписанное в разметку живёт до него.
 const busySessions = new Set();
 // Цвет переживает панель: закрыли окно, а строка обязана мигать тем же оттенком. Карта
@@ -728,7 +830,7 @@ function trackRuns(runs) {
 }
 
 function markList() {
-  for (const b of document.querySelectorAll('#list button')) {
+  for (const b of document.querySelectorAll('#list button[data-id]')) {
     const id = b.dataset.id;
     const p = panes.find(x => x.session === id);
     const hue = p ? (p.hue ?? HUES[0]) : hues[id];
@@ -751,7 +853,7 @@ function markList() {
 // в панель.
 function syncTitles() {
   let changed = false;
-  for (const b of document.querySelectorAll('#list button')) {
+  for (const b of document.querySelectorAll('#list button[data-id]')) {
     const p = panes.find(x => x.session === b.dataset.id);
     if (!p || !b.dataset.title || p.title === b.dataset.title) continue;
     p.title = b.dataset.title;
@@ -762,13 +864,8 @@ function syncTitles() {
 }
 // --- mark:end ---
 
-async function loadSessions() {
-  const project = $('proj').value;
-  fillList(project, await get('api/sessions?project=' + encodeURIComponent(project)),
-           'сессий нет');
-}
-
-// Поиск по сессиям проекта: сервер сканирует транскрипты и отдаёт фрагмент вокруг
+// Поиск идёт по всем проектам сразу: вопрос «где я это обсуждал» иначе не отвечается,
+// а именно он и гонял в выпадашку. Сервер сканирует транскрипты и отдаёт фрагмент вокруг
 // попадания. Дебаунс, потому что скан хоть и быстрый, но не на каждую букву.
 let findTimer = null;
 
@@ -779,11 +876,16 @@ function scheduleFind() {
 
 async function runFind() {
   const q = $('find').value.trim();
-  const project = $('proj').value;
-  if (!q) return loadSessions();
-  const url = 'api/search?project=' + encodeURIComponent(project) + '&q=' + encodeURIComponent(q);
+  if (!q) return loadTree();
   try {
-    fillList(project, await get(url), 'ничего не нашлось');
+    const found = await get('api/search?q=' + encodeURIComponent(q));
+    // Результаты плоским списком, у каждой строки подпись проекта: раскладывать их
+    // обратно по веткам значит прятать половину найденного под свёрнутыми узлами.
+    $('list').innerHTML = found.map(s => rowHTML(s, s.project, true)).join('') ||
+      '<div class=none>ничего не нашлось</div>';
+    wireRows();
+    markList();
+    syncTitles();
   } catch (e) { /* следующий ввод попробует снова */ }
 }
 
@@ -814,30 +916,6 @@ function applyGeom(p) {
 }
 
 // --- place:begin ---
-// Размеры новой панели по убыванию: четверть области, полоса, столбец, восьмая. Пятая
-// сессия раньше ложилась поверх первой — свободной четверти уже не было, и место
-// подбиралось только под один размер. Теперь окно ужимается, пока не встанет рядом:
-// шестушками в сетку 12x8 влезает шестнадцать штук.
-const SIZES = [[W, H], [W, H / 2], [W / 2, H], [W / 2, H / 2], [3, 2]];
-
-function place(p) {
-  const busy = (c, r) => panes.some(x => x !== p && x.c <= c && c < x.c + x.w &&
-                                                    x.r <= r && r < x.r + x.h);
-  const free = (c, r) => {
-    for (let i = 0; i < p.w; i++)
-      for (let j = 0; j < p.h; j++)
-        if (busy(c + i, r + j)) return false;
-    return true;
-  };
-  for (const [w, h] of SIZES) {
-    p.w = w; p.h = h;
-    for (let r = 1; r <= ROWS - h + 1; r++)
-      for (let c = 1; c <= COLS - w + 1; c++)
-        if (free(c, r)) { p.c = c; p.r = r; return; }
-  }
-  retile();  // свободного места нет вовсе — раскладываем всё заново, поровну
-}
-
 // Разворот на всю область и возврат. Прежний прямоугольник живёт в самой панели,
 // поэтому переживает F5: развёрнутое окно и после перезагрузки знает, куда вернуться.
 // Отдельного режима нет — это обычная геометрия, и перетащить развёрнутое окно или
@@ -850,18 +928,48 @@ function zoom(p) {
   drawZoom(p);
 }
 
-// Плитка на всех: столбцов — корень из числа окон, дальше по рядам. Нужна ровно там,
-// где подбор места бессилен: четыре окна по четверти занимают сетку целиком, и пятому
-// некуда встать, как его ни ужимай. Расставляет и уже открытые — молча ложиться поверх
-// них хуже, чем подвинуть их один раз на глазах.
+// Целевая пропорция окна, ширина к высоте: в окне чат, и узкое высокое читается лучше
+// приземистого. Это калибровка, а не закон — число меняет всю раскладку разом.
+const CELL = 0.8;
+
+// Плитка на всех: столбцов столько, чтобы окно вышло ближе к CELL на этом экране.
+// Нужна ровно там, где подбор места бессилен: четыре окна по четверти занимают сетку
+// целиком, и пятому некуда встать, как его ни ужимай. Расставляет и уже открытые —
+// молча ложиться поверх них хуже, чем подвинуть их один раз на глазах.
+//
+// Корень из числа окон, стоявший тут раньше, про экран не знал: на широком мониторе он
+// клал приземистые окна, а остаток клеток терял вовсе. При семи окнах floor(8/3) давал
+// высоту 2 на три ряда — снизу оставались две пустые полосы.
 function retile() {
-  const cols = Math.ceil(Math.sqrt(panes.length));
-  const rows = Math.ceil(panes.length / cols);
-  const w = Math.max(1, Math.floor(COLS / cols)), h = Math.max(1, Math.floor(ROWS / rows));
+  const n = panes.length;
+  if (!n) return;
+  const box = $('panes');
+  const aspect = (box.clientWidth || 1) / (box.clientHeight || 1);
+  let cols = 1, best = Infinity;
+  for (let k = 1; k <= Math.min(n, COLS); k++) {
+    const rows = Math.ceil(n / k);
+    const tail = n - k * (rows - 1);   // окон в последнем ряду, он бывает неполным
+    const off = (wide) => Math.abs(Math.log(aspect * rows / wide / CELL));
+    // Худшая клетка, а не средняя: неполный ряд растягивается на всю ширину, и его окна
+    // выходят вдвое шире остальных. Средняя такой перекос прощала — шесть окон ложились
+    // 4 + 2 вместо ровных 3 + 3, потому что четыре правильные клетки перевешивали две
+    // кривые. Минимакс выбирает раскладку, где нет ни одного окна не в масть.
+    const worst = Math.max(off(k), off(tail));
+    if (worst < best) { best = worst; cols = k; }
+  }
+  cols = Math.max(cols, Math.ceil(n / ROWS));   // рядов больше, чем клеток, не бывает
+  const rows = Math.ceil(n / cols);
+  // Границы долями от сетки, а не шагом в целых клетках: остаток от 12 и 8 раздаётся
+  // соседям, и правый край с нижним заняты до конца.
+  const edge = (i, k, total) => 1 + Math.round(i * total / k);
   panes.forEach((x, i) => {
-    x.w = w; x.h = h;
-    x.c = 1 + (i % cols) * w;
-    x.r = 1 + Math.floor(i / cols) * h;
+    const row = Math.floor(i / cols);
+    // В последнем ряду окон может быть меньше — растягиваем их на всю ширину, иначе
+    // справа зияет дыра в те самые клетки, которых не хватило.
+    const wide = row === rows - 1 ? n - cols * row : cols;
+    const at = i - cols * row;
+    x.c = edge(at, wide, COLS); x.w = edge(at + 1, wide, COLS) - x.c;
+    x.r = edge(row, rows, ROWS); x.h = edge(row + 1, rows, ROWS) - x.r;
     x.prev = null;
     applyGeom(x);
     drawZoom(x);
@@ -888,21 +996,27 @@ function raise(el) {
 // а пальцем не работает вообще.
 function wireGrab(p, el, node, edge) {
   node.onpointerdown = (e) => {
-    // Кнопки в заголовке («стоп», «×») не должны запускать перенос: preventDefault ниже
-    // съел бы их click, и панель стало бы нечем закрыть.
-    if (e.button || e.target.closest('button')) return;
+    // Кнопки и ссылки в заголовке («стоп», «×», «скачать») не должны запускать перенос:
+    // preventDefault ниже съедает их click. Ссылку сюда добавили не сразу, и скачивание
+    // молча не работало — жест переноса отменял переход по ней.
+    if (e.button || e.target.closest('button, a')) return;
     // На узком экране сетка перебита `!important`, и перенос там ничего не двигал —
     // зато молча писал новые `c`/`r` в панель, и перекос вылезал на большом экране.
     // Проверяем в момент жеста, а не при создании: окно поворачивают и меняют размер.
     if (NARROW.matches) return;
+    // Цель запоминаем сейчас: `setPointerCapture` ниже переносит все последующие события
+    // на сам заголовок, и в pointerup `ev.target` — уже он, а не то, по чему нажали.
+    const hit = e.target;
     e.preventDefault();
     node.setPointerCapture(e.pointerId);
     raise(el);
     if (!edge) node.classList.add('moving');
     const from = { x: e.clientX, y: e.clientY, c: p.c, r: p.r, w: p.w, h: p.h };
     const step = { x: colStep(), y: rowStep() };
+    let moved = false;
 
     node.onpointermove = (ev) => {
+      if (Math.abs(ev.clientX - from.x) > 3 || Math.abs(ev.clientY - from.y) > 3) moved = true;
       const dc = Math.round((ev.clientX - from.x) / step.x);
       const dr = Math.round((ev.clientY - from.y) / step.y);
       if (!edge) {
@@ -915,9 +1029,14 @@ function wireGrab(p, el, node, edge) {
       applyGeom(p);  // панель переставляется по клеткам сразу, а не после отпускания
     };
 
-    node.onpointerup = node.onpointercancel = () => {
+    node.onpointerup = node.onpointercancel = (ev) => {
       node.onpointermove = null;
       node.classList.remove('moving');
+      // Заголовок — и ручка переноса, и кнопка. Отличаем одно от другого по факту
+      // движения: `preventDefault` выше съедает click, поэтому своего события тут нет.
+      // На узком экране перенос отключён целиком, и туда приходит обычный click.
+      if (!moved && ev?.type === 'pointerup' && hit.closest('.who'))
+        node.dispatchEvent(new CustomEvent('titletap', { bubbles: true }));
       // Окно подвинули руками — возвращать из разворота уже некуда.
       if (p.prev) { p.prev = null; drawZoom(p); }
       save();
@@ -951,8 +1070,16 @@ function addPane(p) {
   if (p.session) { done.delete(p.session); saveMarks(); }
   p.w = p.w || W; p.h = p.h || H;
   p.hue = p.hue ?? freeHue();
-  panes.push(p);
-  if (!p.c) place(p);
+  // В начало, а не в конец: порядок массива — это и есть порядок раскладки, и новое
+  // окно встаёт слева-сверху, а прежние сдвигаются. Искать взглядом, куда оно упало,
+  // не нужно.
+  panes.unshift(p);
+  // Новое окно перекладывает все: экран занят целиком, и третье на широком мониторе
+  // встаёт колонкой справа, а не четвертью в углу. Подбор свободного места, стоявший
+  // тут раньше, оставлял пустоты и всё равно кончался общей раскладкой на пятом окне.
+  // Цена известна: расставленное руками новое окно сбрасывает. Восстановленные из
+  // localStorage панели уже несут свои клетки и сюда не попадают.
+  if (!p.c) retile();
   save();
   drawPane(p);
   markList();
@@ -962,7 +1089,11 @@ function closePane(p) {
   // Цвет отдаём строке: панели больше нет, а мигать закрытая сессия обязана тем же.
   if (p.session) { hues[p.session] = p.hue ?? HUES[0]; saveMarks(); }
   unwatch(p);
-  panes = panes.filter(x => x.pane !== p.pane); save();
+  panes = panes.filter(x => x.pane !== p.pane);
+  // Закрытое окно оставляло дыру: добавление перекладывает всех с прошлой правки, а
+  // закрытие — нет. Раскладка до `save()`, чтобы новые клетки уехали тем же вызовом.
+  retile();
+  save();
   document.getElementById('pane-' + p.pane)?.remove();
   markList();
   $('empty').hidden = panes.length > 0;
@@ -977,6 +1108,7 @@ function drawPane(p) {
   el.id = 'pane-' + p.pane;
   el.innerHTML = `
     <header>
+      <button class=ren title="переименовать сессию">\u270e\ufe0e</button>
       <span class=who></span>
       <span class=timer></span>
       <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
@@ -997,13 +1129,33 @@ function drawPane(p) {
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
         <select class=model title="модель этой панели"></select>
-        <button class=send title="отправить">↑</button>
+        <select class=effort title="усилие модели в этой панели: сколько она думает над ходом">
+          <option value="low">low</option><option value="medium">med</option>
+          <option value="high">high</option><option value="xhigh">xhigh</option>
+          <option value="max">max</option>
+        </select>
+        <button class=send title="отправить; во время прогона — в очередь">↑</button>
         <button class=stop type=button title="остановить">■</button>
       </div>
     </form>`;
   $('panes').append(el);
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
+  // Заголовок окна — то же переименование, что карандаш в списке слева: имя сессии
+  // чаще всего хочется поправить, глядя на её ответы, а не на строку списка.
+  const rename = async () => {
+    if (!p.session) return;   // сессии ещё нет: имя не к чему привязать
+    const name = prompt('имя сессии, пустое снимет', p.title || '');
+    if (name === null) return;
+    await post('api/name', { session: p.session, name });
+    p.title = name.trim() || null;
+    setWho(p, el);
+    save();
+    runFind();
+  };
+  el.addEventListener('titletap', rename);
+  el.querySelector('.ren').onclick = rename;
+  el.querySelector('.who').onclick = () => { if (NARROW.matches) rename(); };
   // Лог доводит себя до низа, только пока ты у низа (absorb ниже). Отлистал вверх —
   // и ответ дописывается молча, вернуться было нечем. Кнопку показываем по прокрутке,
   // а после вставки её обновляет absorb: прокрутки там не случается.
@@ -1024,9 +1176,20 @@ function drawPane(p) {
   // разворот открывал бы начало истории.
   new ResizeObserver(() => { if (stick && box.clientHeight) box.scrollTop = 1e9; }).observe(box);
   down.onclick = () => { box.scrollTop = 1e9; };
-  el.querySelector('.stop').onclick = () => post('api/cancel', { pane: p.pane })
-    .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
-    .catch(() => {});
+  // Отклик в тот же кадр. Пока прогон гаснет, проходит до пяти секунд: `runner.cancel`
+  // ждёт две между SIGTERM и SIGKILL, а класс `busy` снимает только tick() раз в три.
+  // Всё это время кнопка выглядела ненажатой, и по ней жали второй раз. Состояние
+  // снимаем не по ответу сервера, а когда tick увидит, что прогон кончился: ответ
+  // приходит раньше, чем claude успевает дописать транскрипт.
+  const stop = el.querySelector('.stop');
+  stop.onclick = () => {
+    if (stop.disabled) return;
+    stop.disabled = true;
+    el.classList.add('stopping');
+    post('api/cancel', { pane: p.pane })
+      .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
+      .catch(() => {});
+  };
   const form = el.querySelector('form');
   const ta = el.querySelector('textarea');
   // Выбор файлов — тот же путь, что у перетаскивания. `value = ''` нужен, чтобы второй
@@ -1039,6 +1202,15 @@ function drawPane(p) {
   const model = el.querySelector('.model');
   fillModels(p, model);
   model.onchange = () => { p.model = model.value; save(); };
+
+  // Усилие живёт в панели рядом с моделью и так же переживает F5. Пустого значения нет:
+  // оно читалось как выбранный уровень, хотя означало «флаг не передавать». Новое окно
+  // и окно из localStorage без записи берут EFFORT, и в панели написано ровно то, с чем
+  // поедет claude.
+  const effort = el.querySelector('.effort');
+  p.effort = p.effort || EFFORT;
+  effort.value = p.effort;
+  effort.onchange = () => { p.effort = effort.value; save(); };
 
   // Файл: перетащить на панель или вставить из буфера. Наружу уходит путь, а не
   // содержимое — claude читает файл сам, ровно как с файлами из Telegram.
@@ -1098,6 +1270,16 @@ function wirePane(p, el) {
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
   el.onpointerdown = () => raise(el);
+  // Клик по окну ставит курсор в промпт — мышью. Пальцем нет: тап по логу там нужен
+  // выделению, а не фокусу, и перехват ломал бы «выделить и скопировать» ровно в том
+  // месте, где текст и читают. Поле промпта на телефоне и так под пальцем внизу.
+  // Клик по кнопке, полю или ссылке оставляем им, выделение мышью — тоже не рвём.
+  el.addEventListener('click', (e) => {
+    if (TOUCH.matches) return;
+    if (e.target.closest('button, a, input, select, textarea, label, .menu')) return;
+    if (!getSelection().isCollapsed) return;
+    el.querySelector('form textarea')?.focus();
+  });
   fit(p);
   applyGeom(p);
   drawZoom(p);
@@ -1116,13 +1298,16 @@ function drawFile(p) {
   el.id = 'pane-' + p.pane;
   el.innerHTML = `
     <header>
+      <button class=ren title="копировать путь">\u2750\ufe0e</button>
       <span class=who></span>
+      <a class=dl title="скачать файл" download>\u2913</a>
       <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
       <button class=max title="во весь экран"></button>
       <button class=foldbar title="свернуть окно в заголовок">▾</button>
       <button class=close title="закрыть окно">×</button>
     </header>
     <textarea class=edit spellcheck=false wrap=off></textarea>
+    <img class=view hidden alt="">
     <div class=filebar>
       <button class=save>сохранить</button>
       <button class=reread title="перечитать с диска">↻</button>
@@ -1136,10 +1321,39 @@ function drawFile(p) {
   who.textContent = p.file.split('/').pop();
   who.title = p.file;
   const say = (text, bad) => { state.textContent = text; state.classList.toggle('bad', !!bad); };
+  // Заголовок окна файла отдаёт полный путь в буфер: его вставляют в промпт соседнего
+  // окна, и перенабирать руками — единственное, что тут делали до этой кнопки.
+  const copyPath = async () => {
+    const was = state.textContent;
+    try {
+      await navigator.clipboard.writeText(p.file);
+      say('путь скопирован');
+    } catch (e) {
+      say('буфер недоступен', true);
+    }
+    setTimeout(() => say(was), 1200);
+  };
+  el.addEventListener('titletap', copyPath);
+  el.querySelector('.ren').onclick = copyPath;
+  who.onclick = () => { if (NARROW.matches) copyPath(); };
 
+  const view = el.querySelector('.view');
+  // Скачивание идёт по той же ручке, что и картинка: файл уже отдаётся байтами, тут
+  // нужен только адрес. `?v=` — версия из `api/file`, иначе браузер вернёт из кеша
+  // прежнее содержимое. С телефона это единственный способ забрать файл себе.
+  const dl = el.querySelector('.dl');
+  dl.download = p.file.split('/').pop();
   let version = null, dirty = false;
   const load = () => get('api/file?path=' + encodeURIComponent(p.file)).then(f => {
     version = f.version;
+    dl.href = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+    // Картинку сервер не читает — отдаёт тип и оставляет тег `<img>` тянуть байты самому.
+    // Редактора у неё нет: править png в textarea нечем, и «сохранить» тут только вредит.
+    if (f.image) {
+      view.src = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+      view.hidden = false; ta.hidden = true; save_.hidden = true; dirty = false;
+      return say(f.image.replace('image/', '') + ', ' + kb(f.size));
+    }
     ta.value = f.text ?? '';
     // Отказ приходит полем `why`: файл больше мегабайта или не текст. Показываем имя,
     // размер и причину — пустое окно без объяснения читалось бы как поломка.
@@ -1245,14 +1459,55 @@ function drawCrumb(path) {
 function drawTree(entries) {
   $('tree').innerHTML = entries.map(e =>
     `<button class="${e.dir ? 'dir' : ''}" data-path="${esc(e.path)}" data-dir="${e.dir ? 1 : ''}">`
+    // Размер первым среди плавающих вправо — он и встаёт к правому краю. Кнопки идут
+    // следом, левее: место они держат всегда, видимы только под курсором, и размер от
+    // них уезжал бы на полсотни пикселей от края.
+    + (e.dir ? '' : `<span class=size>${kb(e.size)}</span>`)
     + `<span class=rm title="удалить">\u2715</span>`
-    + esc(e.name) + (e.dir ? '/' : `<span class=size>${kb(e.size)}</span>`) + '</button>').join('')
+    + `<span class=mv title="переименовать">\u270e\ufe0e</span>`
+    + `<span class=cp title="копировать путь">\u2750\ufe0e</span>`
+    + esc(e.name) + (e.dir ? '/' : '') + '</button>').join('')
     || '<div class=none>пусто</div>';
   for (const b of $('tree').querySelectorAll('button')) {
     b.onclick = () => b.dataset.dir ? openDir(b.dataset.path).catch(treeFail)
                                     : addPane({ pane: uid(), file: b.dataset.path });
     // Крестик внутри той же кнопки — всплытие обрываем, иначе удаление заодно открывало
     // бы файл. Непустую папку отобьёт сервер: рекурсии у него нет.
+    // Путь в буфер: вставить его в промпт — самое частое, что делают с файлом из дерева,
+    // и до этой кнопки его собирали по крошкам глазами.
+    b.querySelector('.cp').onclick = async (e) => {
+      e.stopPropagation();
+      const cp = b.querySelector('.cp');
+      try {
+        await navigator.clipboard.writeText(b.dataset.path);
+        cp.textContent = '\u2713';
+      } catch (err) {
+        cp.textContent = '\u2717';
+      }
+      setTimeout(() => { cp.textContent = '\u2750\ufe0e'; }, 1200);
+    };
+    // Переименование на месте: каталог не меняется, поэтому из дерева хватает имени.
+    // Открытое окно этого файла переезжает вместе с ним — иначе оно осталось бы на
+    // пути, которого уже нет, и сказало бы об этом только при сохранении.
+    b.querySelector('.mv').onclick = async (e) => {
+      e.stopPropagation();
+      const was = b.dataset.path.split('/').pop();
+      const name = prompt('новое имя', was);
+      if (name === null || !name.trim() || name.trim() === was) return;
+      const r = await fetch('api/mv', { method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: b.dataset.path, name: name.trim() }) });
+      const body = await r.text();
+      if (!r.ok) return alert(body || ('не переименовать: ' + r.status));
+      const made = JSON.parse(body);
+      panes.filter(x => x.file === b.dataset.path).forEach(x => {
+        x.file = made.path;
+        document.getElementById('pane-' + x.pane)?.remove();
+        drawPane(x);
+      });
+      save();
+      openDir(atDir).catch(treeFail);
+    };
     b.querySelector('.rm').onclick = async (e) => {
       e.stopPropagation();
       if (!confirm('удалить ' + b.dataset.path + '? это навсегда')) return;
@@ -1551,7 +1806,8 @@ async function send(p, ta) {
   const line = log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   try {
     const r = await post('api/prompt', { pane: p.pane, project: p.project,
-      session: p.session || null, prompt, model: p.model || null });
+      session: p.session || null, prompt, model: p.model || null,
+      effort: p.effort || null });
     // Панель занята: промпт принят и ждёт. Сессию, если она ещё не заведена, панель
     // подберёт в tick() из /api/status — к ответу на отправку её просто нет.
     if (r.queued) { log(p, `<div class="msg note">в очереди: впереди ${r.queued}</div>`); return; }
@@ -1568,7 +1824,7 @@ async function send(p, ta) {
       save();
       watch(p);
       setWho(p);
-      loadSessions();
+      loadTree();
     }
   } catch (code) {
     // Промпт до claude не доехал, значит из транскрипта он не вернётся. Оставленная
@@ -1854,7 +2110,7 @@ async function tick() {
       save();
       watch(p);
       setWho(p);
-      loadSessions().catch(() => {});
+      loadTree().catch(() => {});
     }
 
     // Сторож потока. EventSource переподключается сам только после разрыва живого
@@ -1866,6 +2122,14 @@ async function tick() {
     if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
 
     el?.classList.toggle('busy', busy);
+    // Прогон кончился — «стоп» снова живая. Снимаем здесь, а не по ответу на отмену:
+    // сервер отвечает раньше, чем процесс успевает умереть, и кнопка вернулась бы в
+    // рабочий вид при всё ещё мигающем окне.
+    if (el && !busy) {
+      el.classList.remove('stopping');
+      const btn = el.querySelector('.stop');
+      if (btn) btn.disabled = false;
+    }
     const timer = el?.querySelector('.timer');
     if (timer) {
       const foreign = busy && mine.scope !== scope;
@@ -1930,7 +2194,9 @@ async function tick() {
 
   // Сессию могли начать в Telegram или в соседней панели — список слева должен это
   // увидеть сам, а не после перезагрузки страницы.
-  if (++ticks % 5 === 0 && !$('find').value.trim()) loadSessions().catch(() => {});
+  // Каждый пятый тик перечитываем и проекты: папка, заведённая в дереве файлов,
+  // становится проектом сама, без F5.
+  if (++ticks % 5 === 0 && !$('find').value.trim()) loadTree().catch(() => {});
 }
 
 // Сайдбар: состояние переживает перезагрузку, но записывается только по клику. Первый
@@ -2013,6 +2279,9 @@ const create = (folder) => async () => {
   addPane({ pane: uid(), file: made.path });
 };
 
+// Дерево перечитывает только себя: claude создаёт и удаляет файлы у себя в панели, и
+// без этого приходилось перезагружать всю страницу, теряя раскладку окон.
+$('rescan').onclick = () => openDir(atDir || $('root').value).catch(treeFail);
 $('newfile').onclick = create(false);
 $('newdir').onclick = create(true);
 
@@ -2022,20 +2291,23 @@ $('root').onchange = () => {
 };
 
 $('reload').onclick = () => location.reload();
-$('proj').onchange = () => { localStorage.setItem('proj', $('proj').value); $('find').value = ''; loadSessions(); };
 $('find').oninput = scheduleFind;
 $('empty').querySelector('.list').onclick = () => $('fold').click();
-$('empty').querySelector('.fresh').onclick = () => $('new').click();
-$('new').onclick = () => addPane({ pane: uid(), project: $('proj').value, session: null, next: 0 });
 loadPeers();
 loadModels();
 loadRoots().catch(treeFail);
-loadProjects().then(() => {
+loadTree().then(() => {
   // Панели из localStorage могли получить оттенок из прежней палитры. Переназначаем по
   // одной: freeHue смотрит на уже занятые, поэтому цвета не совпадут.
   panes.forEach(p => { if (!HUES.includes(p.hue)) p.hue = freeHue(); });
   save();
   panes.forEach(p => { p.next = 0; drawPane(p); });
+  // Кто впереди после F5. `act` держит z-index, и достаётся он последнему нарисованному,
+  // то есть последнему в массиве — а там с переходом на `unshift` лежит самое старое
+  // окно. Развёрнутое при этом уезжало за спину соседей: своего z-index у него нет,
+  // на весь экран его растягивает геометрия, а не слой.
+  const front = panes.find(x => x.prev) || panes[0];
+  if (front) raise(document.getElementById('pane-' + front.pane));
   tick();
 });
 setInterval(tick, 3000);

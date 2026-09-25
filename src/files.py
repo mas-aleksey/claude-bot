@@ -10,6 +10,7 @@
 
 import asyncio
 import logging
+import mimetypes
 import os
 import re
 import time
@@ -71,6 +72,23 @@ def inside(raw: str) -> Path:
     raise web.HTTPBadRequest(text="путь вне корней")
 
 
+def _leaf(raw: str) -> Path:
+    """Путь, у которого проверен каталог, а последний элемент взят как есть.
+
+    `inside` делает `resolve()`, и символическая ссылка под ним превращается в свою цель.
+    Для чтения это правильно — скиллы в `/root/.claude/skills` только ссылками и собраны.
+    Для удаления и переименования — нет: «снести ссылку» сносило бы то, на что она ведёт,
+    а «переименовать» переименовывало бы чужой файл в другом корне.
+
+    Граница та же: каталог обязан лежать в корнях, а имя — быть именем, без `.` и `..`.
+    """
+    path = Path(raw or "")
+    where = inside(str(path.parent))
+    if path.name in {"", ".", ".."}:
+        raise web.HTTPBadRequest(text="не имя файла")
+    return where / path.name
+
+
 def _entries(path: Path) -> list[dict]:
     """Содержимое каталога: сначала каталоги, дальше по имени без учёта регистра.
 
@@ -129,6 +147,12 @@ async def api_file(req: web.Request) -> web.Response:
     if not path.is_file():
         raise web.HTTPBadRequest(text="не файл")
     head = {"path": str(path), "size": st.st_size, "version": _version(st)}
+    # Картинку не читаем вовсе: её покажет `<img>` через `api_raw`, а сюда она попала бы
+    # отказом «не текст в utf-8». Проверка до потолка редактора — фото с телефона крупнее
+    # мегабайта, а смотреть его это не мешает.
+    kind = mimetypes.guess_type(path.name)[0] or ""
+    if kind.startswith("image/"):
+        return web.json_response({**head, "image": kind})
     if st.st_size > MAX_EDIT:
         return web.json_response({**head, "why": "больше 1 МБ"})
     try:
@@ -142,6 +166,48 @@ async def api_file(req: web.Request) -> web.Response:
     if b"\x00" in data:
         return web.json_response({**head, "why": "двоичный файл"})
     return web.json_response({**head, "text": text})
+
+
+async def api_raw(req: web.Request) -> web.Response:
+    """Файл байтами, как есть — под `<img>` в панели.
+
+    Граница та же, что у всего дерева: `inside`. Новых путей наружу не открывает —
+    содержимое этих же файлов уже отдаёт `api_file`, только текстом.
+
+    Отдаём `FileResponse`, а не base64 в json: картинку тянет сам браузер, со своим
+    кешем и прогрессивной отрисовкой, и в ответ редактора она не попадает.
+    """
+    path = inside(req.query.get("path", ""))
+    if not path.is_file():
+        raise web.HTTPBadRequest(text="не файл")
+    return web.FileResponse(path)
+
+
+async def api_mv(req: web.Request) -> web.Response:
+    """Переименовать файл или каталог, не сходя с места: только имя, без переноса.
+
+    Переноса между каталогами тут нет намеренно — из дерева его нечем задать, а к claude
+    в соседней панели это говорится словами. Имя чистится тем же `_filename`, что у
+    создания, поэтому «переименовать» и «создать» принимают ровно одно и то же.
+    """
+    data = await req.json()
+    raw = data.get("path") or ""
+    if Path(raw).resolve() in [r.resolve() for r in roots()]:
+        raise web.HTTPBadRequest(text="корень дерева не переименовать")
+    path = _leaf(raw)
+    if not path.exists() and not path.is_symlink():
+        raise web.HTTPBadRequest(text="нет такого файла")
+    dest = path.parent / _filename(data.get("name"))
+    if dest == path:
+        return web.json_response({"path": str(path)})
+    if dest.exists() or dest.is_symlink():
+        raise web.HTTPBadRequest(text="такое имя уже занято")
+    try:
+        await asyncio.to_thread(path.rename, dest)
+    except OSError as err:
+        raise web.HTTPBadRequest(text=f"не переименовать: {err}") from err
+    log.info("mv: %s -> %s", path, dest)
+    return web.json_response({"path": str(dest)})
 
 
 async def api_save(req: web.Request) -> web.Response:
@@ -221,12 +287,18 @@ async def api_rm(req: web.Request) -> web.Response:
     Сам корень не удаляется: список корней задан в окружении, и панель без него
     показывает пустое дерево без способа вернуть его из браузера.
 
-    Путь резолвится в `inside`, поэтому удаляется цель симлинка, а не сам симлинк.
-    Скиллам это не грозит — каталог скилла не пуст, и `rmdir` по нему откажет.
+    Символическая ссылка снимается сама, цель остаётся: путь идёт через `_leaf`, а не
+    через `inside`. До 2026-09-24 было наоборот, и «удалить» по ссылке на скилл целилось
+    в `/opt/skills`, спасая его лишь тем, что каталог не пуст.
     """
-    path = inside((await req.json()).get("path") or "")
-    if path in [r.resolve() for r in roots()]:
+    raw = (await req.json()).get("path") or ""
+    if Path(raw).resolve() in [r.resolve() for r in roots()]:
         raise web.HTTPBadRequest(text="корень дерева не удаляется")
+    path = _leaf(raw)
+    if path.is_symlink():
+        await asyncio.to_thread(path.unlink)
+        log.info("rm link: %s", path)
+        return web.json_response({"path": str(path)})
     if not path.exists():
         raise web.HTTPBadRequest(text="уже нет")
     if path.is_dir() and any(path.iterdir()):
@@ -246,10 +318,16 @@ def _filename(raw: str | None) -> str:
     percent-кодированным (aiohttp так и делает), и `..%2F..%2Fetc%2Fpasswd` без
     раскодирования осталось бы одним длинным именем — не побег, но и не имя.
     Дальше оставляем только буквы, цифры, точку и дефис.
+
+    Точку в начале не срезаем: `.env` и `.gitignore` — обычные имена, а превращались они
+    в `env` и `gitignore` молча. Отбиваем только имена из одних точек: `.` и `..` — это
+    каталоги, а не файлы.
     """
     name = Path(urllib.parse.unquote(raw or "")).name
-    name = re.sub(r"[^\w.\-]+", "_", name, flags=re.UNICODE).strip("._")
-    return name[:80] or "file"
+    name = re.sub(r"[^\w.\-]+", "_", name, flags=re.UNICODE).strip("_")
+    if not name.strip("."):
+        return "file"
+    return name[:80]
 
 async def api_upload(req: web.Request) -> web.Response:
     """Файл из браузера — на диск, наружу только путь. Дальше он уходит в промпт

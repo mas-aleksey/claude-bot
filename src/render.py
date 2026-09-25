@@ -221,8 +221,8 @@ class Run:
                 self.result = ""
             u = ev.get("usage") or {}
             bits = []
-            if cost := ev.get("total_cost_usd"):
-                bits.append(f"${cost:.3f}")
+            # Цена снята 2026-09-25 вместе с панелью: по подписке это не расход, а
+            # пересчёт по прайсу API, и читался он как счёт за прогон.
             if tin := tokens_in(u):
                 bits.append(f"↓{tin}")
             if tout := u.get("output_tokens"):

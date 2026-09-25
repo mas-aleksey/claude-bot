@@ -107,47 +107,64 @@ def test_login_page_instead_of_json_stops_the_tab_at_once(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_new_pane_never_lands_on_an_open_one(tmp_path):
-    """Место под новое окно подбирается по занятым. Четыре окна по четверти занимают
-    сетку целиком — пятому места нет ни в каком размере, и тогда раскладка пересчитыва-
-    ется на всех. Проверяем главное обещание: перекрытий нет ни на одном шаге."""
+def test_every_new_pane_retiles_the_whole_grid(tmp_path):
+    """Новое окно перекладывает все. Проверяем два обещания сразу: перекрытий нет ни на
+    одном шаге, и сетка занята целиком — пустот внизу и справа не остаётся."""
     body = slice_out("script").split("// --- place:begin ---")[1].split("// --- place:end ---")[0]
     js = tmp_path / "place.js"
     js.write_text("""
 const COLS = 12, ROWS = 8, W = COLS / 2, H = ROWS / 2;
 const applyGeom = () => {};
 const drawZoom = () => {};
+// Широкий монитор: раскладка считает пропорцию окна по нему, а не по числу окон.
+const $ = () => ({ clientWidth: 2400, clientHeight: 1200 });
 let panes = [];
 """ + body + """
 const overlap = () => panes.some((a, i) => panes.slice(i + 1).some(b =>
   a.c < b.c + b.w && b.c < a.c + a.w && a.r < b.r + b.h && b.r < a.r + a.h));
 const outside = () => panes.some(p =>
   p.c < 1 || p.r < 1 || p.c + p.w - 1 > COLS || p.r + p.h - 1 > ROWS);
+const area = () => panes.reduce((n, p) => n + p.w * p.h, 0);
 const seen = [];
 for (let n = 1; n <= 9; n++) {
-  const p = {};
-  panes.push(p);
-  place(p);
-  seen.push([overlap(), outside()]);
+  panes.push({});
+  retile();
+  seen.push([overlap(), outside(), area()]);
 }
 // Разворот и возврат: прямоугольник обязан вернуться ровно тем же.
+const count = panes.length, w0 = panes[0].w, h0 = panes[0].h;
 const first = panes[0];
 const was = [first.c, first.r, first.w, first.h];
 zoom(first);
 const big = [first.c, first.r, first.w, first.h];
 zoom(first);
 const back = [first.c, first.r, first.w, first.h];
-console.log(JSON.stringify([seen, panes.length, panes[0].w, panes[0].h, was, big, back]));
+panes = Array.from({ length: 3 }, () => ({}));
+retile();
+const three = panes.map(p => [p.c, p.r, p.w, p.h]);
+// Ряды шести окон: по сколько в каждом. Раскладка обязана быть ровной.
+panes = Array.from({ length: 6 }, () => ({}));
+retile();
+const rows = [...new Set(panes.map(p => p.r))].sort((a, b) => a - b)
+  .map(r => panes.filter(p => p.r === r).length);
+console.log(JSON.stringify([seen, count, was, big, back, three, rows]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    seen, count, w, h, was, big, back = json.loads(done.stdout)
+    seen, count, was, big, back, three, rows = json.loads(done.stdout)
 
-    assert seen == [[False, False]] * 9   # ни одного перекрытия и ни одного выхода за сетку
+    # На каждом шаге от одного окна до девяти: без перекрытий, без выхода за сетку и
+    # ровно 96 занятых клеток. Семь окон и были жалобой — прежняя раскладка теряла
+    # остаток от деления и оставляла внизу две пустые полосы.
+    assert seen == [[False, False, 96]] * 9
     assert count == 9
-    assert [w, h] == [4, 2]               # девять окон — плитка 3x3 по клеткам 4x2
     assert big == [1, 1, 12, 8]           # развёрнутое занимает всю область
     assert back == was                    # и возвращается ровно откуда развернули
+    # Три окна на широком экране — три колонки во всю высоту, а не два сверху и одно снизу.
+    assert three == [[1, 1, 4, 8], [5, 1, 4, 8], [9, 1, 4, 8]]
+    # Шесть — ровно 3 + 3. Раскладка по средней клетке давала 4 + 2: четыре правильных
+    # окна перевешивали два растянутых, и ряды выходили разной формы.
+    assert rows == [3, 3]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -460,3 +477,55 @@ function upload""" + body + """
     # Половина отправлена, дальше длина неизвестна — это не ноль, а «процента нет».
     assert got["seen"] == [0.5, None]
     assert got["field"] == "file"                   # имя поля то же, что ждёт api_upload
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_sidebar_tree_shows_all_projects_and_hides_closed_ones(tmp_path):
+    """Сайдбар — дерево: все проекты видны сразу, сессии показывает только раскрытый.
+    Выпадашка стояла тут до 2026-09-25 и прятала всё, кроме выбранного проекта."""
+    body = slice_out("script").split("// --- tree:begin ---")[1].split("// --- tree:end ---")[0]
+    js = tmp_path / "tree.js"
+    js.write_text("""
+const box = {};
+let html = '';
+const localStorage = { getItem: (k) => box[k] ?? null, setItem: (k, v) => { box[k] = v; } };
+const $ = () => ({ set innerHTML(v) { html = v; }, querySelectorAll: () => [] });
+const esc = (s) => String(s);
+const wireRows = () => {};
+const get = async () => [];
+""" + body + """
+TREE = {
+  projects: [{ path: '/projects/a', name: 'a' }, { path: '/projects/b', name: 'b' }],
+  lists: [[{ id: 's1', title: 'про докер', ago: '2ч' }],
+          [{ id: 's2', title: 'чужая сессия', ago: '5д' }]],
+};
+open.add('/projects/a');
+drawProjects();
+console.log(JSON.stringify([
+  html.includes('data-path="/projects/a"'),
+  html.includes('data-path="/projects/b"'),
+  html.includes('data-project="/projects/a"'),
+  html.includes('чужая сессия'),
+  (html.match(/class=add/g) || []).length,
+  box.open,
+]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    a_head, b_head, a_row, b_row, adds, saved = json.loads(done.stdout)
+
+    assert a_head and b_head          # оба проекта в дереве, переключать нечего
+    assert a_row                      # сессия раскрытого проекта несёт свой путь
+    assert not b_row                  # свёрнутый проект своих сессий не рисует
+    assert adds == 2                  # «+» в каждой строке проекта
+    assert saved is None              # drawTree только рисует, состояние пишет клик
+
+
+def test_no_two_functions_share_a_name():
+    """Второе объявление молча перекрывает первое, и падает не оно, а вызывающий. Так
+    2026-09-25 легла вся панель: дерево проектов назвали `drawTree`, а это уже имя
+    рендера дерева файлов — сайдбар позвал чужую функцию без аргумента, исключение убило
+    запуск целиком, и пустыми остались и список, и окна."""
+    names = re.findall(r"^function (\w+)", slice_out("script"), re.M)
+    dupes = {n for n in names if names.count(n) > 1}
+    assert not dupes, dupes

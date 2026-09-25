@@ -50,9 +50,9 @@ def fake_run(monkeypatch):
     """runner.run → поток из двух событий. Настоящий поднимал бы claude."""
     calls = []
 
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         calls.append({"prompt": prompt, "cwd": cwd, "session_id": session_id,
-                      "scope": scope, "model": model})
+                      "scope": scope, "model": model, "effort": effort})
         yield {"type": "system", "subtype": "init", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "result", "result": "готово"}
 
@@ -103,7 +103,7 @@ async def test_second_prompt_queues_and_continues_first_session(client, monkeypa
     sid = "11111111-2222-3333-4444-555555555555"
     calls, release = [], asyncio.Event()
 
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         calls.append({"prompt": prompt, "session_id": session_id})
         runner._tag(scope, sid)  # настоящий run запоминает сессию так же
         yield {"type": "system", "subtype": "init", "session_id": sid}
@@ -247,7 +247,7 @@ async def test_stream_resumes_from_last_event_id(client, tmp_path, monkeypatch):
 @pytest.fixture
 def failing_run(monkeypatch):
     """runner.run, который отдаёт session_id и следом падение с кодом возврата."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "_bot", "kind": "error", "rc": 2, "text": "claude: no such option"}
 
@@ -281,7 +281,7 @@ async def test_result_error_text_beats_bare_return_code(client, monkeypatch, tmp
     """Причина приходит в `result`, а стоп-код — это всегда просто rc=1 при пустом
     stderr. Поймано живьём на лимите подписки: панель показывала «rc=1» и молчала
     о том, что лимит исчерпан."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "result", "is_error": True, "result": "You've hit your session limit"}
         yield {"type": "_bot", "kind": "error", "rc": 1, "text": ""}
@@ -306,7 +306,7 @@ async def test_result_error_text_beats_bare_return_code(client, monkeypatch, tmp
 async def test_stderr_text_goes_to_panel(client, monkeypatch, tmp_path, stderr, expect):
     """Голый код возврата ничего не объясняет. Текст из stderr идёт вперёд, код в скобки,
     а при пустом stderr панель хотя бы говорит, куда смотреть."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "_bot", "kind": "error", "rc": 1, "text": stderr}
 
@@ -585,7 +585,7 @@ async def test_local_command_answer_reaches_the_panel(client, monkeypatch, tmp_p
     """`/cost` и `/model` claude отвечает сам, до модели не доходя, и в транскрипт ответ
     не пишет — там остаются пометка клиента и имя команды. Поток его принести не может,
     поэтому текст едет через статус."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "result", "result": "Current model: Opus 5", "total_cost_usd": 0,
                "usage": {"input_tokens": 0, "output_tokens": 0}}
@@ -604,7 +604,7 @@ async def test_local_command_answer_reaches_the_panel(client, monkeypatch, tmp_p
 async def test_normal_answer_does_not_ride_the_local_channel(client, monkeypatch, tmp_path):
     """Иначе обычный ответ встал бы в панель дважды: его же текст лежит в `result`,
     а из транскрипта панель его уже вытянула."""
-    async def fake(prompt, cwd, session_id=None, model=None, scope="0"):
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
         yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
         yield {"type": "result", "result": "готово", "total_cost_usd": 0.02,
                "usage": {"output_tokens": 20}}
@@ -641,3 +641,26 @@ async def test_session_name_from_panel(client, tmp_path):
 
     bad = await client.post("/api/name", json={"session": "../../etc/passwd", "name": "x"})
     assert bad.status == 400
+
+
+async def test_effort_reaches_the_cli_and_junk_does_not(client, tmp_path, fake_run):
+    """Усилие выбирается в панели и уходит в `claude --effort`. Список закрытый: CLI на
+    незнакомое значение не падает, а молча берёт своё — и панель показывала бы одно, а
+    claude думал бы другим."""
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x", "effort": "xhigh"})
+    await asyncio.sleep(0)
+    assert fake_run[0]["effort"] == "xhigh"
+
+    r = await client.post("/api/prompt", json={
+        "pane": "pane-2", "project": str(tmp_path / "proj"), "prompt": "x", "effort": "бред"})
+    assert r.status == 400
+    assert len(fake_run) == 1
+
+
+def test_run_puts_effort_next_to_model():
+    """Флаг собирается в argv рядом с `--model`. Проверяем строку команды, а не вызов:
+    ошибиться тут значит запустить claude без усилия и не заметить."""
+    import inspect
+    src = inspect.getsource(runner.run)
+    assert 'argv += ["--effort", effort]' in src

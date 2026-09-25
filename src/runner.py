@@ -355,6 +355,7 @@ async def run(
     session_id: str | None = None,
     model: str | None = None,
     scope: str = "0",
+    effort: str | None = None,
 ) -> AsyncIterator[dict]:
     """Событие за событием из `--output-format stream-json`.
 
@@ -370,6 +371,11 @@ async def run(
         argv += ["--resume", session_id]
     if model:
         argv += ["--model", model]
+    # Усилие выбирается в панели рядом с моделью. Незнакомое значение CLI не роняет —
+    # предупреждает и берёт своё, — но пускать сюда что попало всё равно незачем: список
+    # закрытый, и проверяет его `webui.EFFORTS` на входе.
+    if effort:
+        argv += ["--effort", effort]
 
     proc = await asyncio.create_subprocess_exec(
         *argv,

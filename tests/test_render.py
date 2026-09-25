@@ -34,7 +34,9 @@ def test_basic():
     assert run.done and not run.error
     assert "готово" in out
     assert "📖 Read: /x/2.py" in out
-    assert "3 вызовов" in out and "$0.012" in out
+    assert "3 вызовов" in out
+    assert "$" not in out          # цена снята: по подписке она не расход
+    assert "↑" in out              # токены остались
 
 
 def test_tail_and_limit():

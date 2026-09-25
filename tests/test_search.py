@@ -79,3 +79,37 @@ def test_limit_and_order(project, monkeypatch):
 
     got = sessions.search(str(project), "докер", limit=2)
     assert [sid for sid, *_ in got] == ["3333", "2222"]
+
+
+async def test_search_without_project_covers_them_all(tmp_path, monkeypatch):
+    """Панель спрашивает «где я это обсуждал»: без `project` ручка идёт по всем проектам
+    сразу и подписывает каждую строку её каталогом, иначе открыть найденное нечем."""
+    import os
+    import threading
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    os.environ.setdefault("TG_BOT_TOKEN", "x")
+    import store
+    import webui
+
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "t")
+    monkeypatch.setattr(sessions, "PROJECTS_DIR", tmp_path / "projects")
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store, "_local", threading.local())
+    one, two = tmp_path / "projects" / "one", tmp_path / "projects" / "two"
+    one.mkdir(parents=True)
+    two.mkdir(parents=True)
+    write(one, "11111111-1111-4111-8111-111111111111", prompt("почини докер"))
+    write(two, "22222222-2222-4222-8222-222222222222", answer("докер починен"))
+    write(two, "33333333-3333-4333-8333-333333333333", prompt("про другое"))
+
+    c = TestClient(TestServer(webui.build()))
+    await c.start_server()
+    try:
+        rows = await (await c.get("/api/search", params={"q": "докер"})).json()
+    finally:
+        await c.close()
+
+    assert {r["project"] for r in rows} == {str(one), str(two)}
+    assert {r["id"][:8] for r in rows} == {"11111111", "22222222"}

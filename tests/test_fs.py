@@ -251,3 +251,102 @@ async def test_rm_outside_roots_is_refused(client, tmp_path):
     r = await client.post("/api/rm", json={"path": str(посторонний)})
     assert r.status == 400
     assert посторонний.exists()
+
+
+async def test_image_is_not_read_as_text(client, roots):
+    """Картинка приходит типом, а не содержимым: в редактор она не идёт, её тянет `<img>`
+    отдельным запросом. Раньше сюда попадал отказ «не текст в utf-8»."""
+    demo, _ = roots
+    (demo / "снимок.png").write_bytes(b"\x89PNG\r\n\x1a\n" + b"\x00" * 64)
+
+    f = await (await client.get("/api/file", params={"path": str(demo / "снимок.png")})).json()
+    assert f["image"] == "image/png"
+    assert "text" not in f and "why" not in f
+
+
+async def test_raw_serves_the_bytes_with_its_type(client, roots):
+    demo, _ = roots
+    body = b"\x89PNG\r\n\x1a\n" + b"\x01" * 32
+    (demo / "снимок.png").write_bytes(body)
+
+    r = await client.get("/api/raw", params={"path": str(demo / "снимок.png")})
+    assert r.status == 200
+    assert r.headers["Content-Type"] == "image/png"
+    assert await r.read() == body
+
+
+async def test_raw_outside_roots_is_refused(client, tmp_path):
+    чужое = tmp_path / "чужое.png"
+    чужое.write_bytes(b"x")
+    assert (await client.get("/api/raw", params={"path": str(чужое)})).status == 400
+
+
+async def test_big_image_still_opens(client, roots):
+    """Потолок редактора в 1 МБ на картинки не распространяется: фото с телефона крупнее,
+    а смотреть его это не мешает."""
+    demo, _ = roots
+    (demo / "фото.jpg").write_bytes(b"\xff\xd8" + b"\x00" * (2 << 20))
+
+    f = await (await client.get("/api/file", params={"path": str(demo / "фото.jpg")})).json()
+    assert f["image"] == "image/jpeg"
+
+
+async def test_rm_takes_the_link_and_spares_its_target(client, roots):
+    """Симлинк снимается сам. Так собран каждый скилл: `/root/.claude/skills/x` ведёт в
+    `/opt/skills/*`, и «удалить ссылку» не должно значить «удалить скилл»."""
+    demo, config = roots
+    (demo / "SKILL.md").write_text("текст")
+    (config / "skills").mkdir()
+    (config / "skills" / "demo").symlink_to(demo)
+
+    r = await client.post("/api/rm", json={"path": str(config / "skills" / "demo")})
+    assert r.status == 200
+    assert not (config / "skills" / "demo").is_symlink()
+    assert (demo / "SKILL.md").read_text() == "текст"   # цель на месте
+
+
+async def test_rename_keeps_the_directory(client, roots):
+    demo, _ = roots
+    (demo / "было.md").write_text("текст")
+
+    r = await client.post("/api/mv", json={"path": str(demo / "было.md"), "name": "стало.md"})
+    assert r.status == 200
+    assert (await r.json())["path"] == str(demo / "стало.md")
+    assert (demo / "стало.md").read_text() == "текст"
+    assert not (demo / "было.md").exists()
+
+
+async def test_rename_refuses_a_taken_name(client, roots):
+    demo, _ = roots
+    (demo / "было.md").write_text("а")
+    (demo / "занято.md").write_text("б")
+
+    r = await client.post("/api/mv", json={"path": str(demo / "было.md"), "name": "занято.md"})
+    assert r.status == 400
+    assert (demo / "было.md").read_text() == "а"
+    assert (demo / "занято.md").read_text() == "б"
+
+
+async def test_rename_cannot_escape_the_directory(client, roots):
+    demo, config = roots
+    (demo / "было.md").write_text("текст")
+
+    r = await client.post("/api/mv",
+                          json={"path": str(demo / "было.md"), "name": "../../беглец"})
+    assert r.status == 200          # имя чистится, а не отклоняется
+    assert (demo / "было.md").exists() is False
+    assert sorted(p.name for p in config.iterdir()) == []   # наружу ничего не уехало
+    assert [p.name for p in demo.iterdir()] == ["беглец"]
+
+
+async def test_dotfiles_keep_their_dot(client, roots):
+    """`.env` и `.gitignore` — обычные имена. Прежний санитайзер срезал точку в начале,
+    и файл молча создавался под другим именем."""
+    demo, _ = roots
+    r = await client.post("/api/new", json={"dir": str(demo), "name": ".env"})
+    assert r.status == 200
+    assert (await r.json())["path"] == str(demo / ".env")
+    assert (demo / ".env").is_file()
+
+    assert files._filename(".") == "file"
+    assert files._filename("..") == "file"

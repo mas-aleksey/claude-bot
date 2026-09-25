@@ -170,6 +170,11 @@ def _int(value: str | None) -> int:
 # теперь его текст видно в панели.
 MODEL_RE = re.compile(r"[a-zA-Z0-9._-]{2,64}\Z")
 
+# Уровни усилия, которые принимает CLI (`claude --effort`). Список закрытый и короткий,
+# поэтому проверка множеством, а не регуляркой: незнакомое значение CLI молча заменит
+# своим дефолтом, и панель показывала бы одно, а claude думал другим.
+EFFORTS = ("low", "medium", "high", "xhigh", "max")
+
 
 
 def _path(project: str, session_id: str) -> Path:
@@ -203,7 +208,8 @@ def _answered_locally(ev: dict) -> bool:
 
 
 async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
-                 got: asyncio.Future, model: str | None = None, adopt: bool = False) -> None:
+                 got: asyncio.Future, model: str | None = None, adopt: bool = False,
+                 effort: str | None = None) -> None:
     """Довести запуск до конца, ничего не рендеря: вывод claude сам пишет в транскрипт,
     а панель его тейлит. Наружу отдаём только первый session_id — панели нужно знать,
     какой файл читать, особенно когда сессия новая и id придумал claude.
@@ -225,7 +231,8 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
             # Модель панели, а иначе глобальная из бота: две панели на разных моделях —
             # ровно то, ради чего делалась параллельность.
             async for ev in runner.run(prompt, project, session_id,
-                                       model or store.get("model"), scope=scope):
+                                       model or store.get("model"), scope=scope,
+                                       effort=effort):
                 if not got.done() and (sid := ev.get("session_id") or sid):
                     got.set_result(sid)
                 # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
@@ -384,12 +391,30 @@ async def api_stream(req: web.Request) -> web.StreamResponse:
 
 
 async def api_search(req: web.Request) -> web.Response:
-    """Поиск по сессиям проекта. Диск в потоке: скан всех транскриптов проекта —
-    полсекунды на 45 МБ, но держать на это event loop незачем."""
-    found = await asyncio.to_thread(
-        sessions.search, req.query.get("project", ""), req.query.get("q", ""), 20)
-    return web.json_response([_row(sid, title, age, snippet=snip)
-                              for sid, title, age, snip in found])
+    """Поиск по сессиям. Без `project` — по всем сразу: панель спрашивает «где я это
+    обсуждал», а не «есть ли это здесь».
+
+    Диск в потоке: скан транскриптов одного проекта — 160–230 мс на живом инстансе.
+    Проекты опрашиваем параллельно, иначе четыре штуки складываются в секунду, и дебаунс
+    в 300 мс перестаёт спасать.
+
+    Строки несут `project`: у панели они лежат одним списком, и открыть сессию она может
+    только зная, в каком каталоге её продолжать.
+    """
+    q = req.query.get("q", "")
+    if project := req.query.get("project", ""):
+        found = await asyncio.to_thread(sessions.search, project, q, 20)
+        return web.json_response([_row(sid, title, age, snippet=snip, project=project)
+                                  for sid, title, age, snip in found])
+
+    cwds = [str(x) for x in sessions.projects()]
+    lists = await asyncio.gather(*(asyncio.to_thread(sessions.search, c, q, 20)
+                                   for c in cwds))
+    rows = [(age, sid, title, snip, cwd)
+            for cwd, found in zip(cwds, lists) for sid, title, age, snip in found]
+    rows.sort()   # по возрасту: свежее сверху, как и в дереве
+    return web.json_response([_row(sid, title, age, snippet=snip, project=cwd)
+                              for age, sid, title, snip, cwd in rows[:20]])
 
 
 async def api_drop(req: web.Request) -> web.Response:
@@ -450,6 +475,9 @@ async def api_prompt(req: web.Request) -> web.Response:
     model = (data.get("model") or "").strip() or None
     if model and not MODEL_RE.match(model):
         raise web.HTTPBadRequest(text="плохое имя модели")
+    effort = (data.get("effort") or "").strip() or None
+    if effort and effort not in EFFORTS:
+        raise web.HTTPBadRequest(text="плохое усилие")
     project = _project(data.get("project") or "")
 
     scope = f"web:{pane}"
@@ -459,7 +487,8 @@ async def api_prompt(req: web.Request) -> web.Response:
     # Задача живёт дольше запроса: ответ панели — только session_id, а прогон
     # продолжается в фоне и виден ей через транскрипт.
     task = asyncio.create_task(_drive(scope, prompt, project, session_id, got, model,
-                                      adopt=bool(queued) and session_id is None))
+                                      adopt=bool(queued) and session_id is None,
+                                      effort=effort))
     _tasks.add(task)
     task.add_done_callback(_tasks.discard)
     if queued:
@@ -498,9 +527,11 @@ def build() -> web.Application:
         web.get("/api/roots", files.api_roots),
         web.get("/api/files", files.api_files),
         web.get("/api/file", files.api_file),
+        web.get("/api/raw", files.api_raw),
         web.post("/api/file", files.api_save),
         web.post("/api/new", files.api_new),
         web.post("/api/rm", files.api_rm),
+        web.post("/api/mv", files.api_mv),
         web.post("/api/drop", api_drop),
         web.get("/api/stream", api_stream),
         web.get("/api/status", api_status),
