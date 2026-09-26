@@ -71,10 +71,6 @@ body.rfolded #rfold::before { content:'\2039' }
 #tree .dir { font-weight:600 }
 #tree .size { float:right; opacity:.5; font-size:11px }
 #tree .none { padding:8px 10px; opacity:.5; font-size:12px }
-#peers { display:flex; gap:2px; padding:8px 8px 0 }
-#peers a { flex:1; text-align:center; padding:5px; border:1px solid #8884; border-radius:4px;
-  text-decoration:none; color:inherit; font-size:13px }
-#peers a[aria-current=page] { background:#8884; font-weight:600 }
 aside select, aside button.new, aside input { margin:8px 8px 0; padding:6px }
 aside .row { display:flex }
 aside .row button.new { flex:1 }
@@ -114,11 +110,22 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .fill { display:block; height:100%; border-radius:2px; background:oklch(0.62 0.18 250) }
 #plan .fill.warn { background:#e90 }
 #plan .fill.hot { background:#e55 }
-#list .ago { opacity:.6; font-size:12px }
+/* Возраст сессии — у самого правого края: слева он разрывал название, ради которого
+   строку и читают. Стоит последним в плавашке, а кнопки — перед ним: место они держат
+   всегда, видны только под курсором, и время иначе висело бы в полусотне пикселей от
+   края. Размер шрифта наследуется от `.meta`. */
+#list .meta .ago { opacity:.75; margin-left:4px }
 /* Дерево проектов. Строка проекта — та же кнопка списка, только жирнее и со своими
    плавашками справа: счётчик сессий и «+». Сессии под ней сдвинуты отступом, чтобы
    вложенность читалась без линий и рамок. */
-#list .head { font-weight:600 }
+/* Строка проекта — не такая же кнопка, как сессия под ней: своя подложка, разрядка и
+   чуть мельче шрифт. Цвет нарочно нейтральный: тон в этой панели означает «сессия вот
+   этого окна», и красить им заголовки веток значило бы сказать неправду.
+   Липкая: в раскрытом проекте на три десятка сессий видно, чьи они, не отлистывая. */
+#list .head { position:sticky; top:0; z-index:1; font-weight:600; font-size:12px;
+  letter-spacing:.04em; background:Canvas; box-shadow:inset 0 0 0 99px #8881;
+  border-top:1px solid #8883 }
+#list .head:hover { box-shadow:inset 0 0 0 99px #8883 }
 #list .head .caret { display:inline-block; width:12px; opacity:.6; font-size:11px }
 #list .head .n { float:right; opacity:.45; font-size:11px; margin-left:8px }
 #list .head .add { float:right; width:25px; height:25px; line-height:25px; text-align:center;
@@ -176,12 +183,33 @@ header .dl:hover { opacity:1 }
    просвечивал бы соседнюю. Градиент — верхний слой, Canvas — нижний непрозрачный. */
 section { position:relative; display:flex; flex-direction:column; overflow:hidden;
   min-width:0; min-height:0; border-radius:6px;
-  border:1px solid oklch(0.62 0.16 var(--hue,250) / .5);
-  background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .07),
-                             oklch(0.62 0.16 var(--hue,250) / .07)), Canvas;
+  border:2px solid oklch(0.62 0.16 var(--hue,250) / .6);
+  background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .12),
+                             oklch(0.62 0.16 var(--hue,250) / .12)), Canvas;
   grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
 /* Активная — та же рамка, но в полную насыщенность, плюс тень. Цвет не единственный
    признак: в заголовке остаются проект и id сессии. */
+/* Окно закончило работу, пока смотрели в другое: всё окно уходит в косую штриховку
+   своим же тоном. Меняется не цвет, а фактура — её глаз ловит там, где смену
+   насыщенности не заметил: заголовок в 85% против обычных 45% прошёл мимо (2026-09-26),
+   сплошная заливка чужим цветом спорила с тоном окна.
+   Мигание не использую: оно занято состоянием «идёт прогон» и значит обратное.
+   Штриховка держится до первого клика по окну — снимает её `raise`. */
+section.ready { border-color:oklch(0.62 0.20 var(--hue,250));
+  background:repeating-linear-gradient(-45deg,
+      oklch(0.62 0.18 var(--hue,250) / .26) 0 24px,
+      oklch(0.62 0.18 var(--hue,250) / .06) 24px 48px), Canvas }
+section.ready header { background:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Поверх штриховки — крупный знак посреди окна: галочка, если прогон дошёл до конца, и
+   крест, если упал. Цвета тут не от тона окна: зелёное и красное читаются как «сделано»
+   и «сломалось» без чтения текста, а тон окна отвечает за «чьё это окно».
+   `pointer-events:none` обязателен — знак закрывает половину окна, и клик по нему обязан
+   попадать в само окно, иначе снять метку нечем. */
+section.ready::after { content:'\2714'; position:absolute; inset:0; margin:auto;
+  width:72px; height:72px; border-radius:50%; display:grid; place-items:center;
+  font-size:40px; line-height:1; color:#fff; pointer-events:none; z-index:3;
+  background:oklch(0.60 0.19 145 / .9); box-shadow:0 4px 18px #0004 }
+section.ready.bad::after { content:'\2715'; background:oklch(0.58 0.22 25 / .9) }
 section.act { z-index:5; box-shadow:0 6px 24px #0005;
   border-color:oklch(0.62 0.20 var(--hue,250)) }
 /* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
@@ -198,7 +226,7 @@ section.act { z-index:5; box-shadow:0 6px 24px #0005;
   background:linear-gradient(135deg, transparent 45%, #8887 45%) }
 header { position:relative; display:flex; gap:6px; align-items:center; padding:6px 10px;
   border-bottom:1px solid oklch(0.62 0.16 var(--hue,250) / .4);
-  background:oklch(0.62 0.18 var(--hue,250) / .30) }
+  background:oklch(0.62 0.18 var(--hue,250) / .45) }
 header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
   white-space:nowrap }
 header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; flex:none }
@@ -466,7 +494,6 @@ body:not(.folded) #empty .list { display:none }
 </style></head><body>
 <div id=top>
 <aside>
-  <nav id=peers></nav>
   <input id=find type=search placeholder="поиск по всем проектам">
   <div id=list></div>
   <div id=plan hidden></div>
@@ -524,6 +551,10 @@ let dead = false;
 // страницей входа: по `r.ok` это успех, json там нет, и вкладка оставалась белой —
 // данные не пришли, а сказать об этом было некому. Тип ответа тут единственный честный
 // признак. Серии ждать незачем: html вместо json — это точно вход, а не помеха связи.
+// Заголовок вкладки приходит из шаблона со стороны сервера — это имя инстанса. Держим
+// его здесь, чтобы плашка обрыва могла вернуть имя на место.
+const TITLE = document.title;
+
 const payload = (r) => {
   if (!r.ok) throw r.status;
   if (!(r.headers.get('content-type') || '').includes('json')) {
@@ -541,29 +572,70 @@ const get = (u) => fetch(u).then(payload)
 // посреди набранного промпта — потеря работы.
 function offline() {
   dead = true;
-  document.title = '⚠ claude';
+  // Имя инстанса в заголовке ставит сервер, поэтому берём то, что есть, а не пишем
+  // «claude» заново: иначе после обрыва связи вкладка теряла бы, чья она.
+  document.title = '⚠ ' + TITLE;
   $('dead').hidden = false;
 }
 // --- dead:end ---
 const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
   body: JSON.stringify(body) }).then(payload);
+
+// POST, который сам объясняет отказ. Ручки дерева и списка пишут причину словами —
+// «папка не пуста», «такое имя уже занято», «над сессией идёт прогон», — и показать
+// вместо неё код значит потерять единственное, что объясняет отказ. Отсюда своя обёртка
+// вместо `post`: тот отдаёт только статус и молчит о тексте.
+//
+// Неудача возвращает null и уже сказала человеку; вызывающему остаётся один `if`. До
+// 2026-09-25 это были четыре копии, и все четыре разошлись в мелочах.
+async function ask(url, body, what) {
+  const r = await fetch(url, { method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body) });
+  const text = await r.text();
+  if (!r.ok) { alert(text || (what + ': ' + r.status)); return null; }
+  try { return JSON.parse(text); } catch (e) { return {}; }
+}
+
+// Буфер обмена одной строкой. Три места копируют в него (путь в шапке окна, путь в
+// дереве, блок кода в логе), и у каждого был свой способ промолчать при отказе.
+const copy = async (text) => {
+  try { await navigator.clipboard.writeText(text); return true; }
+  catch (e) { return false; }
+};
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
-// Оттенки для панелей: шесть штук по кругу, светлота и насыщенность заданы в CSS.
-// Берём первый незанятый, чтобы соседние панели не совпали по цвету.
-// Первые четыре разнесены максимально: синий, красно-оранжевый, зелёный, пурпурный.
-// Дальше циан и янтарный. Насыщенность и светлота заданы в CSS одинаковыми для всех,
-// поэтому панели отличаются только тоном и выглядят одной семьёй.
 // Усилие новых окон. `high` — осознанный выбор человека, а не дефолт CLI: тот не назван
 // ни в `--help`, ни в событии init, и молча меняться может с версией.
 const EFFORT = 'high';
 
-const HUES = [250, 25, 145, 305, 195, 60];
+// --- hue:begin ---
+// Оттенок окна — середина самого широкого свободного промежутка на круге. Насыщенность
+// и светлота заданы в CSS одинаковыми для всех, поэтому панели отличаются только тоном
+// и выглядят одной семьёй.
+//
+// Список из шести тонов стоял тут до 2026-09-26 и держал две пары в 55° друг от друга —
+// синий с пурпурным и бирюзовый с синим. Седьмое окно и вовсе повторяло чужой тон:
+// список кончался, и брался остаток по числу панелей. Шаг золотого угла, стоявший
+// следом, разносил хуже: он не смотрит, где именно пусто.
+//
+// Занятыми считаются цвета открытых окон и цвета закрытых сессий: карта `hues` живёт
+// дольше окна, и вернувшаяся сессия обязана мигать тем же оттенком.
+const HUE0 = 250;
+const arc = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
 const freeHue = () => {
-  const used = new Set([...panes.map(x => x.hue), ...Object.values(hues)]);
-  return HUES.find(h => !used.has(h)) ?? HUES[panes.length % HUES.length];
+  const used = [...panes.map(x => x.hue), ...Object.values(hues)]
+    .filter(h => typeof h === 'number').sort((a, b) => a - b);
+  if (!used.length) return HUE0;
+  let best = (used[0] + 180) % 360, wide = -1;
+  used.forEach((a, i) => {
+    const gap = (((used[(i + 1) % used.length] - a) % 360) + 360) % 360 || 360;
+    if (gap > wide) { wide = gap; best = Math.round(a + gap / 2) % 360; }
+  });
+  return best;
 };
+// --- hue:end ---
 
 // Панели переживают F5: в них лежит id, который на сервере служит скоупом запуска,
 // поэтому после перезагрузки «стоп» бьёт по своему прогону, а не по чужому.
@@ -657,15 +729,6 @@ async function loadModels() {
   refillModels();
 }
 
-async function loadPeers() {
-  let ps; try { ps = await get('api/peers'); } catch (e) { return; }
-  if (ps.length < 2) return;
-  $('peers').innerHTML = ps.map(p => {
-    const here = p.url.includes(location.host) ? ' aria-current=page' : '';
-    return `<a href="${esc(p.url)}"${here}>${esc(p.name)}</a>`;
-  }).join('');
-}
-
 // --- tree:begin ---
 // Сайдбар — дерево проектов, а не список одного из них. Выпадашка стояла тут до
 // 2026-09-25 и была единственной дорогой к чужой сессии: переключил — потерял из виду
@@ -681,19 +744,24 @@ const saveOpen = () => localStorage.setItem('open', JSON.stringify([...open]));
 // не дёргая сервер. Данные те же, меняется только что показано.
 let TREE = { projects: [], lists: [] };
 
-// ponytail: списки всех проектов тянем разом, ленивой подгрузки по раскрытию нет.
-// Замер 2026-09-25: 12–18 мс на проект, четыре проекта — 60 мс. Проектов станет три
-// десятка — грузить только раскрытые.
+// Списки сессий тянем только у раскрытых проектов: на каждую строку сервер читает
+// транскрипт ради заголовка (12–18 мс на проект, замер 2026-09-25), а дерево
+// перечитывается каждые пятнадцать секунд. Свёрнутой строке хватает числа сессий — его
+// отдаёт `api/projects` перечислением каталога, без чтения файлов.
 async function loadTree() {
   const ps = await get('api/projects');
-  const lists = await Promise.all(ps.map(
-    x => get('api/sessions?project=' + encodeURIComponent(x.path)).catch(() => [])));
-  TREE = { projects: ps, lists };
+  // Первый заход раскрывает последний использованный проект — тот самый ключ `proj`,
+  // что помнила выпадашка. Решаем это до запроса списков, иначе раскрытый на этом же
+  // проходе проект остался бы без содержимого до следующего тика.
   if (!open.size) {
     const saved = localStorage.getItem('proj');
     const first = ps.some(x => x.path === saved) ? saved : ps[0]?.path;
     if (first) { open.add(first); saveOpen(); }
   }
+  const want = ps.filter(x => open.has(x.path));
+  const lists = await Promise.all(want.map(
+    x => get('api/sessions?project=' + encodeURIComponent(x.path)).catch(() => [])));
+  TREE = { projects: ps, lists: Object.fromEntries(want.map((x, i) => [x.path, lists[i]])) };
   drawProjects();
 }
 
@@ -703,31 +771,39 @@ const rowHTML = (s, project, withName) =>
   `<button data-id="${s.id}" data-project="${esc(project)}" data-title="${esc(s.title)}">` +
   `<span class=meta>` +
     `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
-    `<span class=rm title="удалить сессию">\u2715</span></span>` +
-  `<span class=ago>${esc(s.ago)}</span> ${esc(s.title.slice(0, 60))}` +
+    `<span class=rm title="удалить сессию">\u2715</span>` +
+    `<span class=ago>${esc(s.ago)}</span></span>` +
+  `${esc(s.title.slice(0, 60))}` +
   (withName ? `<span class=pj>${esc(project.split('/').pop())}</span>` : '') +
   (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>';
 
 function drawProjects() {
   const { projects: ps, lists } = TREE;
-  $('list').innerHTML = ps.map((x, i) => {
+  $('list').innerHTML = ps.map((x) => {
     const on = open.has(x.path);
-    const rows = lists[i] || [];
+    // Число у свёрнутого — с сервера, у раскрытого — длина списка: он показывает
+    // тридцать свежих, и писать рядом с ними большее число было бы неправдой.
+    const rows = lists[x.path];
     return `<div class=node><button class=head data-path="${esc(x.path)}">` +
       `<span class=add title="новая сессия в ${esc(x.name)}">+</span>` +
-      `<span class=n>${rows.length}</span>` +
+      `<span class=n>${rows ? rows.length : (x.sessions ?? 0)}</span>` +
       `<span class=caret>${on ? '\u25be' : '\u25b8'}</span> ${esc(x.name)}</button>` +
       (on ? `<div class=kids>` +
-            (rows.map(s => rowHTML(s, x.path)).join('') ||
-             '<div class=none>сессий нет</div>') + '</div>' : '') + '</div>';
+            ((rows || []).map(s => rowHTML(s, x.path)).join('') ||
+             `<div class=none>${rows ? 'сессий нет' : '\u2026'}</div>`) + '</div>' : '') +
+      '</div>';
   }).join('') || '<div class=none>проектов нет</div>';
 
   for (const h of $('list').querySelectorAll('.head')) {
     const path = h.dataset.path;
     h.onclick = () => {
-      open.has(path) ? open.delete(path) : open.add(path);
+      const on = !open.has(path);
+      on ? open.add(path) : open.delete(path);
       saveOpen();
+      // Свернуть — просто перерисовать. Раскрыть — сходить за списком: у свёрнутого его
+      // в TREE нет, и до ответа в ветке стоит многоточие.
       drawProjects();
+      if (on) loadTree().catch(() => {});
     };
     // «+» внутри строки проекта: всплытие обрываем, иначе заведение сессии заодно
     // сворачивало бы проект, из которого её завели.
@@ -764,10 +840,7 @@ function wireRows() {
       e.stopPropagation();
       if (!confirm('удалить сессию «' + b.dataset.title.slice(0, 60) + '»? это навсегда'))
         return;
-      const r = await fetch('api/drop', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project, session: b.dataset.id }) });
-      if (!r.ok) return alert((await r.text()) || ('не удалить: ' + r.status));
+      if (!await ask('api/drop', { project, session: b.dataset.id }, 'не удалить')) return;
       panes.filter(x => x.session === b.dataset.id).forEach(closePane);
       runFind();
     };
@@ -833,7 +906,7 @@ function markList() {
   for (const b of document.querySelectorAll('#list button[data-id]')) {
     const id = b.dataset.id;
     const p = panes.find(x => x.session === id);
-    const hue = p ? (p.hue ?? HUES[0]) : hues[id];
+    const hue = p ? (p.hue ?? HUE0) : hues[id];
     b.classList.toggle('open', !!p);
     b.classList.toggle('busy', busySessions.has(id));
     b.classList.toggle('done', done.has(id));
@@ -988,6 +1061,9 @@ function drawZoom(p) {
 function raise(el) {
   document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
   el.classList.add('act');
+  // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
+  // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
+  el.classList.remove('ready', 'bad');
 }
 
 // Одна механика на перенос и на растягивание: и то и другое меняет прямоугольник панели
@@ -1087,7 +1163,7 @@ function addPane(p) {
 
 function closePane(p) {
   // Цвет отдаём строке: панели больше нет, а мигать закрытая сессия обязана тем же.
-  if (p.session) { hues[p.session] = p.hue ?? HUES[0]; saveMarks(); }
+  if (p.session) { hues[p.session] = p.hue ?? HUE0; saveMarks(); }
   unwatch(p);
   panes = panes.filter(x => x.pane !== p.pane);
   // Закрытое окно оставляло дыру: добавление перекладывает всех с прошлой правки, а
@@ -1266,7 +1342,7 @@ function wirePane(p, el) {
   // первой же отрисовке, иначе она так и висит развёрнутой полоской заголовка.
   if (p.roll && p.prev) { p.roll = false; save(); }
   drawFold();
-  el.style.setProperty('--hue', p.hue ?? HUES[0]);
+  el.style.setProperty('--hue', p.hue ?? HUE0);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
   el.onpointerdown = () => raise(el);
@@ -1325,12 +1401,8 @@ function drawFile(p) {
   // окна, и перенабирать руками — единственное, что тут делали до этой кнопки.
   const copyPath = async () => {
     const was = state.textContent;
-    try {
-      await navigator.clipboard.writeText(p.file);
-      say('путь скопирован');
-    } catch (e) {
-      say('буфер недоступен', true);
-    }
+    const ok = await copy(p.file);
+    say(ok ? 'путь скопирован' : 'буфер недоступен', !ok);
     setTimeout(() => say(was), 1200);
   };
   el.addEventListener('titletap', copyPath);
@@ -1478,12 +1550,7 @@ function drawTree(entries) {
     b.querySelector('.cp').onclick = async (e) => {
       e.stopPropagation();
       const cp = b.querySelector('.cp');
-      try {
-        await navigator.clipboard.writeText(b.dataset.path);
-        cp.textContent = '\u2713';
-      } catch (err) {
-        cp.textContent = '\u2717';
-      }
+      cp.textContent = await copy(b.dataset.path) ? '\u2713' : '\u2717';
       setTimeout(() => { cp.textContent = '\u2750\ufe0e'; }, 1200);
     };
     // Переименование на месте: каталог не меняется, поэтому из дерева хватает имени.
@@ -1494,12 +1561,9 @@ function drawTree(entries) {
       const was = b.dataset.path.split('/').pop();
       const name = prompt('новое имя', was);
       if (name === null || !name.trim() || name.trim() === was) return;
-      const r = await fetch('api/mv', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: b.dataset.path, name: name.trim() }) });
-      const body = await r.text();
-      if (!r.ok) return alert(body || ('не переименовать: ' + r.status));
-      const made = JSON.parse(body);
+      const made = await ask('api/mv', { path: b.dataset.path, name: name.trim() },
+                             'не переименовать');
+      if (!made) return;
       panes.filter(x => x.file === b.dataset.path).forEach(x => {
         x.file = made.path;
         document.getElementById('pane-' + x.pane)?.remove();
@@ -1511,10 +1575,7 @@ function drawTree(entries) {
     b.querySelector('.rm').onclick = async (e) => {
       e.stopPropagation();
       if (!confirm('удалить ' + b.dataset.path + '? это навсегда')) return;
-      const r = await fetch('api/rm', { method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ path: b.dataset.path }) });
-      if (!r.ok) return alert((await r.text()) || ('не удалить: ' + r.status));
+      if (!await ask('api/rm', { path: b.dataset.path }, 'не удалить')) return;
       panes.filter(x => x.file === b.dataset.path).forEach(closePane);
       openDir(atDir).catch(treeFail);
     };
@@ -1655,12 +1716,7 @@ function wireCopy(box) {
     btn.type = 'button';
     btn.textContent = 'копировать';
     btn.onclick = async () => {
-      try {
-        await navigator.clipboard.writeText(text);
-        btn.textContent = 'скопировано';
-      } catch (e) {
-        btn.textContent = 'не вышло';
-      }
+      btn.textContent = await copy(text) ? 'скопировано' : 'не вышло';
       setTimeout(() => { btn.textContent = 'копировать'; }, 1200);
     };
     // Оборачиваем, а не кладём внутрь: кнопка обязана остаться на месте, когда код
@@ -2147,6 +2203,19 @@ async function tick() {
     } else if (lastElapsed.has(p.pane)) {
       notifyDone(p, lastElapsed.get(p.pane));
       lastElapsed.delete(p.pane);
+      // Метим окно и держим метку до клика. Не метим единственный случай — окно впереди
+      // и вкладка на экране: там ответ видно своими глазами. Раньше условие было только
+      // про «впереди», и прогон, закончившийся в свёрнутой вкладке, следа не оставлял:
+      // человек возвращался к панели, где всё выглядит как до запуска.
+      // Точка в списке слева на этот случай не встаёт — она только для сессий без окна,
+      // а системное уведомление уходит лишь при свёрнутой вкладке.
+      const watched = el && el.classList.contains('act') && !document.hidden;
+      if (el && !watched) {
+        el.classList.add('ready');
+        // Упал прогон или дошёл до конца — знак разный. Ошибку сервер держит по скоупу
+        // до следующего запуска, поэтому она ещё здесь в тот же тик.
+        el.classList.toggle('bad', !!(st.errors || {})[scope]);
+      }
     }
 
     // Упавший прогон: показываем текст один раз, до следующего запуска в этой панели.
@@ -2190,7 +2259,9 @@ async function tick() {
   }
   markList();
   // Число работающих панелей в заголовке вкладки: видно, даже когда браузер свёрнут.
-  document.title = running ? `● ${running} · claude` : 'claude';
+  // Дописываем к TITLE, а не к слову «claude»: имя инстанса ставит сервер, и tick,
+  // затирающий заголовок раз в три секунды, стирал его через секунды после загрузки.
+  document.title = running ? `● ${running} · ${TITLE}` : TITLE;
 
   // Сессию могли начать в Telegram или в соседней панели — список слева должен это
   // увидеть сам, а не после перезагрузки страницы.
@@ -2268,12 +2339,8 @@ $('rfold').onclick = () => {
 const create = (folder) => async () => {
   const name = prompt((folder ? 'имя папки в ' : 'имя файла в ') + (atDir || '?'));
   if (!name || !name.trim()) return;
-  const r = await fetch('api/new', { method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ dir: atDir, name: name.trim(), folder }) });
-  const body = await r.text();
-  if (!r.ok) return alert(body || ('не создать: ' + r.status));
-  const made = JSON.parse(body);
+  const made = await ask('api/new', { dir: atDir, name: name.trim(), folder }, 'не создать');
+  if (!made) return;
   if (folder) return openDir(made.path).catch(treeFail);
   await openDir(atDir).catch(treeFail);
   addPane({ pane: uid(), file: made.path });
@@ -2293,13 +2360,13 @@ $('root').onchange = () => {
 $('reload').onclick = () => location.reload();
 $('find').oninput = scheduleFind;
 $('empty').querySelector('.list').onclick = () => $('fold').click();
-loadPeers();
 loadModels();
 loadRoots().catch(treeFail);
 loadTree().then(() => {
-  // Панели из localStorage могли получить оттенок из прежней палитры. Переназначаем по
-  // одной: freeHue смотрит на уже занятые, поэтому цвета не совпадут.
-  panes.forEach(p => { if (!HUES.includes(p.hue)) p.hue = freeHue(); });
+  // Панель из localStorage могла прийти без оттенка вовсе. Любое число — валидный угол,
+  // поэтому старые значения не трогаем: перекрашивать окна на глазах хуже, чем оставить
+  // им прежний цвет.
+  panes.forEach(p => { if (typeof p.hue !== 'number') p.hue = freeHue(); });
   save();
   panes.forEach(p => { p.next = 0; drawPane(p); });
   // Кто впереди после F5. `act` держит z-index, и достаётся он последнему нарисованному,

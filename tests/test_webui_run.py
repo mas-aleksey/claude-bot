@@ -664,3 +664,20 @@ def test_run_puts_effort_next_to_model():
     import inspect
     src = inspect.getsource(runner.run)
     assert 'argv += ["--effort", effort]' in src
+
+
+async def test_projects_carry_session_counts(client, tmp_path, monkeypatch):
+    """Число сессий у проекта отдаётся перечислением каталога. Оно нужно свёрнутой строке
+    дерева: списки сессий панель берёт только у раскрытых, потому что там сервер читает
+    транскрипт на каждую строку ради заголовка."""
+    cwd = tmp_path / "proj"
+    d = tmp_path / "transcripts" / sessions.slug(str(cwd))
+    d.mkdir(parents=True)
+    for sid in ("11111111", "22222222"):
+        (d / f"{sid}-1111-4111-8111-111111111111.jsonl").write_text("{}\n")
+    monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "transcripts")
+
+    rows = await (await client.get("/api/projects")).json()
+    # Каталог транскриптов в фикстуре лежит рядом с проектами и сам попадает в список —
+    # смотрим только на нужную строку.
+    assert {r["name"]: r["sessions"] for r in rows}["proj"] == 2

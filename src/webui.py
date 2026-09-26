@@ -27,6 +27,7 @@ import os
 import re
 import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -76,19 +77,19 @@ _local: dict[str, str] = {}
 _stats: dict[str, dict] = {}
 
 
-def peers() -> list[dict]:
-    """`WEB_PEERS=one=https://one.example,two=https://two.example` → вкладки в шапке.
+def title() -> str:
+    """Заголовок вкладки: имя инстанса, а без него — `claude`.
 
-    Список задаётся руками, а не выясняется сам: инстансы друг о друге не знают, у
-    каждого свой compose, своя сеть и свой домен. Пусто или одна запись — вкладок нет,
-    одиночная песочница выглядит как раньше.
+    Имя — первая метка хоста из `WEB_SELF`, который и так есть у каждого инстанса (его
+    показывает `/panel` в Telegram). Отдельной переменной под имя не завожу: два места,
+    где написано одно и то же, расходятся.
+
+    Нужен затем, что три панели выглядят одинаково, а вкладки все назывались `claude`.
+    Вкладки-переключатели песочниц стояли тут до 2026-09-25 и были единственной
+    подсказкой, где ты находишься; ходить по ним при этом никто не ходил.
     """
-    out = []
-    for chunk in os.environ.get("WEB_PEERS", "").split(","):
-        name, _, url = chunk.partition("=")
-        if name.strip() and url.strip():
-            out.append({"name": name.strip(), "url": url.strip()})
-    return out
+    host = urlsplit(os.environ.get("WEB_SELF", "").strip()).hostname or ""
+    return host.split(".")[0] or "claude"
 
 
 # Скиллы для подсказки по `/`. Каталог тот же, что читает claude: бот и прогон живут в
@@ -277,12 +278,8 @@ async def index(_: web.Request) -> web.Response:
     # no-store: страница целиком лежит в образе, и после раскатки вкладка обязана
     # взять новую. Валидаторов у ответа нет, поэтому без этого заголовка браузер
     # вправе отдать свою копию, и человек сидит на прошлой версии панели.
-    return web.Response(text=PAGE, content_type="text/html",
-                        headers={"Cache-Control": "no-store"})
-
-
-async def api_peers(_: web.Request) -> web.Response:
-    return web.json_response(peers())
+    return web.Response(text=PAGE.replace("<title>claude</title>", f"<title>{title()}</title>"),
+                        content_type="text/html", headers={"Cache-Control": "no-store"})
 
 
 async def api_models(_: web.Request) -> web.Response:
@@ -290,8 +287,16 @@ async def api_models(_: web.Request) -> web.Response:
 
 
 async def api_projects(_: web.Request) -> web.Response:
+    """Проекты и число сессий у каждого.
+
+    Число нужно свёрнутой строке дерева, и считается оно перечислением каталога. Списки
+    сессий панель берёт отдельно и только у раскрытых: там на каждую строку приходится
+    чтение транскрипта ради заголовка, и тянуть это для всех проектов раз в пятнадцать
+    секунд незачем.
+    """
     return web.json_response(
-        [{"name": p.name, "path": str(p)} for p in sessions.projects()]
+        [{"name": p.name, "path": str(p), "sessions": sessions.count(str(p))}
+         for p in sessions.projects()]
     )
 
 
@@ -517,7 +522,6 @@ def build() -> web.Application:
     app = web.Application(client_max_size=files.MAX_UPLOAD)
     app.add_routes([
         web.get("/", index),
-        web.get("/api/peers", api_peers),
         web.get("/api/models", api_models),
         web.get("/api/projects", api_projects),
         web.get("/api/skills", api_skills),

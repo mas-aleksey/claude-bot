@@ -16,9 +16,11 @@ import webui
 # только плашка, заголовок вкладки и подставной `fetch` с тремя ответами — данные,
 # страница входа и обрыв связи.
 HARNESS = """
-let banner = true, title = '';
+let banner = true;
 const $ = () => ({ set hidden(v) { banner = v; } });
-const document = { set title(v) { title = v; } };
+// Имя инстанса в заголовок вписывает сервер, скрипт только читает его при старте и
+// возвращает на место, когда дописывает к нему значок обрыва.
+const document = { title: 'demo' };
 let answer = 'fail';
 const reply = (type) => ({ ok: true, headers: { get: () => type }, json: () => 42 });
 const fetch = () => answer === 'ok' ? Promise.resolve(reply('application/json'))
@@ -79,12 +81,12 @@ const hit = async (mode) => { answer = mode; await get('x').catch(() => {}); };
   for (let i = 0; i < DEAD - 1; i++) await hit('fail');
   const afterReset = dead;          // значит до предела снова не хватает одного
   for (let i = 0; i < 1; i++) await hit('fail');
-  console.log(JSON.stringify([beforeLimit, afterReset, dead, banner, title]));
+  console.log(JSON.stringify([beforeLimit, afterReset, dead, banner, document.title]));
 })();
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == [False, False, True, False, "⚠ claude"]
+    assert json.loads(done.stdout) == [False, False, True, False, "⚠ demo"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -98,12 +100,12 @@ def test_login_page_instead_of_json_stops_the_tab_at_once(tmp_path):
 (async () => {
   answer = 'login';
   await get('x').catch(() => {});   // одного ответа достаточно
-  console.log(JSON.stringify([dead, banner, title]));
+  console.log(JSON.stringify([dead, banner, document.title]));
 })();
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    assert json.loads(done.stdout) == [True, False, "⚠ claude"]
+    assert json.loads(done.stdout) == [True, False, "⚠ demo"]
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -494,10 +496,12 @@ const esc = (s) => String(s);
 const wireRows = () => {};
 const get = async () => [];
 """ + body + """
+// Списки приходят только у раскрытых: у свёрнутого их в TREE нет вовсе, и число сессий
+// в его строке берётся из ответа `api/projects`.
 TREE = {
-  projects: [{ path: '/projects/a', name: 'a' }, { path: '/projects/b', name: 'b' }],
-  lists: [[{ id: 's1', title: 'про докер', ago: '2ч' }],
-          [{ id: 's2', title: 'чужая сессия', ago: '5д' }]],
+  projects: [{ path: '/projects/a', name: 'a', sessions: 1 },
+             { path: '/projects/b', name: 'b', sessions: 7 }],
+  lists: { '/projects/a': [{ id: 's1', title: 'про докер', ago: '2ч' }] },
 };
 open.add('/projects/a');
 drawProjects();
@@ -505,20 +509,22 @@ console.log(JSON.stringify([
   html.includes('data-path="/projects/a"'),
   html.includes('data-path="/projects/b"'),
   html.includes('data-project="/projects/a"'),
-  html.includes('чужая сессия'),
+  html.includes('data-project="/projects/b"'),
   (html.match(/class=add/g) || []).length,
   box.open,
+  html.includes('>7<'),
 ]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    a_head, b_head, a_row, b_row, adds, saved = json.loads(done.stdout)
+    a_head, b_head, a_row, b_row, adds, saved, count_b = json.loads(done.stdout)
 
     assert a_head and b_head          # оба проекта в дереве, переключать нечего
     assert a_row                      # сессия раскрытого проекта несёт свой путь
     assert not b_row                  # свёрнутый проект своих сессий не рисует
+    assert count_b                    # но число сессий у него есть — счёт с сервера
     assert adds == 2                  # «+» в каждой строке проекта
-    assert saved is None              # drawTree только рисует, состояние пишет клик
+    assert saved is None              # drawProjects только рисует, состояние пишет клик
 
 
 def test_no_two_functions_share_a_name():
@@ -529,3 +535,53 @@ def test_no_two_functions_share_a_name():
     names = re.findall(r"^function (\w+)", slice_out("script"), re.M)
     dupes = {n for n in names if names.count(n) > 1}
     assert not dupes, dupes
+
+
+def test_tab_title_always_keeps_the_instance_name():
+    """Заголовок вкладки пишут три места: старт, плашка обрыва и тик со счётчиком
+    прогонов. Имя инстанса в него подставляет сервер, поэтому каждое обязано строиться
+    из TITLE. Тик этого не делал, и имя стиралось через три секунды после загрузки."""
+    js = slice_out("script")
+    writes = re.findall(r"document\.title = (.+)", js)
+    assert writes, "заголовок вкладки никто не пишет — проверка холостая"
+    assert all("TITLE" in w for w in writes), writes
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_window_hues_keep_their_distance(tmp_path):
+    """Оттенки окон разносятся по кругу шагом золотого угла. Список из шести тонов держал
+    синий в 55° от пурпурного, а седьмое окно повторяло чужой цвет — на бледной заливке
+    оба случая читались как «два окна одного цвета»."""
+    body = slice_out("script").split("// --- hue:begin ---")[1].split("// --- hue:end ---")[0]
+    js = tmp_path / "hue.js"
+    js.write_text("""
+let panes = [], hues = {};
+""" + body + """
+const got = [];
+const spread = (list) => {
+  let worst = 360;
+  for (let i = 0; i < list.length; i++)
+    for (let j = i + 1; j < list.length; j++) worst = Math.min(worst, arc(list[i], list[j]));
+  return worst;
+};
+for (let n = 0; n < 8; n++) { const h = freeHue(); panes.push({ hue: h }); got.push(h); }
+const worstSix = spread(got.slice(0, 6));
+const worst = spread(got);
+// Цвет закрытой сессии тоже занят: карта `hues` живёт дольше окна.
+panes = [];
+hues = { s1: got[0], s2: got[1] };
+const next = freeHue();
+console.log(JSON.stringify([got, worstSix, worst,
+                            Math.min(arc(next, got[0]), arc(next, got[1]))]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got, worst_six, worst, from_closed = json.loads(done.stdout)
+
+    assert len(set(got)) == 8      # восемь окон — восемь разных тонов, без повторов
+    assert worst_six >= 45         # до шести окон — не ближе сорока пяти градусов
+    # Дальше упирается в круг и в то, что цвета раздаются по одному, без пересдачи:
+    # восемь окон — восемь секторов, 45° в идеале, а вставка в самый широкий промежуток
+    # даёт 22. Порог тут не мягкий, а помещающийся.
+    assert worst >= 20
+    assert from_closed >= 40       # цвет закрытой сессии тоже занят, новый его обходит

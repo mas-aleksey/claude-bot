@@ -184,15 +184,16 @@ def test_int_never_raises(raw, want):
 
 
 @pytest.mark.parametrize("raw,want", [
-    ("", []),
-    ("one=https://one.example", [{"name": "one", "url": "https://one.example"}]),
-    ("  a = https://a  , b=https://b ",
-     [{"name": "a", "url": "https://a"}, {"name": "b", "url": "https://b"}]),
-    ("сломано,=https://x,y=", []),  # без имени или без url запись выбрасывается
+    ("https://demo.example.org", "demo"),
+    ("  https://sandbox.example.org/  ", "sandbox"),
+    ("", "claude"),                       # одиночному инстансу имя не нужно
+    ("не-адрес", "claude"),               # хоста нет — заголовок не ломаем
 ])
-def test_peers_parsing(monkeypatch, raw, want):
-    monkeypatch.setenv("WEB_PEERS", raw)
-    assert webui.peers() == want
+def test_tab_title_names_the_instance(monkeypatch, raw, want):
+    """Три панели выглядят одинаково, и вкладки все назывались `claude`. Имя берём из
+    `WEB_SELF` — той же переменной, что отдаёт `/panel` в Telegram."""
+    monkeypatch.setenv("WEB_SELF", raw)
+    assert webui.title() == want
 
 
 def skill(root, dirname, front=""):

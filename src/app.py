@@ -193,8 +193,8 @@ async def _context_line(project: str, session_id: str | None) -> str:
 @dp.message(Command("web"))
 async def cmd_web(msg: Message) -> None:
     """Адрес панели этого инстанса. Держим в переменной, а не вычисляем: своего имени у
-    бота нет — hostname он берёт у dind, а `WEB_PEERS` перечисляет всех и не говорит,
-    кто из них мы."""
+    бота нет, hostname он берёт у dind. Из неё же панель берёт имя для заголовка
+    вкладки — см. `webui.title`."""
     url = os.environ.get("WEB_SELF", "").strip()
     await msg.answer(url or "адрес панели не задан — нужен WEB_SELF в compose инстанса")
 
