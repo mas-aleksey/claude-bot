@@ -173,30 +173,54 @@ console.log(JSON.stringify([seen, count, was, big, back, three, rows]));
 def test_own_prompt_is_shown_once(tmp_path):
     """Свой промпт печатается сразу и через секунды приезжает из транскрипта. Сверка
     идёт по всей очереди и по схлопнутым пробелам: слеш-команду claude пересобирает из
-    тегов, а застрявшая запись раньше глушила сверку для всех следующих промптов."""
+    тегов, а застрявшая запись раньше глушила сверку для всех следующих промптов.
+
+    Плюс уборка: промпт, не доехавший до транскрипта, оставался в памяти вкладки
+    навсегда и однажды съедал законный повтор того же текста."""
     body = slice_out("script").split("// --- echo:begin ---")[1].split("// --- echo:end ---")[0]
     js = tmp_path / "echo.js"
-    js.write_text(body + """
-const q1 = ['/refine текст'];
+    js.write_text("""
+const echoes = new Map();
+const NOW = 1000000;
+const rec = (text, age = 0) => ({ text, at: NOW - age });
+const texts = (q) => q.map(e => e.text);
+""" + body + """
+const q1 = [rec('/refine текст')];
 const same = dropEcho([{ role: 'user', text: '/refine  текст' }], q1);
 
 // Застрявшее эхо (промпт не доехал до транскрипта) не должно глушить следующий.
-const q2 = ['застряло', 'новый промпт'];
+const q2 = [rec('застряло'), rec('новый промпт')];
 const after = dropEcho([{ role: 'user', text: 'новый промпт' }], q2);
 
 // Чужая строка и ответ claude проходят как есть, очередь не трогают.
-const q3 = ['моё'];
+const q3 = [rec('моё')];
 const rest = dropEcho([{ role: 'assistant', text: 'моё' },
                        { role: 'user', text: 'из телеграма' }], q3);
-console.log(JSON.stringify([same.length, q1, after.length, q2, rest.length, q3]));
+
+// Уборка. Панель занята или в очереди ждут — не трогаем: строка такого промпта ещё
+// придёт, сколько бы он ни ждал. Свободна — снимаем то, что старше порога.
+echoes.set('p1', [rec('старое', ECHO_IDLE + 1), rec('только что')]);
+sweepEchoes('p1', false, NOW);
+const busy = texts(echoes.get('p1'));
+sweepEchoes('p1', true, NOW);
+const idle = texts(echoes.get('p1'));
+echoes.set('p2', [rec('единственное', ECHO_IDLE + 1)]);
+sweepEchoes('p2', true, NOW);
+const gone = echoes.has('p2');
+
+console.log(JSON.stringify([same.length, texts(q1), after.length, texts(q2),
+                            rest.length, texts(q3), busy, idle, gone]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    same, q1, after, q2, rest, q3 = json.loads(done.stdout)
+    same, q1, after, q2, rest, q3, busy, idle, gone = json.loads(done.stdout)
 
     assert [same, q1] == [0, []]                  # лишний пробел совпадению не мешает
     assert [after, q2] == [0, ["застряло"]]       # снят свой, застрявшее осталось лежать
     assert [rest, q3] == [2, ["моё"]]             # ответ и чужой промпт не съедены
+    assert busy == ["старое", "только что"]       # панель занята — не трогаем ничего
+    assert idle == ["только что"]                 # свободна — ушло только протухшее
+    assert gone is False                          # пустая очередь снимается целиком
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -234,9 +258,13 @@ function btn(id) {
 }
 const rows = [btn('a'), btn('b')];
 rows[0].dataset.title = 'про сетку';
+// Панель как элемент: `markList` смотрит её классы, чтобы перенести готовность в строку.
+const pane = (...cls) => ({ classList: { contains: (k) => cls.includes(k) } });
+let panels = {};
 const document = {
   querySelectorAll: () => rows,
   querySelector: (sel) => rows.find(r => sel.includes('"' + r.dataset.id + '"')) ?? null,
+  getElementById: (id) => panels[id] ?? null,
 };
 const sent = [];
 function Notification(title, opts) { sent.push([title, opts.body, opts.tag]); }
@@ -270,19 +298,35 @@ trackRuns([{ session: 'a' }]);
 trackRuns([]);                            // кончился на глазах — ни точки, ни звонка
 markList(); seen.push(state());
 
+// Прогон кончился в окне, на которое не смотрели: панель помечена, и строка списка
+// обязана повторить её метку — развёрнутый сосед закрывает само окно целиком.
+panes = [{ pane: 'p1', session: 'a', hue: 25 }];
+panels = { 'pane-p1': pane('ready') };
+markList(); seen.push(state());
+panels = { 'pane-p1': pane('ready', 'bad') };
+markList(); seen.push(state());
+panels = { 'pane-p1': pane() };           // кликнули по окну — метка снята там и тут
+markList(); seen.push(state());
+
 panes = [];                               // закрыли, ничего не идёт
+panels = {};
 trackRuns([]);
 markList(); seen.push(state());
 console.log(JSON.stringify([...seen, sent]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    running, finished, stored, opened, watched, forgotten, sent = json.loads(done.stdout)
+    (running, finished, stored, opened, watched,
+     ready, failed, clicked, forgotten, sent) = json.loads(done.stdout)
     assert running == [[["busy"], 25], [[], None]]      # мигает, но не залита
     assert finished == [[["done"], 25], [[], None]]     # точка, цвет тот же
     assert stored == ["a"]                              # переживёт F5
     assert opened == [[["open"], 25], [[], None]]       # заливка, точка снята
     assert watched == [[["open"], 25], [[], None]]      # смотрели сами — точки нет
+    # Готовность панели переезжает в строку: галочка, у упавшего прогона — кружок.
+    assert ready == [[["ok", "open"], 25], [[], None]]
+    assert failed == [[["bad", "open"], 25], [[], None]]
+    assert clicked == [[["open"], 25], [[], None]]      # клик по окну гасит и строку
     assert forgotten == [[[], None], [[], None]]        # цвет забыт, карта не растёт
     # звонок ровно один: про закрытое окно, с названием сессии из строки списка
     assert sent == [["claude · ответ готов", "про сетку", "a"]]
@@ -568,15 +612,23 @@ for (let n = 0; n < 8; n++) { const h = freeHue(); panes.push({ hue: h }); got.p
 const worstSix = spread(got.slice(0, 6));
 const worst = spread(got);
 // Цвет закрытой сессии тоже занят: карта `hues` живёт дольше окна.
+// Повторы из localStorage: первому цвет оставляем, следующих разводим. Работаем по
+// `panes` — `freeHue` смотрит туда же, и на чужом списке он переназначенных не увидит.
+panes = [{ hue: 190 }, { hue: 195 }, { hue: 192 }, {}];
+spreadHues();
+const fixed = panes.map(p => p.hue);
+const spreadOk = fixed.every((h, i) => fixed.every((g, j) => i === j || arc(h, g) >= MIN_GAP));
+
 panes = [];
 hues = { s1: got[0], s2: got[1] };
 const next = freeHue();
 console.log(JSON.stringify([got, worstSix, worst,
-                            Math.min(arc(next, got[0]), arc(next, got[1]))]));
+                            Math.min(arc(next, got[0]), arc(next, got[1])),
+                            fixed[0], spreadOk]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    got, worst_six, worst, from_closed = json.loads(done.stdout)
+    got, worst_six, worst, from_closed, kept, spread_ok = json.loads(done.stdout)
 
     assert len(set(got)) == 8      # восемь окон — восемь разных тонов, без повторов
     assert worst_six >= 45         # до шести окон — не ближе сорока пяти градусов
@@ -585,3 +637,7 @@ console.log(JSON.stringify([got, worstSix, worst,
     # даёт 22. Порог тут не мягкий, а помещающийся.
     assert worst >= 20
     assert from_closed >= 40       # цвет закрытой сессии тоже занят, новый его обходит
+    # Раскладка из localStorage могла прийти с одинаковыми оттенками — старый код их
+    # выдавал. Чиним на загрузке: первому цвет оставляем, следующих разводим.
+    assert kept == 190
+    assert spread_ok

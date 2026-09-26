@@ -193,3 +193,13 @@ def test_long_table_split_repeats_header():
     assert all(len(c) <= 4096 for c in chunks)
     assert all("кол" in c for c in chunks)  # шапка в каждом куске, а не сырые пайпы в хвосте
     assert not any("| ряд |" in c for c in chunks)
+
+
+def test_skill_step_names_the_skill():
+    """Вызов Skill не несёт ни одного ключа из общего списка, и строка шага читалась как
+    «Skill: Skill» — имя инструмента вместо аргумента."""
+    assert render.first_arg("Skill", {"skill": "sync-repo"}) == "sync-repo"
+    assert render.first_arg("Skill", {"skill": "refine", "args": "правки по UI"}) \
+        == "refine правки по UI"
+    # Чужой инструмент с полем skill не подменяется: ветка только для своего.
+    assert render.first_arg("Bash", {"command": "ls", "skill": "нет"}) == "ls"

@@ -101,6 +101,15 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    гаснет, как только сессию открыли. */
 #list button.done::after { content:'\25CF'; float:right; margin-left:6px; font-size:10px;
   color:oklch(0.62 0.20 var(--hue,250)) }
+/* Прогон кончился, а окно ещё не открывали: галочка, если дошёл до конца, и кружок,
+   если упал. Те же два знака, что и посреди самого окна, — только окно бывает закрыто
+   развёрнутым соседом, а строка списка видна всегда.
+   Цвет не от тона сессии: зелёное и красное значат одно и то же у всех строк. */
+#list button.ok::after, #list button.bad::after { content:'\2714'; float:right;
+  margin:1px 0 0 6px; width:16px; height:16px; border-radius:50%; display:grid;
+  place-items:center; font-size:10px; line-height:1; color:#fff;
+  background:oklch(0.60 0.19 145) }
+#list button.bad::after { content:'\2715'; background:oklch(0.58 0.22 25) }
 #plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
 #plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 #plan .lim { margin-top:6px }
@@ -210,6 +219,13 @@ section.ready::after { content:'\2714'; position:absolute; inset:0; margin:auto;
   font-size:40px; line-height:1; color:#fff; pointer-events:none; z-index:3;
   background:oklch(0.60 0.19 145 / .9); box-shadow:0 4px 18px #0004 }
 section.ready.bad::after { content:'\2715'; background:oklch(0.58 0.22 25 / .9) }
+/* Свёрнутое окно — одна полоска заголовка, и знак посреди неё накрывает название.
+   Там он становится значком у левого края, на месте карандаша: место в заголовке
+   занято, а придумывать ему новое ради состояния, которое живёт до первого клика,
+   незачем. Карандаш на это время прячем — переименовать можно и развернув окно. */
+section.rolled.ready::after { inset:auto auto 50% 10px; transform:translateY(50%);
+  margin:0; width:22px; height:22px; font-size:13px; box-shadow:none }
+section.rolled.ready .ren { visibility:hidden }
 section.act { z-index:5; box-shadow:0 6px 24px #0005;
   border-color:oklch(0.62 0.20 var(--hue,250)) }
 /* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
@@ -457,8 +473,12 @@ body:not(.folded) #empty .list { display:none }
     top:0; height:100% }
   #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
     grid-template-rows:none; grid-auto-rows:auto; align-content:start }
+  /* `min-height` — пол на случай, если окно осталось без содержимого: пустая секция
+     вырождалась в полоску из двух рамок, которую не за что взять пальцем. Свёрнутому он
+     не мешает: там и так заголовок в 44px. */
   section { grid-column:1/-1 !important; grid-row:auto !important;
-    height:min(70vh, 480px); border-radius:0; border-left:0; border-right:0 }
+    height:min(70vh, 480px); min-height:44px;
+    border-radius:0; border-left:0; border-right:0 }
   /* Окно сворачивается в свой заголовок: остаётся полоса с именем сессии, таймером и
      кнопками, а всё, что лежало ниже, поднимается вплотную. Состояние живёт в панели и
      переживает F5. Ручки в списке скрытого нет — на этом экране её и так нет. */
@@ -622,7 +642,9 @@ const EFFORT = 'high';
 //
 // Занятыми считаются цвета открытых окон и цвета закрытых сессий: карта `hues` живёт
 // дольше окна, и вернувшаяся сессия обязана мигать тем же оттенком.
-const HUE0 = 250;
+// MIN_GAP — с какого расстояния два окна считаются одноцветными. Не 40: восемь окон на
+// круге столько не держат (там выходит 22), и порог повыше гонял бы перекраску по кругу.
+const HUE0 = 250, MIN_GAP = 20;
 const arc = (a, b) => { const d = Math.abs(a - b) % 360; return Math.min(d, 360 - d); };
 const freeHue = () => {
   const used = [...panes.map(x => x.hue), ...Object.values(hues)]
@@ -635,6 +657,26 @@ const freeHue = () => {
   });
   return best;
 };
+// Разъехавшиеся оттенки чиним один раз, на загрузке страницы. Раскладка живёт в
+// localStorage, и цвета в ней бывают из прежней палитры, из копии между вкладками или
+// просто повторяются, если их выдавал старый код. Позже перекрашивать нельзя: окно, у
+// которого цвет сменился на глазах, человек теряет из виду.
+//
+// Первому из совпавших цвет оставляем, двигаем следующих: так меняется меньше окон, и
+// то, на которое человек смотрел, остаётся прежним.
+//
+// Работает по `panes` и только по ним: `freeHue` смотрит туда же, и на чужом списке
+// двое переназначенных могли бы получить один цвет — он бы их просто не видел.
+function spreadHues() {
+  const seen = [];
+  for (const p of panes) {
+    if (typeof p.hue !== 'number' || seen.some(h => arc(h, p.hue) < MIN_GAP)) {
+      p.hue = undefined;
+      p.hue = freeHue();
+    }
+    seen.push(p.hue);
+  }
+}
 // --- hue:end ---
 
 // Панели переживают F5: в них лежит id, который на сервере служит скоупом запуска,
@@ -667,17 +709,34 @@ const norm = (s) => String(s).replace(/\s+/g, ' ').trim();
 // транскрипта не доехал (отменён из очереди, съеден ошибкой), застревал первым и глушил
 // сверку для всех следующих — с этого момента каждый промпт панели печатался дважды.
 //
-// ponytail: застрявшая запись остаётся в очереди навсегда и однажды съест законный
-// повтор того же текста. Начнёт мешать — хранить рядом время отправки и выбрасывать
-// старше нескольких минут.
+// Запись — `{text, at}`: время отправки нужно уборке ниже.
 function dropEcho(items, queue) {
   return items.filter((it) => {
     if (it.role !== 'user' || !queue.length) return true;
-    const at = queue.indexOf(norm(it.text));
+    const at = queue.findIndex(e => e.text === norm(it.text));
     if (at < 0) return true;
     queue.splice(at, 1);
     return false;
   });
+}
+
+// Уборка застрявших записей. Запись снимается встречей в транскрипте, а промпт, который
+// туда не попал, оставался в памяти вкладки навсегда и однажды съедал законный повтор
+// того же текста: на экране оставалась локальная копия, а после F5 не оставалось ничего.
+//
+// Чистим не по одному таймеру: промпт может ждать в очереди сколько угодно, и его строка
+// появится только когда до него дойдёт очередь — сорок минут ожидания выглядели бы как
+// «протухло». Поэтому два условия вместе: в панели ничего не идёт и очередь пуста, то
+// есть всё, что могло попасть в транскрипт, уже попало, — и записи больше ECHO_IDLE.
+// Задержка тут страховка от гонки: между отправкой и появлением прогона в `/api/status`
+// проходит секунда-другая, и без неё эхо снималось бы раньше, чем начался запуск.
+const ECHO_IDLE = 30000;
+function sweepEchoes(pane, idle, now) {
+  const queue = echoes.get(pane);
+  if (!queue || !idle) return;
+  const left = queue.filter(e => now - e.at < ECHO_IDLE);
+  if (left.length) echoes.set(pane, left);
+  else echoes.delete(pane);
 }
 // --- echo:end ---
 // Показанная ошибка — чтобы не перерисовывать её на каждом тике.
@@ -907,10 +966,21 @@ function markList() {
     const id = b.dataset.id;
     const p = panes.find(x => x.session === id);
     const hue = p ? (p.hue ?? HUE0) : hues[id];
+    // Готовность зеркалим с самой панели, своей памяти не заводим: состояние одно, и
+    // снимается оно в одном месте — `raise`, то есть кликом по окну. Развёрнутое во весь
+    // экран окно закрывает соседей, и штриховка готового оказывается под ним; строка
+    // списка — единственное место, где её видно.
+    const el = p && document.getElementById('pane-' + p.pane);
+    const ready = !!el && el.classList.contains('ready');
+    const bad = ready && el.classList.contains('bad');
     b.classList.toggle('open', !!p);
     b.classList.toggle('busy', busySessions.has(id));
     b.classList.toggle('done', done.has(id));
-    b.title = done.has(id) ? 'ответ пришёл, пока окно было закрыто' : '';
+    b.classList.toggle('ok', ready && !bad);
+    b.classList.toggle('bad', bad);
+    b.title = bad ? 'прогон упал'
+            : ready ? 'прогон закончился'
+            : done.has(id) ? 'ответ пришёл, пока окно было закрыто' : '';
     if (hue !== undefined) b.style.setProperty('--hue', hue);
     else b.style.removeProperty('--hue');
   }
@@ -1858,7 +1928,7 @@ async function send(p, ta) {
   if ('Notification' in window && Notification.permission === 'default') {
     Notification.requestPermission().catch(() => {});
   }
-  echoes.set(p.pane, [...(echoes.get(p.pane) || []), norm(prompt)]);
+  echoes.set(p.pane, [...(echoes.get(p.pane) || []), { text: norm(prompt), at: Date.now() }]);
   const line = log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   try {
     const r = await post('api/prompt', { pane: p.pane, project: p.project,
@@ -1889,8 +1959,9 @@ async function send(p, ta) {
     // Снимаем одну запись, а не все совпадения: тот же текст мог быть отправлен и
     // раньше, успешно, и его эхо в очереди законное.
     const queue = echoes.get(p.pane) || [];
-    const at = queue.lastIndexOf(norm(prompt));
-    if (at >= 0) queue.splice(at, 1);
+    const text = norm(prompt);
+    for (let i = queue.length - 1; i >= 0; i--)
+      if (queue[i].text === text) { queue.splice(i, 1); break; }
     if (!queue.length) echoes.delete(p.pane);
     // Текст возвращаем только в пустое поле: за время запроса (до 90 секунд ожидания
     // id сессии) человек мог начать набирать следующий, и затирать его нельзя. Тогда
@@ -2149,7 +2220,16 @@ async function tick() {
   let running = 0;
   for (const p of panes) {
     const scope = 'web:' + p.pane;
-    const el = document.getElementById('pane-' + p.pane);
+    let el = document.getElementById('pane-' + p.pane);
+    // Окно без заголовка — пустая секция: от неё остаются две рамки, на телефоне это
+    // полоска в несколько пикселей поперёк экрана. Как она получается, поймать не
+    // удалось (2026-09-26), поэтому чиним по факту: секция без шапки перерисовывается
+    // из той же записи в `panes`, где лежит всё нужное — проект, сессия, оффсет.
+    if (el && !el.querySelector('header')) {
+      el.remove();
+      drawPane(p);
+      el = document.getElementById('pane-' + p.pane);
+    }
     // Свой запуск — либо начатый этой панелью, либо любой другой над той же сессией:
     // из топика Telegram или из соседней панели. Скоупы у них разные, транскрипт один,
     // и без сопоставления по сессии панель молчала, пока в неё сыпались ответы.
@@ -2196,6 +2276,10 @@ async function tick() {
                         + (queued ? ` +${queued}` : '');
       timer.title = foreign ? 'запуск начат не из этой панели' : '';
     }
+
+    // Застрявшее эхо: панель свободна, очередь пуста — значит всё, что могло приехать
+    // из транскрипта, приехало, и оставшиеся записи уже не встретятся никогда.
+    sweepEchoes(p.pane, !busy && !((st.queued || {})[scope] || 0), Date.now());
 
     // Переход «занята → свободна» — единственный момент, когда есть что сообщить.
     if (busy) {
@@ -2363,10 +2447,8 @@ $('empty').querySelector('.list').onclick = () => $('fold').click();
 loadModels();
 loadRoots().catch(treeFail);
 loadTree().then(() => {
-  // Панель из localStorage могла прийти без оттенка вовсе. Любое число — валидный угол,
-  // поэтому старые значения не трогаем: перекрашивать окна на глазах хуже, чем оставить
-  // им прежний цвет.
-  panes.forEach(p => { if (typeof p.hue !== 'number') p.hue = freeHue(); });
+  // Оттенки панелей из localStorage: раздаём отсутствующие и разводим совпавшие.
+  spreadHues();
   save();
   panes.forEach(p => { p.next = 0; drawPane(p); });
   // Кто впереди после F5. `act` держит z-index, и достаётся он последнему нарисованному,

@@ -174,6 +174,14 @@ def _inline(s: str) -> str:
 
 
 def first_arg(name: str, args: dict) -> str:
+    """Чем подписан шаг в логе: самое говорящее поле вызова.
+
+    `skill` идёт первым у своего инструмента: без него строка читалась как «Skill: Skill»
+    — имя инструмента в роли аргумента, потому что ни одного знакомого ключа в вызове
+    нет. Аргументы скилла дописываем следом, они и есть суть запуска.
+    """
+    if name == "Skill" and (skill := args.get("skill")):
+        return f"{skill} {args.get('args') or ''}".strip()
     for key in ("file_path", "command", "pattern", "path", "url", "query", "prompt", "description"):
         if val := args.get(key):
             return str(val)
