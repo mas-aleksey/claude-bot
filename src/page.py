@@ -91,25 +91,49 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    Заливка перебивает `:hover` выше, специфичность та же, а правило ниже. Поэтому у
    открытой строки свой ховер: тот же оттенок, гуще. Иначе она перестала бы отзываться
    на курсор, а серая подсветка поверх цвета панели всё равно врала бы про него. */
-#list button.open { background:oklch(0.62 0.18 var(--hue,250) / .30) }
-#list button.open:hover { background:oklch(0.62 0.18 var(--hue,250) / .45) }
+/* Открытая сессия — полоса цвета у левого края и бледная заливка. Заливка в 30% была
+   самым заметным пятном сайдбара: она спорила с зелёным кружком готовности, а строка с
+   красноватым окном читалась как ошибка, хотя это просто тон её окна. Полоса опознаёт
+   окно не хуже, а фон в списке теперь значит одно — «тут что-то произошло». */
+#list button.open { background:oklch(0.62 0.18 var(--hue,250) / .12);
+  box-shadow:inset 3px 0 0 oklch(0.62 0.20 var(--hue,250)) }
+#list button.open:hover { background:oklch(0.62 0.18 var(--hue,250) / .22) }
 #list button.busy { animation:blink 1.2s ease-in-out infinite }
 /* Закрытая сессия мигает от прозрачного к цвету, открытая — внутри своей заливки: один
    и тот же `blink`, разная нижняя точка. Поэтому «идёт работа» и «вот это на экране»
    читаются порознь, без второго цвета и второй анимации.
-   Точка — ответ пришёл в закрытое окно. Уплывает вправо следом за размером сессии и
-   гаснет, как только сессию открыли. */
-#list button.done::after { content:'\25CF'; float:right; margin-left:6px; font-size:10px;
-  color:oklch(0.62 0.20 var(--hue,250)) }
+   «Ответ пришёл в закрытое окно» помечается тем же зелёным квадратом, что и законченный
+   прогон в открытом: смысл один — «тут ответ, ты его не видел», — и двух знаков на него
+   не нужно. Точка в цвет сессии стояла тут до 2026-09-27 и рядом с квадратом выглядела
+   просто беднее. */
 /* Прогон кончился, а окно ещё не открывали: галочка, если дошёл до конца, и кружок,
    если упал. Те же два знака, что и посреди самого окна, — только окно бывает закрыто
    развёрнутым соседом, а строка списка видна всегда.
    Цвет не от тона сессии: зелёное и красное значат одно и то же у всех строк. */
-#list button.ok::after, #list button.bad::after { content:'\2714'; float:right;
-  margin:1px 0 0 6px; width:16px; height:16px; border-radius:50%; display:grid;
-  place-items:center; font-size:10px; line-height:1; color:#fff;
-  background:oklch(0.60 0.19 145) }
-#list button.bad::after { content:'\2715'; background:oklch(0.58 0.22 25) }
+/* Прогон кончился — плотный квадрат на месте отметки времени. Место у правого края уже
+   занято и уже держится под текст, поэтому значку не нужно ни своего угла, ни отступа у
+   строк ветки: ничего не двигается, когда метку снимают кликом.
+   Бледную заливку строки пробовали до него и сняли: на светлой теме она тонула, а фон
+   строки уже занят цветом окна. */
+#list .meta .ago { position:relative }
+/* Готовность: квадрат на месте отметки времени и рельс того же цвета слева. Правый край
+   строки под знаком — второй полосы там быть не может.
+   Зелёный обычный, `#22c55e`: цвет из oklch с максимальной насыщенностью выглядел
+   кислотным и спорил с тоном окон. Знак белый и жирный — на плотной заливке это самый
+   контрастный вариант, а тонкая галочка тонула. */
+#list button.ok .ago::after, #list button.done .ago::after,
+#list button.bad .ago::after { content:'\2714';
+  position:absolute; right:-2px; top:50%; transform:translateY(-50%);
+  width:22px; height:22px; border-radius:6px; display:grid; place-items:center;
+  font-size:14px; font-weight:700; line-height:1; color:#fff; background:#22c55e }
+#list button.bad .ago::after { content:'\2715'; background:#ef4444 }
+#list button.ok, #list button.done:not(.open) { box-shadow:inset 4px 0 0 #22c55e }
+#list button.bad { box-shadow:inset 4px 0 0 #ef4444 }
+/* Знак живёт внутри `.meta` (opacity .5) и `.ago` (opacity .75), а прозрачность
+   наследуется: квадрат рисовался в 37% силы и выглядел бледной наклейкой рядом с тем же
+   знаком в окне. Для помеченных строк обе прозрачности снимаем. */
+#list button.ok .meta, #list button.bad .meta, #list button.done .meta,
+#list button.ok .ago, #list button.bad .ago, #list button.done .ago { opacity:1 }
 #plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
 #plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 #plan .lim { margin-top:6px }
@@ -123,7 +147,8 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    строку и читают. Стоит последним в плавашке, а кнопки — перед ним: место они держат
    всегда, видны только под курсором, и время иначе висело бы в полусотне пикселей от
    края. Размер шрифта наследуется от `.meta`. */
-#list .meta .ago { opacity:.75; margin-left:4px }
+#list .meta .ago { opacity:.75; margin-left:4px; min-width:22px; display:inline-block;
+  text-align:right }
 /* Дерево проектов. Строка проекта — та же кнопка списка, только жирнее и со своими
    плавашками справа: счётчик сессий и «+». Сессии под ней сдвинуты отступом, чтобы
    вложенность читалась без линий и рамок. */
@@ -131,17 +156,25 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    чуть мельче шрифт. Цвет нарочно нейтральный: тон в этой панели означает «сессия вот
    этого окна», и красить им заголовки веток значило бы сказать неправду.
    Липкая: в раскрытом проекте на три десятка сессий видно, чьи они, не отлистывая. */
-#list .head { position:sticky; top:0; z-index:1; font-weight:600; font-size:12px;
-  letter-spacing:.04em; background:Canvas; box-shadow:inset 0 0 0 99px #8881;
-  border-top:1px solid #8883 }
-#list .head:hover { box-shadow:inset 0 0 0 99px #8883 }
+#list .head { position:sticky; top:0; z-index:1; font-weight:600; font-size:13px;
+  letter-spacing:.04em; background:Canvas; box-shadow:inset 0 0 0 99px #8883;
+  border-top:2px solid #8884 }
+#list .head:hover { box-shadow:inset 0 0 0 99px #8885 }
 #list .head .caret { display:inline-block; width:12px; opacity:.6; font-size:11px }
-#list .head .n { float:right; opacity:.45; font-size:11px; margin-left:8px }
+/* Счётчик и «плюс» — одна коробка на двоих: цифра сидела на базовой линии текста, а
+   кнопка в своём блоке 25px со сдвигом, и по вертикали они расходились на пару пикселей. */
+#list .head .n { float:right; display:inline-block; height:25px; line-height:25px;
+  margin:-3px 0 -3px 8px; opacity:.45; font-size:11px }
 #list .head .add { float:right; width:25px; height:25px; line-height:25px; text-align:center;
   margin:-3px 0 -3px 4px; font-size:15px; opacity:.6; cursor:pointer }
 #list .head .add:hover { opacity:1 }
-#list .kids button { padding-left:24px }
-#list .none { padding:10px 10px 10px 24px; opacity:.5; font-size:12px }
+/* Ветка проекта: рельс слева и отступ. Отступ был и раньше, но текст сессии вставал на
+   24px, а имя проекта — на 26 (отступ строки плюс каретка), и дерево выглядело плоским
+   списком. Рельс держит вложенность видимой, даже когда строка проекта уехала за верх
+   экрана — она липкая, но при длинном списке уезжает следующая. */
+#list .kids { margin-left:14px; border-left:2px solid #8883 }
+#list .kids button { padding-left:16px }
+#list .none { padding:10px 10px 10px 16px; opacity:.5; font-size:12px }
 /* Подпись проекта у строки поиска: результаты приходят из разных веток, и без неё
    непонятно, к какому проекту относится найденное. */
 #list .pj { display:block; font-size:11px; opacity:.5; margin-top:2px }
@@ -832,7 +865,7 @@ const rowHTML = (s, project, withName) =>
     `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
     `<span class=rm title="удалить сессию">\u2715</span>` +
     `<span class=ago>${esc(s.ago)}</span></span>` +
-  `${esc(s.title.slice(0, 60))}` +
+  `${esc(s.title.length > 42 ? s.title.slice(0, 42) + '\u2026' : s.title)}` +
   (withName ? `<span class=pj>${esc(project.split('/').pop())}</span>` : '') +
   (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>';
 
@@ -1128,13 +1161,24 @@ function drawZoom(p) {
   btn.title = p.prev ? 'вернуть прежний размер' : 'во весь экран';
 }
 
+// --- raise:begin ---
 function raise(el) {
+  // Развёрнутое во весь экран окно сворачивается, когда поднимают другое. Иначе оно
+  // остаётся во всю область, а поверх него ложатся окна в клетках — каша, в которой
+  // непонятно, что развёрнуто и почему соседи выглядят обрезками. Само развёрнутое от
+  // касания не сворачивается: сравниваем элементы, а не панели.
+  for (const x of panes) {
+    if (!x.prev) continue;
+    const other = document.getElementById('pane-' + x.pane);
+    if (other && other !== el) { zoom(x); save(); }
+  }
   document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
   el.classList.add('act');
   // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
   // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
   el.classList.remove('ready', 'bad');
 }
+// --- raise:end ---
 
 // Одна механика на перенос и на растягивание: и то и другое меняет прямоугольник панели
 // в клетках. `edge` пуст для переноса, иначе содержит буквы сторон, за которые тянут.

@@ -641,3 +641,61 @@ console.log(JSON.stringify([got, worstSix, worst,
     # выдавал. Чиним на загрузке: первому цвет оставляем, следующих разводим.
     assert kept == 190
     assert spread_ok
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_raising_a_pane_unzooms_the_full_screen_one(tmp_path):
+    """Окно во весь экран сворачивается, когда поднимают другое. Иначе оно оставалось
+    развёрнутым под новым, и поверх него ложились окна в клетках."""
+    body = slice_out("script").split("// --- raise:begin ---")[1].split("// --- raise:end ---")[0]
+    js = tmp_path / "raise.js"
+    js.write_text("""
+const mk = (id) => ({ id, cls: new Set(),
+  classList: { add: (k) => mk.last.cls.add(k), remove: () => {} } });
+const el = (id) => ({ id, cls: new Set(),
+  classList: { add(k) { this.set.add(k); }, remove(...k) { k.forEach(x => this.set.delete(x)); },
+               set: new Set() } });
+const big = el('pane-a'), small = el('pane-b');
+const nodes = { 'pane-a': big, 'pane-b': small };
+const document = { getElementById: (id) => nodes[id] ?? null, querySelectorAll: () => [] };
+const COLS = 12, ROWS = 8;
+const applyGeom = () => {};
+const drawZoom = () => {};
+const save = () => {};
+function zoom(p) {
+  if (p.prev) { Object.assign(p, p.prev); p.prev = null; }
+  else { p.prev = { c: p.c, r: p.r, w: p.w, h: p.h }; p.c = p.r = 1; p.w = COLS; p.h = ROWS; }
+}
+let panes = [{ pane: 'a', c: 1, r: 1, w: 12, h: 8, prev: { c: 7, r: 1, w: 6, h: 4 } },
+             { pane: 'b', c: 1, r: 5, w: 6, h: 4 }];
+""" + body + """
+raise(small);
+const after = panes.map(p => [p.c, p.r, p.w, p.h, !!p.prev]);
+// Касание самого развёрнутого его не сворачивает.
+panes = [{ pane: 'a', c: 1, r: 1, w: 12, h: 8, prev: { c: 7, r: 1, w: 6, h: 4 } }];
+raise(big);
+console.log(JSON.stringify([after, [panes[0].w, panes[0].h, !!panes[0].prev]]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    after, self_raise = json.loads(done.stdout)
+
+    assert after[0] == [7, 1, 6, 4, False]   # развёрнутое вернулось в свою клетку
+    assert after[1] == [1, 5, 6, 4, False]   # поднятое не тронуто
+    assert self_raise == [12, 8, True]       # своё касание разворот не снимает
+
+
+def test_session_title_is_cut_with_an_ellipsis():
+    """Название сессии — это первый промпт, и в узком сайдбаре длинное занимало три
+    строки. Режем короче и ставим многоточие, чтобы обрезка была видна."""
+    js = slice_out("script")
+    assert "s.title.length > 42" in js
+    assert "\\u2026" in js
+
+
+def test_one_badge_for_every_unseen_answer():
+    """«Ответ пришёл в закрытое окно» и «прогон закончился» — один смысл. Точка в цвет
+    сессии стояла рядом с зелёным квадратом и выглядела вторым языком для того же."""
+    css = slice_out("style")
+    assert "button.done::after" not in css          # точки больше нет
+    assert "#list button.done .ago::after" in css   # тот же квадрат, что у `ok`
