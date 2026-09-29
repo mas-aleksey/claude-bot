@@ -779,6 +779,11 @@ const echoes = new Map();
 // не показавшись серым.
 const wasBusy = new Set();
 const hints = new Map();
+// Последний ответ панели текстом: из него после прогона достаётся подсказка.
+// Разметка лога для этого не годится — там уже HTML со ссылками и подсветкой.
+// Имя не `said`: так зовут локальную переменную в цикле панелей, и одноимённый `const`
+// ниже по блоку накрывал бы обращение отсюда мёртвой зоной.
+const answers = new Map();
 
 // --- echo:begin ---
 // Сравниваем по схлопнутым пробелам: слеш-команда возвращается из транскрипта собранной
@@ -1363,7 +1368,7 @@ function drawPane(p) {
     <form>
       <div class=menu hidden></div>
       <div class=ghost></div>
-      <textarea placeholder="${PROMPT_PLACEHOLDER}" title="${TOUCH.matches ? 'кнопка ↑ — отправить'
+      <textarea placeholder=" " title="${TOUCH.matches ? 'кнопка ↑ — отправить'
         : 'Enter — отправить, Shift+Enter — перенос строки'}"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
@@ -1761,9 +1766,16 @@ function setWho(p, el) {
 
 // Поле растёт под текст до потолка в 240px: сбрасываем высоту, чтобы scrollHeight
 // пересчитался, и ставим по содержимому. Дальше поле скроллится само.
+// Высота поля — по набранному, а не по подсказке. У пустого поля `scrollHeight` считает
+// и placeholder, и длинная подсказка растягивала композер до потолка в 240px. Дальше
+// браузер подкручивал секцию, чтобы показать поле с фокусом, и шапка уезжала за верхний
+// край: у `section` стоит `overflow:hidden`, вернуть её колесом нельзя.
 function grow(ta) {
+  const hold = ta.placeholder;
+  ta.placeholder = '';
   ta.style.height = 'auto';
   ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
+  ta.placeholder = hold;
 }
 
 // --- slash:begin ---
@@ -1784,27 +1796,22 @@ function skillsFor(project) {
 const HEAD_RE = /^\/(\S*)$/;
 const NAME_RE = /^\/([\w-]+)/;
 
-const PROMPT_PLACEHOLDER = 'промпт';
+// Пробел, а не пустая строка: `:placeholder-shown` гасит кнопку отправки на пустом
+// поле, и пустой placeholder этому селектору не подходит.
+const BLANK = ' ';
 
-// Что обычно идёт следующим. Пары «прошлый промпт → следующий» копятся при отправке, и
-// после прогона самый частый продолжатель встаёт в поле серым. Модель для этого не
-// нужна: предлагать имеет смысл то, что ты сам уже делал в этом месте — «собери
-// ассистента» после правки кода, «sync-repo» после сборки.
-const PAIRS_MAX = 200;
-const pairs = () => { try { return JSON.parse(localStorage.getItem('pairs')) || []; }
-                      catch { return []; } };
-function link(prev, next) {
-  if (!prev || prev === next) return;   // повтор одного и того же ничего не предсказывает
-  localStorage.setItem('pairs', JSON.stringify([[prev, next], ...pairs()].slice(0, PAIRS_MAX)));
-}
-
-// Пары лежат новыми вперёд, поэтому при равном счёте строгое `>` оставляет свежую.
-function nextAfter(prev) {
-  const seen = new Map();
-  for (const [a, b] of pairs()) if (a === prev) seen.set(b, (seen.get(b) || 0) + 1);
-  let best = null, top = 0;
-  for (const [text, n] of seen) if (n > top) { best = text; top = n; }
-  return best;
+// Следующий промпт claude называет сам, в «ёлочках» — этого требует стиль ответа:
+// последняя строка обязана быть действием, и точная формулировка даётся дословно
+// («собери», «sync-repo», «раскатай на песочницы»). Отсюда её и берём, без вызова
+// модели: текст ответа уже пришёл в панель.
+//
+// Смотрим только в хвост. В начале ответа «ёлочки» — это обычные цитаты, а действие
+// стоит последней строкой; три строки запаса на случай, когда за ним идёт приписка.
+const QUOTED = /«([^»\n]{1,200})»/g;
+function fromAnswer(text) {
+  const tail = (text || '').split('\n').filter(x => x.trim()).slice(-3).join('\n');
+  const all = [...tail.matchAll(QUOTED)].map(m => m[1].trim()).filter(Boolean);
+  return all.length ? all[all.length - 1] : null;
 }
 
 // Поле ввода целиком: Enter, автодополнение по `/` и подсветка имени команды.
@@ -1824,6 +1831,7 @@ function wireSlash(p, el, ta) {
   // Метку ставим только известному имени. Незнакомое `/фигня` остаётся обычным текстом
   // — это и есть сигнал об опечатке, до отправки, а не после.
   function paint() {
+    ta.placeholder = hints.get(p.pane) || BLANK;
     const name = (ta.value.match(NAME_RE) || [])[1];
     ghost.innerHTML = name && all.some(s => s.name === name)
       ? `<mark>/${esc(name)}</mark>` : '';
@@ -1885,8 +1893,6 @@ function wireSlash(p, el, ta) {
     if (e.key === 'Tab' && menu.hidden && !ta.value && hints.get(p.pane)) {
       e.preventDefault();
       ta.value = hints.get(p.pane);
-      hints.delete(p.pane);
-      ta.placeholder = PROMPT_PLACEHOLDER;
       ta.selectionStart = ta.selectionEnd = ta.value.length;
       grow(ta);
       return paint();
@@ -2123,12 +2129,9 @@ async function send(p, ta) {
   const prompt = ta.value.trim();
   if (!prompt) return;
   ta.value = '';
-  ta.oninput();  // не только высота: с текстом уходит и подсветка команды
-  link(p.last, prompt);
-  p.last = prompt;
-  // Подсказку снимаем: она была про прошлый прогон, а начался новый.
+  // Подсказку снимаем до перерисовки: она была про прошлый прогон, а начался новый.
   hints.delete(p.pane);
-  ta.placeholder = PROMPT_PLACEHOLDER;
+  ta.oninput();  // не только высота: с текстом уходит подсветка команды и подсказка
   // Момент отправки — единственный жест пользователя, на котором браузер позволяет
   // спросить разрешение. На загрузке страницы Safari и Chrome такой запрос игнорируют.
   if ('Notification' in window && Notification.permission === 'default') {
@@ -2369,6 +2372,7 @@ function absorb(p, data) {
   // быть отправлен и раньше, в истории он законный.
   const queue = echoes.get(p.pane) || [];
   const shown = dropEcho(data.items, queue);
+  for (const it of data.items) if (it.role === 'assistant' && it.text) answers.set(p.pane, it.text);
   if (!queue.length) echoes.delete(p.pane);
   pour(box, shown);
   wireCopy(box);
@@ -2463,17 +2467,6 @@ async function tick() {
     const es = streams.get(p.pane);
     if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
 
-    // Прогон только что кончился — в пустое поле встаёт серым тот промпт, который
-    // обычно идёт следующим. Именно переход, а не «панель свободна»: второе верно
-    // каждые три секунды, и подсказка возвращалась бы поверх стёртого.
-    if (wasBusy.has(p.pane) && !busy) {
-      const ta = el?.querySelector('textarea');
-      const hint = ta && !ta.value ? nextAfter(p.last) : null;
-      hints.set(p.pane, hint);
-      if (ta && hint) ta.placeholder = hint;
-    }
-    if (busy) wasBusy.add(p.pane); else wasBusy.delete(p.pane);
-
     el?.classList.toggle('busy', busy);
     // Прогон кончился — «стоп» снова живая. Снимаем здесь, а не по ответу на отмену:
     // сервер отвечает раньше, чем процесс успевает умереть, и кнопка вернулась бы в
@@ -2483,6 +2476,21 @@ async function tick() {
       const btn = el.querySelector('.stop');
       if (btn) btn.disabled = false;
     }
+    // Прогон только что кончился — в пустое поле встаёт серым промпт из ответа. Именно
+    // переход, а не «панель свободна»: второе верно каждые три секунды, и подсказка
+    // возвращалась бы поверх стёртого.
+    //
+    // Стоит ПОСЛЕ переключения `busy` и разблокировки «стоп» намеренно. Всё, что в этом
+    // цикле стоит до них, при исключении оставляет окно навсегда занятым, с нажатой
+    // кнопкой и без единой строки в консоли. Подсказка такой цены не стоит.
+    if (wasBusy.has(p.pane) && !busy) {
+      const hint = fromAnswer(answers.get(p.pane));
+      hints.set(p.pane, hint);
+      const box = el?.querySelector('textarea');
+      if (box && !box.value) box.placeholder = hint || BLANK;
+    }
+    if (busy) wasBusy.add(p.pane); else wasBusy.delete(p.pane);
+
     const timer = el?.querySelector('.timer');
     if (timer) {
       const foreign = busy && mine.scope !== scope;

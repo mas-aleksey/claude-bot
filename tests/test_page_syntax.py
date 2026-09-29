@@ -826,10 +826,10 @@ console.log(JSON.stringify({
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_tab_takes_the_hint_after_a_run(tmp_path):
-    """После прогона в пустое поле встаёт серым тот промпт, который обычно идёт следующим,
-    и Tab кладёт его в поле. Предсказание своё, без модели: пары «прошлый → следующий»
-    копятся при отправке. Набранный черновик Tab не трогает."""
+def test_hint_comes_from_the_answer(tmp_path):
+    """Следующий промпт claude называет сам, в «ёлочках» последней строки — так требует
+    стиль ответа. Оттуда подсказка и берётся, без вызова модели. Tab кладёт её в поле,
+    отправку оставляет за Enter, а живёт она до самой отправки."""
     body = slice_out("script").split("// --- slash:begin ---")[1].split("// --- slash:end ---")[0]
     js = tmp_path / "hint.js"
     js.write_text("""
@@ -855,34 +855,38 @@ const p = { pane: 'p1', project: '/projects/rp' };
 wireSlash(p, el, ta);
 const out = {};
 
-// Пары копятся при отправке. Побеждает частый, при равном счёте — свежий.
-link('правка', 'собери ассистента');
-link('правка', 'собери ассистента');
-link('правка', 'sync-repo');
-out.top = nextAfter('правка');
-out.unknown = nextAfter('такого не было');
-link('сборка', 'старое'); link('сборка', 'новое');
-out.tie = nextAfter('сборка');
-link('сам', 'сам');
-out.self = nextAfter('сам');            // повтор себя ничего не предсказывает
+// Обычный ответ: действие последней строкой, формулировка дословно.
+out.plain = fromAnswer('Собрано, контейнер пересоздастся.\\n\\nСкажи «собери» — соберу образ.');
+// Цитаты в начале ответа не в счёт: берём ту, что в хвосте.
+out.tail = fromAnswer('Имя «claude-bot» это тег.\\nТут про «сети».\\nПусто.\\nПусто.\\n' +
+                      'Скажи «раскатай на песочницы», и соберу оба.');
+// Две в одной строке — берём последнюю, она и есть промпт.
+out.two = fromAnswer('Вместо «wip» напиши «sync-repo».');
+out.none = fromAnswer('Готово, ничего не нужно.');
+out.empty = fromAnswer('');
+out.missing = fromAnswer(undefined);
+// Кавычка на пол-ответа промптом не бывает: потолок 200 символов.
+out.huge = fromAnswer('скажи «' + 'я'.repeat(201) + '»');
 
-// Tab на пустом поле подставляет подсказку и снимает её. Отправки не происходит.
-hints.set('p1', 'собери ассистента');
-put('');
+// Tab на пустом поле подставляет подсказку. Отправки нет, подсказка живёт дальше.
+hints.set('p1', 'собери');
+put(''); ta.oninput();
+out.grey = ta.placeholder;
 key('Tab');
-out.filled = [ta.value, hints.has('p1'), sent];
+out.filled = [ta.value, hints.get('p1'), sent];
 
-// Черновик в поле Tab не трогает, подсказка остаётся ждать.
-hints.set('p1', 'собери ассистента');
-put('черновик');
+// Набрал своё и стёр — серая подсказка вернулась.
+put('черновик'); ta.oninput();
 key('Tab');
-out.draft = [ta.value, hints.get('p1')];
+out.draft = ta.value;
+put(''); ta.oninput();
+out.back = ta.placeholder;
 
-// Без подсказки Tab на пустом поле тоже ничего не делает.
+// Без подсказки серого нет, Tab ничего не делает.
 hints.delete('p1');
-put('');
+put(''); ta.oninput();
 key('Tab');
-out.bare = ta.value;
+out.bare = [ta.value, ta.placeholder];
 
 console.log(JSON.stringify(out));
 """, encoding="utf-8")
@@ -891,10 +895,67 @@ console.log(JSON.stringify(out));
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout)
 
-    assert out["top"] == "собери ассистента"      # два раза против одного
-    assert out["unknown"] is None                 # незнакомому промпту нечего предложить
-    assert out["tie"] == "новое"                  # поровну — берём свежее
-    assert out["self"] is None                    # повтор себя не предсказание
-    assert out["filled"] == ["собери ассистента", False, 0]   # подставлено, не отправлено
-    assert out["draft"] == ["черновик", "собери ассистента"]  # набранное цело
-    assert out["bare"] == ""
+    assert out["plain"] == "собери"
+    assert out["tail"] == "раскатай на песочницы"      # цитаты из начала ответа не взяты
+    assert out["two"] == "sync-repo"                   # в строке две — промпт последняя
+    assert [out["none"], out["empty"], out["missing"]] == [None, None, None]
+    assert out["huge"] is None                         # длинную кавычку не берём
+
+    assert out["grey"] == "собери"                     # серым в пустом поле
+    assert out["filled"] == ["собери", "собери", 0]    # подставлено, не отправлено
+    assert out["draft"] == "черновик"                  # набранное Tab не трогает
+    assert out["back"] == "собери"                     # стёр своё — подсказка вернулась
+    # Пробел, а не пустая строка: на нём держится `:placeholder-shown`, гасящий кнопку.
+    assert out["bare"] == ["", " "]
+
+
+def test_hint_runs_after_the_pane_is_marked_free():
+    """Подсказка стоит после переключения `busy` и разблокировки «стоп».
+
+    Всё, что в цикле панелей стоит до них, при исключении оставляет окно навсегда
+    занятым: кнопка «стоп» нажата, отправка погашена, в консоли пусто. Так и было
+    2026-09-29 — имя `answers` звалось `said`, одноимённый `const` ниже по блоку накрывал
+    обращение мёртвой зоной, и ReferenceError вешал панель после каждого прогона.
+    """
+    js = slice_out("script")
+    free = js.index("classList.toggle('busy', busy)")
+    hint = js.index("fromAnswer(answers.get(p.pane))")
+    assert free < hint, "подсказка не должна стоять до снятия занятости"
+
+    # Имя хранилища ответов не должно объявляться второй раз: внутри цикла панелей это
+    # и создало мёртвую зону. Проверяем по всему скрипту, а не по одному блоку.
+    assert js.count("const answers") == 1
+    assert "answers" not in js.split("const answers")[0]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_field_height_ignores_the_hint(tmp_path):
+    """У пустого поля `scrollHeight` считает и placeholder. Длинная подсказка растягивала
+    композер до потолка, браузер подкручивал секцию к полю с фокусом, и шапка уезжала за
+    верхний край — вернуть её было нечем, у секции `overflow:hidden`."""
+    js_src = slice_out("script")
+    body = "function grow" + js_src.split("function grow")[1].split("\n}\n")[0] + "\n}\n"
+    js = tmp_path / "grow.js"
+    js.write_text(body + """
+// Подставное поле: высота растёт и от значения, и от подсказки — как в браузере.
+const field = (value, placeholder) => ({
+  value, placeholder, style: {},
+  get scrollHeight() { return 40 + (this.value.length + this.placeholder.length) * 4; },
+});
+const long = 'скажи «собери» — соберу образ и поставлю отложенный рестарт';
+const empty = field('', long);
+grow(empty);
+const typed = field('привет', long);
+grow(typed);
+console.log(JSON.stringify([empty.style.height, empty.placeholder,
+                            typed.style.height, typed.placeholder]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    bare, kept_bare, typed, kept_typed = json.loads(done.stdout)
+
+    assert bare == "40px"          # пустое поле — одна строка, подсказка на высоту не влияет
+    assert typed == "64px"         # набранное считается как раньше
+    # Подсказку возвращаем на место, иначе серый текст пропадал бы на каждой букве.
+    hint = "скажи «собери» — соберу образ и поставлю отложенный рестарт"
+    assert kept_bare == kept_typed == hint
