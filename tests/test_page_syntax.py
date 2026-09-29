@@ -778,16 +778,18 @@ function draw(lim, auth) {
   if (box.hidden) return { hidden: true };
   const key = box.innerHTML.match(/<div class="auth([^"]*)" title="([^"]*)"><em>([^<]*)<\\/em>/);
   const who = box.innerHTML.match(/<div class=who title="([^"]*)">([^<]*)</);
-  const bar = box.innerHTML.match(/<div class=lim title="([^"]*)"><em>([^<]*)<\\/em><span>([^<]*)</);
+  const bars = [...box.innerHTML.matchAll(
+    /<div class=lim title="([^"]*)"><em>([^<]*)<\\/em><span>([^<]*)</g)].map(m => [m[1], m[2], m[3]]);
   return {
     who: who && [who[1], who[2]],
     key: key && [key[1].trim(), key[2], key[3], box.innerHTML.includes('id=login')],
-    bar: bar && [bar[1], bar[2], bar[3]],
+    bars,
   };
 }
 
 const lim = { email: 'me@x.dev', plan: 'max 5x', at: NOW / 1000,
-              bars: [{ name: 'сессия', percent: 60, resets: NOW + 2 * 3600e3 }] };
+              bars: [{ name: 'сессия', percent: 60, resets: NOW + 2 * 3600e3 },
+                     { name: 'неделя', percent: 95, resets: NOW + 3 * 3600e3 }] };
 const alive = { ok: true, fresh: true, renewable: true, until: (NOW + 4 * DAY) / 1000 };
 const soon = { ok: true, fresh: true, renewable: true, until: (NOW + DAY) / 1000 };
 const dead = { ok: true, fresh: false, renewable: false, until: null };
@@ -808,8 +810,11 @@ console.log(JSON.stringify({
 
     # Первая строка: возраст данных ушёл в подсказку, в строке только кто и по какому плану.
     assert got["alive"]["who"] == ["обновлено 1 мин назад", "me@x.dev · max 5x"]
-    # Полоска: процент в строке, срок сброса в подсказке.
-    assert got["alive"]["bar"] == ["сброс лимитов через 2ч 0м", "сессия", "60%"]
+    # Спокойная полоска: процент в строке, срок сброса только в подсказке.
+    assert got["alive"]["bars"][0] == ["сброс лимитов через 2ч 0м", "сессия", "60%"]
+    # Покрасневшая: срок возвращается в строку — тянуться за ним мышью уже поздно.
+    assert got["alive"]["bars"][1] == ["сброс лимитов через 3ч 0м", "неделя",
+                                       "через 3ч 0м · 95%"]
     # Ключ: состояние словами, срок в подсказке, кнопка только когда она нужна.
     assert got["alive"]["key"] == ["", "рефреш через 4д 0ч", "ключ активен", False]
     assert got["soon"]["key"] == ["warn", "рефреш через 1д 0ч", "ключ скоро кончится", True]
@@ -818,3 +823,78 @@ console.log(JSON.stringify({
     assert got["none"]["key"][0::2] == ["hot", "не авторизован"]
     assert got["nolim"]["key"][2] == "ключ активен"   # без полосок строка остаётся
     assert got["nothing"] == {"hidden": True}         # знать нечего — блока нет
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_tab_takes_the_hint_after_a_run(tmp_path):
+    """После прогона в пустое поле встаёт серым тот промпт, который обычно идёт следующим,
+    и Tab кладёт его в поле. Предсказание своё, без модели: пары «прошлый → следующий»
+    копятся при отправке. Набранный черновик Tab не трогает."""
+    body = slice_out("script").split("// --- slash:begin ---")[1].split("// --- slash:end ---")[0]
+    js = tmp_path / "hint.js"
+    js.write_text("""
+const shelf = {};
+const localStorage = { getItem: (k) => k in shelf ? shelf[k] : null,
+                       setItem: (k, v) => { shelf[k] = v; } };
+const hints = new Map();
+const esc = (s) => String(s);
+const grow = () => {};
+let sent = 0;
+const send = () => { sent++; };
+const kb = (n) => n + ' Б';
+const TOUCH = { matches: false };
+const get = async () => [];
+const menu = { innerHTML: '', hidden: true };
+const ghost = { innerHTML: '', scrollTop: 0 };
+const ta = { value: '', selectionStart: 0, selectionEnd: 0, scrollTop: 0, focus() {} };
+const el = { querySelector: (s) => s === '.menu' ? menu : ghost };
+""" + body + """
+const key = (k) => ta.onkeydown({ key: k, preventDefault() {} });
+const put = (text) => { ta.value = text; ta.selectionStart = ta.selectionEnd = text.length; };
+const p = { pane: 'p1', project: '/projects/rp' };
+wireSlash(p, el, ta);
+const out = {};
+
+// Пары копятся при отправке. Побеждает частый, при равном счёте — свежий.
+link('правка', 'собери ассистента');
+link('правка', 'собери ассистента');
+link('правка', 'sync-repo');
+out.top = nextAfter('правка');
+out.unknown = nextAfter('такого не было');
+link('сборка', 'старое'); link('сборка', 'новое');
+out.tie = nextAfter('сборка');
+link('сам', 'сам');
+out.self = nextAfter('сам');            // повтор себя ничего не предсказывает
+
+// Tab на пустом поле подставляет подсказку и снимает её. Отправки не происходит.
+hints.set('p1', 'собери ассистента');
+put('');
+key('Tab');
+out.filled = [ta.value, hints.has('p1'), sent];
+
+// Черновик в поле Tab не трогает, подсказка остаётся ждать.
+hints.set('p1', 'собери ассистента');
+put('черновик');
+key('Tab');
+out.draft = [ta.value, hints.get('p1')];
+
+// Без подсказки Tab на пустом поле тоже ничего не делает.
+hints.delete('p1');
+put('');
+key('Tab');
+out.bare = ta.value;
+
+console.log(JSON.stringify(out));
+""", encoding="utf-8")
+    done = subprocess.run(["node", "--input-type=module", "-e", js.read_text(encoding="utf-8")],
+                          capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+
+    assert out["top"] == "собери ассистента"      # два раза против одного
+    assert out["unknown"] is None                 # незнакомому промпту нечего предложить
+    assert out["tie"] == "новое"                  # поровну — берём свежее
+    assert out["self"] is None                    # повтор себя не предсказание
+    assert out["filled"] == ["собери ассистента", False, 0]   # подставлено, не отправлено
+    assert out["draft"] == ["черновик", "собери ассистента"]  # набранное цело
+    assert out["bare"] == ""

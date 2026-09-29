@@ -773,6 +773,13 @@ const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 // localStorage, и после F5 залипшее эхо съело бы строку из истории.
 const echoes = new Map();
 
+// Занятость панели на прошлом тике и серая подсказка после прогона. Не в самой панели по
+// той же причине, что и эхо выше: `panes` уходит в localStorage, и после F5 залипшее
+// `busy` выдало бы подсказку на пустом месте, а залипшая подсказка вставлялась бы по Tab,
+// не показавшись серым.
+const wasBusy = new Set();
+const hints = new Map();
+
 // --- echo:begin ---
 // Сравниваем по схлопнутым пробелам: слеш-команда возвращается из транскрипта собранной
 // заново из `<command-name>` и `<command-args>`, и лишний пробел или перенос между
@@ -1356,7 +1363,7 @@ function drawPane(p) {
     <form>
       <div class=menu hidden></div>
       <div class=ghost></div>
-      <textarea placeholder="промпт" title="${TOUCH.matches ? 'кнопка ↑ — отправить'
+      <textarea placeholder="${PROMPT_PLACEHOLDER}" title="${TOUCH.matches ? 'кнопка ↑ — отправить'
         : 'Enter — отправить, Shift+Enter — перенос строки'}"></textarea>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
@@ -1777,6 +1784,29 @@ function skillsFor(project) {
 const HEAD_RE = /^\/(\S*)$/;
 const NAME_RE = /^\/([\w-]+)/;
 
+const PROMPT_PLACEHOLDER = 'промпт';
+
+// Что обычно идёт следующим. Пары «прошлый промпт → следующий» копятся при отправке, и
+// после прогона самый частый продолжатель встаёт в поле серым. Модель для этого не
+// нужна: предлагать имеет смысл то, что ты сам уже делал в этом месте — «собери
+// ассистента» после правки кода, «sync-repo» после сборки.
+const PAIRS_MAX = 200;
+const pairs = () => { try { return JSON.parse(localStorage.getItem('pairs')) || []; }
+                      catch { return []; } };
+function link(prev, next) {
+  if (!prev || prev === next) return;   // повтор одного и того же ничего не предсказывает
+  localStorage.setItem('pairs', JSON.stringify([[prev, next], ...pairs()].slice(0, PAIRS_MAX)));
+}
+
+// Пары лежат новыми вперёд, поэтому при равном счёте строгое `>` оставляет свежую.
+function nextAfter(prev) {
+  const seen = new Map();
+  for (const [a, b] of pairs()) if (a === prev) seen.set(b, (seen.get(b) || 0) + 1);
+  let best = null, top = 0;
+  for (const [text, n] of seen) if (n > top) { best = text; top = n; }
+  return best;
+}
+
 // Поле ввода целиком: Enter, автодополнение по `/` и подсветка имени команды.
 // Одной функцией, потому что клавиши у них общие — меню забирает Enter себе, и
 // разнести это на два обработчика значит спорить за один и тот же `keydown`.
@@ -1849,6 +1879,17 @@ function wireSlash(p, el, ta) {
       }
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return accept(sel); }
       if (e.key === 'Escape') { e.preventDefault(); return close(); }
+    }
+    // Серая подсказка после прогона: Tab кладёт её в поле, отправку оставляет за Enter.
+    // Предложение бывает не тем, и одна клавиша до отправки — это слишком коротко.
+    if (e.key === 'Tab' && menu.hidden && !ta.value && hints.get(p.pane)) {
+      e.preventDefault();
+      ta.value = hints.get(p.pane);
+      hints.delete(p.pane);
+      ta.placeholder = PROMPT_PLACEHOLDER;
+      ta.selectionStart = ta.selectionEnd = ta.value.length;
+      grow(ta);
+      return paint();
     }
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !TOUCH.matches) { e.preventDefault(); send(p, ta); }
   };
@@ -2054,8 +2095,11 @@ function setPlan(lim, auth) {
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
     const left = until(b.resets);
     const when = left ? `сброс лимитов через ${left}` : 'время сброса неизвестно';
+    // Срок сброса возвращается в строку, как только полоска пожелтела или покраснела.
+    // На спокойной это справка, за которой наводят мышь; на тревожной — то самое, ради
+    // чего в блок и смотрят, и прятать его туда, куда надо тянуться, незачем.
     return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em>` +
-      `<span>${p}%</span>
+      `<span>${cls && left ? `через ${esc(left)} · ` : ''}${p}%</span>
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
   }).join('');
   const btn = box.querySelector('#login');
@@ -2080,6 +2124,11 @@ async function send(p, ta) {
   if (!prompt) return;
   ta.value = '';
   ta.oninput();  // не только высота: с текстом уходит и подсветка команды
+  link(p.last, prompt);
+  p.last = prompt;
+  // Подсказку снимаем: она была про прошлый прогон, а начался новый.
+  hints.delete(p.pane);
+  ta.placeholder = PROMPT_PLACEHOLDER;
   // Момент отправки — единственный жест пользователя, на котором браузер позволяет
   // спросить разрешение. На загрузке страницы Safari и Chrome такой запрос игнорируют.
   if ('Notification' in window && Notification.permission === 'default') {
@@ -2413,6 +2462,17 @@ async function tick() {
     // бывало. Тик и так ходит раз в три секунды, поэтому проверка стоит сравнения.
     const es = streams.get(p.pane);
     if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
+
+    // Прогон только что кончился — в пустое поле встаёт серым тот промпт, который
+    // обычно идёт следующим. Именно переход, а не «панель свободна»: второе верно
+    // каждые три секунды, и подсказка возвращалась бы поверх стёртого.
+    if (wasBusy.has(p.pane) && !busy) {
+      const ta = el?.querySelector('textarea');
+      const hint = ta && !ta.value ? nextAfter(p.last) : null;
+      hints.set(p.pane, hint);
+      if (ta && hint) ta.placeholder = hint;
+    }
+    if (busy) wasBusy.add(p.pane); else wasBusy.delete(p.pane);
 
     el?.classList.toggle('busy', busy);
     // Прогон кончился — «стоп» снова живая. Снимаем здесь, а не по ответу на отмену:
