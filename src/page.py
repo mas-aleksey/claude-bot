@@ -2198,8 +2198,8 @@ async function send(p, ta) {
 // Разделитель ящика — символ из приватной зоны Unicode: в обычном тексте его не бывает,
 // в отличие от любой печатной пары вроде @@.
 //
-// ponytail: таблицы только простые, вложенных списков нет. Начнёт калечить вывод —
-// вендорить marked.js в образ, а не наращивать регулярки.
+// ponytail: таблицы только простые — труба внутри `код` считается разделителем колонок.
+// Начнёт калечить вывод — вендорить marked.js в образ, а не наращивать регулярки.
 const BOX = '\uE000';
 
 function md(src) {
@@ -2224,9 +2224,11 @@ function md(src) {
     (_, h, txt) => `<h${h.length}>${inline(txt)}</h${h.length}>`);
   t = t.replace(/^&gt; ?(.*)$/gm, (_, txt) => `<blockquote>${inline(txt)}</blockquote>`);
 
-  // Список — подряд идущие строки одного вида. Вложенность не поддерживается.
-  t = t.replace(/(?:^[-*] +.*(?:\n|$))+/gm, (m) => list(m, /^[-*] +/, 'ul'));
-  t = t.replace(/(?:^\d+[.)] +.*(?:\n|$))+/gm, (m) => list(m, /^\d+[.)] +/, 'ol'));
+  // Список целиком, вместе с вложенным и продолжениями пунктов. В ящик, как таблицу:
+  // готовый html внутри, и разбивка на абзацы ниже не заглянет внутрь. Без этого её
+  // нежадный поиск закрывающего тега останавливался на первом `</ul>` — то есть на
+  // конце вложенного списка, а не внешнего.
+  t = t.replace(LIST_RE, (m) => stash(list(m)));
 
   t = inline(t);
 
@@ -2248,10 +2250,50 @@ function md(src) {
   return t.replace(new RegExp(BOX + '(\\d+)' + BOX, 'g'), (_, i) => box[+i]);
 }
 
-function list(block, marker, tag) {
-  const li = block.trimEnd().split('\n').filter(Boolean)
-    .map(l => `<li>${inline(l.replace(marker, ''))}</li>`).join('');
-  return `<${tag}>${li}</${tag}>`;
+// Блок списка: начинается строкой с маркером, дальше — такие же строки, строки с
+// отступом (продолжение пункта или вложенный пункт) и пустые строки перед отступом.
+// До 2026-09-29 маркер искался только в нулевой колонке, и любая отступленная строка
+// рвала список на куски: вложенный пункт выпадал абзацем с видимым дефисом, а `<ol>`
+// начинался заново и сбрасывал нумерацию на единицу.
+const LIST_RE = new RegExp(
+  '^[ \\t]*(?:[-*]|\\d+[.)])[ \\t]+.*(?:\\n|$)' +
+  '(?:^[ \\t]*(?:[-*]|\\d+[.)])[ \\t]+.*(?:\\n|$)' +
+  '|^[ \\t]+\\S.*(?:\\n|$)' +
+  '|^[ \\t]*\\n(?=[ \\t]+\\S))*', 'gm');
+
+// Глубже claude не пишет, а кривой отступ не должен строить дерево на сто уровней.
+const LIST_MAX = 4;
+
+function list(block) {
+  const flat = [];
+  for (const line of block.replace(/\n+$/, '').split('\n')) {
+    const m = line.match(/^([ \t]*)(?:[-*]|(\d+)[.)])[ \t]+(.*)$/);
+    // Таб считаем за два пробела: важен порядок отступов между собой, а не их размер.
+    if (m) flat.push({ pad: m[1].replace(/\t/g, '  ').length,
+                       ordered: m[2] !== undefined, lines: [m[3]], kids: [] });
+    else if (line.trim() && flat.length) flat[flat.length - 1].lines.push(line.trim());
+  }
+  if (!flat.length) return '';
+
+  // Стек предков по возрастанию отступа: пункт с меньшим или равным отступом закрывает
+  // всё, что глубже, и встаёт соседом.
+  const root = [], stack = [];
+  for (const it of flat) {
+    while (stack.length && it.pad <= stack[stack.length - 1].pad) stack.pop();
+    if (stack.length >= LIST_MAX) stack.length = LIST_MAX - 1;
+    (stack.length ? stack[stack.length - 1].kids : root).push(it);
+    stack.push(it);
+  }
+
+  // Вид списка задаёт первый пункт уровня: `-` и `1.` вперемешку на одном уровне claude
+  // не пишет, а гадать по каждому пункту значило бы рвать список ровно там, где раньше.
+  const draw = (nodes) => {
+    const tag = nodes[0].ordered ? 'ol' : 'ul';
+    const li = nodes.map(n => `<li>${n.lines.map(inline).join('<br>')}` +
+                              `${n.kids.length ? draw(n.kids) : ''}</li>`).join('');
+    return `<${tag}>${li}</${tag}>`;
+  };
+  return draw(root);
 }
 
 function inline(t) {
