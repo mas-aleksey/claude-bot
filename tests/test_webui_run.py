@@ -681,3 +681,38 @@ async def test_projects_carry_session_counts(client, tmp_path, monkeypatch):
     # Каталог транскриптов в фикстуре лежит рядом с проектами и сам попадает в список —
     # смотрим только на нужную строку.
     assert {r["name"]: r["sessions"] for r in rows}["proj"] == 2
+
+
+def test_auth_tells_refreshable_from_dead(tmp_path, monkeypatch):
+    """Три состояния, а не два. Доступ живёт часы и меняется сам по refresh-токену;
+    когда истекает и он, прогон отвечает «could not be refreshed», и помогает только
+    новый вход. По одному `expiresAt` эти случаи неразличимы."""
+    creds = tmp_path / "creds.json"
+    monkeypatch.setattr(runner, "CREDS", str(creds))
+    soon, later = (time.time() + 600) * 1000, (time.time() + 5 * 86400) * 1000
+
+    assert runner.auth()["ok"] is False                      # файла нет
+
+    creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": soon,
+                                                   "refreshTokenExpiresAt": later}}))
+    got = runner.auth()
+    assert (got["ok"], got["fresh"], got["renewable"]) == (True, True, True)
+
+    creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 0,
+                                                   "refreshTokenExpiresAt": later}}))
+    got = runner.auth()
+    assert (got["fresh"], got["renewable"]) == (False, True)   # обновится прогоном
+
+    creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 0,
+                                                   "refreshTokenExpiresAt": 0}}))
+    got = runner.auth()
+    assert (got["fresh"], got["renewable"]) == (False, False)  # только вход руками
+
+    creds.write_text("не json")
+    assert runner.auth()["ok"] is False
+
+
+async def test_login_code_without_a_started_flow_is_409(client):
+    """Код без начатого входа принимать не за что: pty с `claude auth login` не поднят."""
+    r = await client.post("/api/login/code", json={"code": "123"})
+    assert r.status == 409

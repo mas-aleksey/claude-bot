@@ -463,6 +463,7 @@ async def api_status(_: web.Request) -> web.Response:
     return web.json_response({"runs": runner.active(), "errors": _errors,
                               "local": _local, "stats": _stats,
                               "queued": runner.waiting(),
+                              "auth": runner.auth(),
                               "limits": await runner.limits(),
                               "model": await runner.resolve_model(
                                   store.get("model") or runner.default_model())})
@@ -507,6 +508,44 @@ async def api_prompt(req: web.Request) -> web.Response:
     return web.json_response({"session": sid})
 
 
+# Идущий вход по подписке. Один на инстанс, как и сам ключ: OAuth-ключ общий для бота,
+# всех панелей и всех сессий контейнера, поэтому два параллельных флоу смысла не имеют —
+# второй старт отменяет первый, ровно как `/login` в Telegram.
+_login: runner.Login | None = None
+
+
+async def api_login(_: web.Request) -> web.Response:
+    """Начать вход: поднять `claude auth login` в pty и отдать ссылку.
+
+    Сам флоу живёт в `runner.Login` и написан для Telegram — тут только вторая дорога к
+    нему. Ждать код в этом же запросе нельзя: человек уходит в браузер и возвращается
+    через минуту, а держать ради этого соединение незачем.
+    """
+    global _login
+    if _login:
+        _login.close()
+    _login = flow = runner.Login()
+    url = await flow.start()
+    if not url:
+        _login = None
+        return web.json_response({"error": "claude не отдал ссылку"}, status=502)
+    return web.json_response({"url": url})
+
+
+async def api_login_code(req: web.Request) -> web.Response:
+    """Код из браузера. Успех определяет сам `Login` — по появлению файла с ключом."""
+    global _login
+    if not _login:
+        return web.json_response({"error": "вход не начат"}, status=409)
+    code = ((await req.json()).get("code") or "").strip()
+    if not code:
+        return web.json_response({"error": "нужен код"}, status=400)
+    flow, _login = _login, None
+    ok, detail = await flow.submit(code)
+    log.info("login из панели: %s", "успех" if ok else detail[:200])
+    return web.json_response({"ok": ok, "detail": detail})
+
+
 async def api_cancel(req: web.Request) -> web.Response:
     data = await req.json()
     pane = data.get("pane") or ""
@@ -542,6 +581,8 @@ def build() -> web.Application:
         web.post("/api/prompt", api_prompt),
         web.post("/api/upload", files.api_upload),
         web.post("/api/cancel", api_cancel),
+        web.post("/api/login", api_login),
+        web.post("/api/login/code", api_login_code),
     ])
     return app
 

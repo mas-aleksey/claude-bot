@@ -81,6 +81,33 @@ async def _api_get(*urls: str, extra: dict | None = None) -> list:
     return out
 
 
+def auth() -> dict:
+    """Состояние ключа подписки для панели. Три разных случая, а не два.
+
+    В файле два срока: `expiresAt` у доступа (около восьми часов) и
+    `refreshTokenExpiresAt` у обновления (около недели). CLI меняет доступ сам по
+    refresh-токену на ближайшем запуске claude — пока жив второй. Когда истекает и он,
+    прогон отвечает `OAuth session expired and could not be refreshed`, и помогает
+    только новый вход.
+
+    Смотреть на один `expiresAt`, как было до 2026-09-29, значит обещать «обновится на
+    ближайшем прогоне» и в том случае, когда обновлять уже нечем.
+
+    Читаем без исключений: панель спрашивает это каждым тиком, и «нет ключа» для неё —
+    обычный ответ, а не сбой.
+    """
+    try:
+        with open(CREDS, encoding="utf-8") as f:
+            oauth = json.load(f)["claudeAiOauth"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return {"ok": False, "fresh": False, "renewable": False}
+    now = time.time()
+    return {"ok": True,
+            "fresh": oauth.get("expiresAt", 0) / 1000 > now,
+            "renewable": oauth.get("refreshTokenExpiresAt", 0) / 1000 > now,
+            "until": oauth.get("refreshTokenExpiresAt", 0) / 1000 or None}
+
+
 def _oauth_token() -> str:
     """Токен подписки из CREDS. Протухший не отдаём вовсе.
 

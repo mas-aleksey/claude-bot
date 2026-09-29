@@ -136,6 +136,35 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #list button.ok .ago, #list button.bad .ago, #list button.done .ago { opacity:1 }
 #plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
 #plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+/* Строка ключа: слева состояние, справа кнопка входа. Кнопка стоит тут всегда, а не
+   только при мёртвом ключе: узнать, что ключ не работает, можно лишь провалившимся
+   прогоном, и в этот момент искать, чем войти, поздно. */
+#plan .auth { display:flex; align-items:center; gap:8px; margin-top:4px }
+#plan .auth em { flex:1; font-style:normal; opacity:.6; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap }
+#plan .auth button { flex:none; padding:2px 8px; font-size:11px; border:1px solid #8884;
+  border-radius:6px; background:none; color:inherit; cursor:pointer }
+#plan .auth button:hover { background:#8882 }
+/* Обновлять нечем — это единственное состояние, где без человека не обойтись. Жёлтое —
+   предупреждение за двое суток: ещё работает, но пора. */
+#plan .auth.hot em { color:#e55; opacity:1 }
+#plan .auth.hot button { border-color:#e55; color:#e55 }
+#plan .auth.warn em { color:#e90; opacity:1 }
+#plan .auth.warn button { border-color:#e90; color:#e90 }
+/* Окно входа: узкое, по центру, с живой ссылкой. Ширина ограничена — адрес авторизации
+   длиной в три сотни символов иначе растягивает окно на весь экран. */
+#auth { width:min(420px, 92vw); border:1px solid #8884; border-radius:10px; padding:16px;
+  background:Canvas; color:inherit; font:inherit }
+#auth::backdrop { background:#0008 }
+#auth p { margin:0 0 10px }
+#auth a { display:block; margin-bottom:10px; overflow-wrap:anywhere }
+#auth input { width:100%; box-sizing:border-box; padding:6px; border:1px solid #8884;
+  border-radius:6px; background:none; color:inherit; font:inherit }
+#auth .row { display:flex; align-items:center; gap:8px; margin-top:10px }
+#auth .row span { flex:1; font-size:12px; opacity:.7 }
+#auth button { padding:4px 10px; border:1px solid #8884; border-radius:6px;
+  background:none; color:inherit; font:inherit; cursor:pointer }
+#auth button:hover { background:#8882 }
 #plan .lim { margin-top:6px }
 #plan .lim em { font-style:normal; opacity:.75 }
 #plan .lim span { float:right; opacity:.6 }
@@ -574,6 +603,19 @@ body:not(.folded) #empty .list { display:none }
 <div id=term></div>
 <div id=dead hidden>бот не отвечает или кончилась сессия входа
   <button id=reload>обновить страницу</button></div>
+<!-- Вход по подписке. Своё окно, а не `prompt()`: в нём ссылка — ссылка, по ней можно
+     нажать. В браузерном диалоге она была текстом на триста символов, который оставалось
+     только выделять руками. -->
+<dialog id=auth>
+  <p>Открой ссылку, войди в Claude и вставь сюда код.</p>
+  <a id=authurl target=_blank rel=noopener>открыть вход в Claude</a>
+  <input id=authcode placeholder="код из браузера" autocomplete=off>
+  <div class=row>
+    <span id=authsay></span>
+    <button id=authno>отмена</button>
+    <button id=authok>войти</button>
+  </div>
+</dialog>
 <script>
 const $ = (id) => document.getElementById(id);
 
@@ -1932,29 +1974,94 @@ const since = (sec) =>
     : sec < 86400 ? `${Math.floor(sec / 3600)} ч назад`
     : `${Math.floor(sec / 86400)} дн назад`;
 
-function setPlan(lim) {
+// Вход по подписке из панели. Флоу тот же, что у `/login` в Telegram: сервер поднимает
+// `claude auth login` в pty, отдаёт ссылку, а код из браузера возвращается второй
+// ручкой. Ключ один на контейнер, поэтому вход из панели — это вход и для бота.
+async function doLogin() {
+  const dlg = $('auth'), say = $('authsay'), code = $('authcode');
+  say.textContent = 'поднимаю вход…';
+  code.value = '';
+  $('authurl').removeAttribute('href');
+  dlg.showModal();
+  let started;
+  try { started = await post('api/login', {}); }
+  catch (e) { say.textContent = 'не начать вход: ' + e; return; }
+  // Ссылка кликабельна и заодно уезжает в буфер: на телефоне вход часто открывают в
+  // другом браузере, а не в той же вкладке.
+  $('authurl').href = started.url;
+  await copy(started.url);
+  say.textContent = 'ссылка скопирована';
+  code.focus();
+}
+
+$('authno').onclick = () => $('auth').close();
+$('authok').onclick = async () => {
+  const code = $('authcode').value.trim();
+  if (!code) return $('authcode').focus();
+  $('authsay').textContent = 'проверяю…';
+  const r = await ask('api/login/code', { code }, 'не войти');
+  if (!r) return;
+  $('authsay').textContent = r.ok ? 'вошли' : ('не вышло: ' + (r.detail || '').slice(0, 200));
+  // Закрываем только при успехе: текст отказа нужно успеть прочитать.
+  if (r.ok) setTimeout(() => $('auth').close(), 900);
+};
+$('authcode').onkeydown = (e) => { if (e.key === 'Enter') $('authok').click(); };
+
+// --- plan:begin ---
+function setPlan(lim, auth) {
   const box = $('plan');
   // Подпись возраста меняется сама по себе, без нового ответа сервера, поэтому входит
   // в ключ сравнения: иначе блок перерисовался бы только раз в две минуты и врал бы
   // «только что» всё это время.
   const label = lim?.at ? since(Date.now() / 1000 - lim.at) : '';
-  const j = JSON.stringify(lim || null) + '|' + label +
+  const j = JSON.stringify(lim || null) + '|' + label + '|' + JSON.stringify(auth || null) +
     '|' + (lim?.bars || []).map(b => until(b.resets)).join();
   if (box.dataset.j === j) return;
   box.dataset.j = j;
-  if (!lim || !(lim.bars || []).length) { box.hidden = true; return; }
+  const bars = (lim?.bars || []);
+  // Строка ключа стоит всегда, пока про ключ вообще что-то известно. Прятать её, пока всё
+  // хорошо, значило показывать кнопку входа ровно в тот момент, когда она впервые
+  // понадобилась, — а искать незнакомую кнопку на сломанном ключе поздно. Под цену
+  // строки в сайдбаре подогнан текст: в спокойном состоянии это «ключ 6д 9ч», а не
+  // фраза на три слова, которую обрезало многоточием.
+  const soon = auth?.until ? auth.until * 1000 - Date.now() : 0;
+  const need = !!auth && (!auth.ok || !auth.renewable);
+  const warn = !!auth && auth.ok && auth.renewable && soon > 0 && soon < 2 * 86400e3;
+  // Блок остаётся на экране и без полосок: без ключа лимитов не бывает вовсе, а кнопка
+  // входа нужна ровно в этот момент. Раньше он просто прятался.
+  if (!bars.length && !auth) { box.hidden = true; return; }
   box.hidden = false;
-  const who = [lim.email, lim.plan, label].filter(Boolean).join(' · ');
-  box.innerHTML = `<div class=who title="${esc(who)}">${esc(who)}</div>` + lim.bars.map((b) => {
+  // Сроки живут в подсказках, а не в строках. Четыре длительности подряд читались как
+  // сплошная лента цифр, а нужна из них в каждый момент одна: остальное — справка, за
+  // которой человек наводит мышь. В строке остаётся только то, что меняет решение:
+  // проценты у лимитов и состояние у ключа.
+  const who = [lim?.email, lim?.plan].filter(Boolean).join(' · ');
+  const left = auth?.until ? until(auth.until * 1000) : '';
+  // Кнопка только там, где она нужна: на живом ключе жать её незачем, а без неё строка
+  // занимает всю ширину.
+  const state = need ? (auth.ok ? 'нужен вход' : 'не авторизован')
+              : warn ? 'ключ скоро кончится' : 'ключ активен';
+  const hint = need ? 'обновить ключ нечем — нужен новый вход'
+             : left ? `рефреш через ${left}` : 'ключ активен';
+  box.innerHTML =
+    (who ? `<div class=who title="${esc(label ? 'обновлено ' + label : who)}">` +
+           `${esc(who)}</div>` : '') +
+    (auth ? `<div class="auth${need ? ' hot' : warn ? ' warn' : ''}"` +
+            ` title="${esc(hint)}"><em>${esc(state)}</em>` +
+            (need || warn ? '<button id=login>войти</button>' : '') + '</div>' : '') +
+    bars.map((b) => {
     const p = Math.max(0, Math.min(100, b.percent));
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
-    const when = b.resets ? 'сброс ' + new Date(b.resets).toLocaleString() : 'время сброса неизвестно';
     const left = until(b.resets);
+    const when = left ? `сброс лимитов через ${left}` : 'время сброса неизвестно';
     return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em>` +
-      `<span>${left ? `через ${esc(left)} · ` : ''}${p}%</span>
+      `<span>${p}%</span>
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
   }).join('');
+  const btn = box.querySelector('#login');
+  if (btn) btn.onclick = doLogin;
 }
+// --- plan:end ---
 
 // У низа ли лог. Сорок пикселей допуска: докрутить вплотную выходит не всегда, а
 // «почти внизу» читается как «внизу» — и дальше лог снова едет за ответом сам.
@@ -2265,7 +2372,7 @@ async function tick() {
   // Только по живому ответу: у запасного `st` выше поля `limits` нет вовсе, и один
   // неудачный опрос — рестарт бота, моргнувший Traefik — гасил полоски до следующего
   // тика. Выглядело как «панель лимитов периодически прячется».
-  if ('limits' in st) setPlan(st.limits);
+  if ('limits' in st) setPlan(st.limits, st.auth);
   trackRuns(st.runs || []);
   let running = 0;
   for (const p of panes) {

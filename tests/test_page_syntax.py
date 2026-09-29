@@ -749,3 +749,72 @@ const upload = async (file) => ({ path: '/data/inbox/' + file.name });
 
     assert paths == ["/data/inbox/a.txt", "/data/inbox/b.txt", "/data/inbox/c.txt"]
     assert empty == ""
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_plan_keeps_deadlines_in_tooltips(tmp_path):
+    """Сроки живут в подсказках, в строках остаётся то, что меняет решение. Строка про
+    ключ стоит всегда, кнопка входа — только когда она нужна."""
+    body = slice_out("script").split("// --- plan:begin ---")[1].split("// --- plan:end ---")[0]
+    js = tmp_path / "plan.js"
+    js.write_text("""
+const DAY = 86400e3;
+const NOW = Date.now();
+let box;
+const $ = () => box;
+const esc = (s) => String(s);
+const since = () => '1 мин назад';
+const until = (iso) => {
+  const h = Math.floor((new Date(iso) - NOW) / 3600e3);
+  return h > 0 ? (h >= 24 ? Math.floor(h / 24) + 'д ' + (h % 24) + 'ч' : h + 'ч 0м') : '';
+};
+const doLogin = () => {};
+""" + body + """
+// Разметку разбираем регулярками: DOM тут подставной, а проверяем мы ровно то, что
+// уходит в innerHTML — текст строки, её подсказку и наличие кнопки.
+function draw(lim, auth) {
+  box = { dataset: {}, hidden: false, innerHTML: '', querySelector: () => null };
+  setPlan(lim, auth);
+  if (box.hidden) return { hidden: true };
+  const key = box.innerHTML.match(/<div class="auth([^"]*)" title="([^"]*)"><em>([^<]*)<\\/em>/);
+  const who = box.innerHTML.match(/<div class=who title="([^"]*)">([^<]*)</);
+  const bar = box.innerHTML.match(/<div class=lim title="([^"]*)"><em>([^<]*)<\\/em><span>([^<]*)</);
+  return {
+    who: who && [who[1], who[2]],
+    key: key && [key[1].trim(), key[2], key[3], box.innerHTML.includes('id=login')],
+    bar: bar && [bar[1], bar[2], bar[3]],
+  };
+}
+
+const lim = { email: 'me@x.dev', plan: 'max 5x', at: NOW / 1000,
+              bars: [{ name: 'сессия', percent: 60, resets: NOW + 2 * 3600e3 }] };
+const alive = { ok: true, fresh: true, renewable: true, until: (NOW + 4 * DAY) / 1000 };
+const soon = { ok: true, fresh: true, renewable: true, until: (NOW + DAY) / 1000 };
+const dead = { ok: true, fresh: false, renewable: false, until: null };
+const none = { ok: false, fresh: false, renewable: false };
+
+console.log(JSON.stringify({
+  alive: draw(lim, alive),
+  soon: draw(lim, soon),
+  dead: draw(lim, dead),
+  none: draw(lim, none),
+  nolim: draw(null, alive),
+  nothing: draw(null, null),
+}));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    # Первая строка: возраст данных ушёл в подсказку, в строке только кто и по какому плану.
+    assert got["alive"]["who"] == ["обновлено 1 мин назад", "me@x.dev · max 5x"]
+    # Полоска: процент в строке, срок сброса в подсказке.
+    assert got["alive"]["bar"] == ["сброс лимитов через 2ч 0м", "сессия", "60%"]
+    # Ключ: состояние словами, срок в подсказке, кнопка только когда она нужна.
+    assert got["alive"]["key"] == ["", "рефреш через 4д 0ч", "ключ активен", False]
+    assert got["soon"]["key"] == ["warn", "рефреш через 1д 0ч", "ключ скоро кончится", True]
+    assert got["dead"]["key"] == ["hot", "обновить ключ нечем — нужен новый вход",
+                                  "нужен вход", True]
+    assert got["none"]["key"][0::2] == ["hot", "не авторизован"]
+    assert got["nolim"]["key"][2] == "ключ активен"   # без полосок строка остаётся
+    assert got["nothing"] == {"hidden": True}         # знать нечего — блока нет
