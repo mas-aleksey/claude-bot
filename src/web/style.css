@@ -1,0 +1,564 @@
+:root { color-scheme: dark light }
+* { box-sizing: border-box }
+/* Кнопки не залиты: фон свой, родительский, выделена только рамка. Иначе серая плашка
+   по умолчанию спорила и с тёмной темой, и с оттенком панели.
+   `#list button` и `.copy` бьют это правило своей специфичностью — список не набор
+   кнопок, а «копировать» лежит поверх кода и обязана быть непрозрачной. */
+button, .clip { font:inherit; color:inherit; background:none; cursor:pointer;
+  border:1px solid #888a; border-radius:4px; padding:4px 8px }
+button:hover, .clip:hover { border-color:#8ad }
+body { margin:0; font:14px/1.5 system-ui,sans-serif; display:flex; flex-direction:column;
+  height:100vh }
+/* Верхний ряд: список, его полоска и поле панелей. Отдельной обёрткой, потому что под
+   ним теперь живёт ящик терминала, и делить высоту им надо колонкой. */
+#top { position:relative; flex:1; min-height:0; display:flex }
+aside { width:280px; flex:none; border-right:1px solid #8884; display:flex; flex-direction:column }
+body.folded aside:not(.files) { display:none }  /* дерево справа прячется своей полоской */
+/* Полоса на левом краю области панелей. Видна всегда, в том числе когда сайдбар убран:
+   иначе его нечем было бы вернуть. Стрелка — через `content`, чтобы состояние рисовал
+   CSS, а не переписывал скрипт. */
+#fold { flex:none; width:14px; padding:0; border:0; border-right:1px solid #8884;
+  border-radius:0; opacity:.45; font-size:11px }
+#fold:hover { opacity:1; background:#8882 }
+#fold::before { content:'\2039' }
+body.folded #fold::before { content:'\203A' }
+/* Терминал — ящик у нижнего края, полоска над ним устроена как `#fold` слева: клик
+   открывает и закрывает, а если её потянуть, ящик растёт вверх или вниз. Высота лежит
+   в `--th` на самом ящике, поэтому её двигает один стиль, без перерисовки. */
+#termbar { flex:none; width:100%; height:14px; padding:0; border:0;
+  border-top:1px solid #8884; border-radius:0; opacity:.45; font-size:11px;
+  cursor:ns-resize; touch-action:none }
+#termbar:hover { opacity:1; background:#8882 }
+#termbar::before { content:'\2303' }
+body.term #termbar::before { content:'\2304' }
+#term { flex:none; height:var(--th,40vh); min-height:0 }
+body:not(.term) #term { display:none }
+#term iframe { display:block; width:100%; height:100%; border:0 }
+/* Правый сайдбар — дерево файлов. Устроен зеркально левому: своя полоска, свой класс
+   на body, своя память в localStorage. Флаг отдельный, а не общий: списки прячутся
+   независимо, и один класс схлопывал бы оба разом. */
+aside.files { border-right:0; border-left:1px solid #8884 }
+body.rfolded aside.files { display:none }
+#rfold { flex:none; width:14px; padding:0; border:0; border-left:1px solid #8884;
+  border-radius:0; opacity:.45; font-size:11px }
+#rfold:hover { opacity:1; background:#8882 }
+#rfold::before { content:'\203A' }
+body.rfolded #rfold::before { content:'\2039' }
+/* Хлебные крошки: путь от корня кнопками, каждая возвращает на свой уровень. Отдельной
+   кнопки «наверх» поэтому нет. */
+#crumb { padding:8px 8px 0; font-size:12px; word-break:break-all; opacity:.8 }
+#crumb button { border:0; padding:1px 2px; border-radius:2px }
+#crumb button:hover { background:#8882 }
+#tree { overflow:auto; flex:1; margin-top:8px }
+#tree .dir { font-weight:600 }
+#tree .size { float:right; opacity:.5; font-size:11px }
+#tree .none { padding:8px 10px; opacity:.5; font-size:12px }
+aside select, aside button.new, aside input { margin:8px 8px 0; padding:6px }
+aside .row { display:flex }
+aside .row button.new { flex:1 }
+aside .row button.new + button.new { margin-left:0 }
+/* Значок, а не кнопка во всю долю: ширина по содержимому, соседи делят остаток. */
+aside .row button.rescan { flex:none; width:32px; margin-left:8px }
+aside input { background:none; color:inherit; border:1px solid #8884; border-radius:4px;
+  font:inherit }
+#list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
+  overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
+#list { overflow:auto; flex:1; margin-top:8px }
+#list button, #tree button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
+  border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
+#list button:hover, #tree button:hover { background:#8882 }
+/* Открытая сессия залита цветом своей панели ровно как её заголовок и теми же числами.
+   Строка слева и заголовок наверху — одно и то же окно, разный цвет заливки развёл бы их
+   по ощущению. Мигание из этой пары ушло в 2026-09-29 и осталось только в окне.
+   Заливка перебивает `:hover` выше, специфичность та же, а правило ниже. Поэтому у
+   открытой строки свой ховер: тот же оттенок, гуще. Иначе она перестала бы отзываться
+   на курсор, а серая подсветка поверх цвета панели всё равно врала бы про него. */
+/* Открытая сессия — полоса цвета у левого края и бледная заливка. Заливка в 30% была
+   самым заметным пятном сайдбара: она спорила с зелёным кружком готовности, а строка с
+   красноватым окном читалась как ошибка, хотя это просто тон её окна. Полоса опознаёт
+   окно не хуже, а фон в списке теперь значит одно — «тут что-то произошло». */
+#list button.open { background:oklch(0.62 0.18 var(--hue,250) / .12);
+  box-shadow:inset 3px 0 0 oklch(0.62 0.20 var(--hue,250)) }
+#list button.open:hover { background:oklch(0.62 0.18 var(--hue,250) / .22) }
+/* Занятая сессия подсвечена слабо. Сначала она мигала, потом горела в полную силу — и
+   то и другое тянуло взгляд на себя, хотя «идёт прогон» смотрят в окне, где рядом таймер.
+   В списке эта строка нужна лишь чтобы не искать, какая сессия работает. */
+#list button.busy { background:oklch(0.68 0.21 var(--hue,250) / .28) }
+/* «Ответ пришёл в закрытое окно» помечается тем же зелёным квадратом, что и законченный
+   прогон в открытом: смысл один — «тут ответ, ты его не видел», — и двух знаков на него
+   не нужно. Точка в цвет сессии стояла тут до 2026-09-27 и рядом с квадратом выглядела
+   просто беднее. */
+/* Прогон кончился, а окно ещё не открывали: галочка, если дошёл до конца, и кружок,
+   если упал. Те же два знака, что и посреди самого окна, — только окно бывает закрыто
+   развёрнутым соседом, а строка списка видна всегда.
+   Цвет не от тона сессии: зелёное и красное значат одно и то же у всех строк. */
+/* Прогон кончился — плотный квадрат на месте отметки времени. Место у правого края уже
+   занято и уже держится под текст, поэтому значку не нужно ни своего угла, ни отступа у
+   строк ветки: ничего не двигается, когда метку снимают кликом.
+   Заливки строки тут нет: её пробовали дважды, бледной и плотной, и оба раза она спорила
+   с фоном строки, занятым цветом окна. Знака хватает — он и в окне тот же. */
+#list .meta .ago { position:relative }
+/* Готовность: квадрат на месте отметки времени, а цвет исхода залит во всю строку.
+   Зелёный обычный, `#22c55e`: цвет из oklch с максимальной насыщенностью выглядел
+   кислотным и спорил с тоном окон. Знак белый и жирный — на плотной заливке это самый
+   контрастный вариант, а тонкая галочка тонула. */
+#list button.ok .ago::after, #list button.done .ago::after,
+#list button.bad .ago::after { content:'\2714';
+  position:absolute; right:-2px; top:50%; transform:translateY(-50%);
+  width:22px; height:22px; border-radius:6px; display:grid; place-items:center;
+  font-size:14px; font-weight:700; line-height:1; color:#fff; background:#22c55e }
+#list button.bad .ago::after { content:'\2715'; background:#ef4444 }
+/* Знак живёт внутри `.meta` (opacity .5) и `.ago` (opacity .75), а прозрачность
+   наследуется: квадрат рисовался в 37% силы и выглядел бледной наклейкой рядом с тем же
+   знаком в окне. Для помеченных строк обе прозрачности снимаем. */
+#list button.ok .meta, #list button.bad .meta, #list button.done .meta,
+#list button.ok .ago, #list button.bad .ago, #list button.done .ago { opacity:1 }
+#plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
+#plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+/* Строка ключа: слева состояние, справа кнопка входа. Кнопка стоит тут всегда, а не
+   только при мёртвом ключе: узнать, что ключ не работает, можно лишь провалившимся
+   прогоном, и в этот момент искать, чем войти, поздно. */
+#plan .auth { display:flex; align-items:center; gap:8px; margin-top:4px }
+#plan .auth em { flex:1; font-style:normal; opacity:.6; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap }
+#plan .auth button { flex:none; padding:2px 8px; font-size:11px; border:1px solid #8884;
+  border-radius:6px; background:none; color:inherit; cursor:pointer }
+#plan .auth button:hover { background:#8882 }
+/* Обновлять нечем — это единственное состояние, где без человека не обойтись. Жёлтое —
+   предупреждение за двое суток: ещё работает, но пора. */
+#plan .auth.hot em { color:#e55; opacity:1 }
+#plan .auth.hot button { border-color:#e55; color:#e55 }
+#plan .auth.warn em { color:#e90; opacity:1 }
+#plan .auth.warn button { border-color:#e90; color:#e90 }
+/* Окно входа: узкое, по центру, с живой ссылкой. Ширина ограничена — адрес авторизации
+   длиной в три сотни символов иначе растягивает окно на весь экран. */
+#auth { width:min(420px, 92vw); border:1px solid #8884; border-radius:10px; padding:16px;
+  background:Canvas; color:inherit; font:inherit }
+#auth::backdrop { background:#0008 }
+#auth p { margin:0 0 10px }
+#auth a { display:block; margin-bottom:10px; overflow-wrap:anywhere }
+#auth input { width:100%; box-sizing:border-box; padding:6px; border:1px solid #8884;
+  border-radius:6px; background:none; color:inherit; font:inherit }
+#auth .row { display:flex; align-items:center; gap:8px; margin-top:10px }
+#auth .row span { flex:1; font-size:12px; opacity:.7 }
+#auth button { padding:4px 10px; border:1px solid #8884; border-radius:6px;
+  background:none; color:inherit; font:inherit; cursor:pointer }
+#auth button:hover { background:#8882 }
+#plan .lim { margin-top:6px }
+#plan .lim em { font-style:normal; opacity:.75 }
+#plan .lim span { float:right; opacity:.6 }
+#plan .track { height:4px; margin-top:3px; border-radius:2px; background:#8883 }
+#plan .fill { display:block; height:100%; border-radius:2px; background:oklch(0.62 0.18 250) }
+#plan .fill.warn { background:#e90 }
+#plan .fill.hot { background:#e55 }
+/* Возраст сессии — у самого правого края: слева он разрывал название, ради которого
+   строку и читают. Стоит последним в плавашке, а кнопки — перед ним: место они держат
+   всегда, видны только под курсором, и время иначе висело бы в полусотне пикселей от
+   края. Размер шрифта наследуется от `.meta`. */
+#list .meta .ago { opacity:.75; margin-left:4px; min-width:22px; display:inline-block;
+  text-align:right }
+/* Дерево проектов. Строка проекта — та же кнопка списка, только жирнее и со своими
+   плавашками справа: счётчик сессий и «+». Сессии под ней сдвинуты отступом, чтобы
+   вложенность читалась без линий и рамок. */
+/* Строка проекта — не такая же кнопка, как сессия под ней: своя подложка, разрядка и
+   чуть мельче шрифт. Цвет нарочно нейтральный: тон в этой панели означает «сессия вот
+   этого окна», и красить им заголовки веток значило бы сказать неправду.
+   Липкая: в раскрытом проекте на три десятка сессий видно, чьи они, не отлистывая. */
+#list .head { position:sticky; top:0; z-index:1; font-weight:600; font-size:13px;
+  letter-spacing:.04em; background:Canvas; box-shadow:inset 0 0 0 99px #8883;
+  border-top:2px solid #8884 }
+#list .head:hover { box-shadow:inset 0 0 0 99px #8885 }
+#list .head .caret { display:inline-block; width:12px; opacity:.6; font-size:11px }
+/* Счётчик и «плюс» — одна коробка на двоих: цифра сидела на базовой линии текста, а
+   кнопка в своём блоке 25px со сдвигом, и по вертикали они расходились на пару пикселей. */
+#list .head .n { float:right; display:inline-block; height:25px; line-height:25px;
+  margin:-3px 0 -3px 8px; opacity:.45; font-size:11px }
+#list .head .add { float:right; width:25px; height:25px; line-height:25px; text-align:center;
+  margin:-3px 0 -3px 4px; font-size:15px; opacity:.6; cursor:pointer }
+#list .head .add:hover { opacity:1 }
+/* Ветка проекта: рельс слева и отступ. Отступ был и раньше, но текст сессии вставал на
+   24px, а имя проекта — на 26 (отступ строки плюс каретка), и дерево выглядело плоским
+   списком. Рельс держит вложенность видимой, даже когда строка проекта уехала за верх
+   экрана — она липкая, но при длинном списке уезжает следующая. */
+#list .kids { margin-left:14px; border-left:2px solid #8883 }
+#list .kids button { padding-left:16px }
+#list .none { padding:10px 10px 10px 16px; opacity:.5; font-size:12px }
+/* Подпись проекта у строки поиска: результаты приходят из разных веток, и без неё
+   непонятно, к какому проекту относится найденное. */
+#list .pj { display:block; font-size:11px; opacity:.5; margin-top:2px }
+/* Кнопки строки — один плавающий блок высотой в строку 11px, поэтому строка списка от
+   них не растёт. Размер сессии жил тут же и снят: он предупреждал о долгой загрузке,
+   которой нет. */
+#list .meta { float:right; margin-left:8px; opacity:.5; font-size:11px; white-space:nowrap }
+/* Класс `rename`, а не `edit`: `.edit` — это textarea редактора файла, и карандаш
+   молча забирал её рамку с отступами по 8px. В списке это выглядело кружком вокруг
+   значка, а строка вырастала на эти же 8px сверху и снизу. */
+/* Цель клика — 25px, а не размер значка: в 13px не попасть ни пальцем, ни мышью.
+   Отрицательный отступ по вертикали гасит вклад в высоту строки, иначе список и дерево
+   разъезжаются в лестницу из-за кнопки, которой в обычной строке даже не видно. */
+#list .meta .rename, #list .meta .rm, #tree .rm, #tree .mv, #tree .cp {
+  display:inline-block; width:25px; height:25px; line-height:25px; text-align:center;
+  font-size:14px; padding:0; margin:-3px 0; cursor:pointer }
+#tree .rm, #tree .mv, #tree .cp { float:right; margin:-3px 0 -3px 4px }
+/* Заголовок окна кликабелен: у сессии это переименование, у файла — путь в буфер. Та же
+   пара живёт кнопкой в начале строки — заголовок ещё и ручка переноса, и по нему жмут
+   не только ради этого. */
+header .who { cursor:pointer }
+header .ren { opacity:.6; padding:1px 4px }
+header .ren:hover { opacity:1 }
+header .dl { text-decoration:none; opacity:.7 }
+header .dl:hover { opacity:1 }
+/* Кнопки строки прячутся до наведения, но только там, где наведение есть. На тачскрине
+   его нет вовсе: скрытая кнопка там недостижима навсегда, поэтому видна сразу. */
+@media (hover: hover) {
+  #list .rename, #list .rm, #tree .rm, #tree .mv, #tree .cp { opacity:0 }
+  #list button:hover .rename, #list button:hover .rm, #tree button:hover .rm,
+  #tree button:hover .mv, #tree button:hover .cp { opacity:.7 }
+}
+#list .rename:hover, #list .rm:hover, #tree .rm:hover, #tree .mv:hover,
+#tree .cp:hover { opacity:1 }
+#list .rm:hover, #tree .rm:hover { color:#e55 }
+/* Явные клетки, а не поток: у панели есть колонка и ряд, поэтому её можно тянуть за
+   любую сторону, а не только растить вправо-вниз от левого верхнего угла. Перекрытие
+   разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
+   трогали последней. Фон непрозрачный по той же причине.
+   Клетка — доля области (1fr), а не пиксели: панели тянутся вместе с окном и держат
+   свои пропорции. Числа 12 и 8 дублируют COLS и ROWS в скрипте — вёрстка рисует сетку,
+   а скрипт по ней считает шаг перетаскивания, поэтому значения обязаны совпадать. */
+#panes { flex:1; overflow:hidden; display:grid; gap:8px; padding:8px;
+  grid-template-columns:repeat(12, minmax(0,1fr));
+  grid-template-rows:repeat(8, minmax(0,1fr)) }
+/* Цвет панели: рамка в полную силу, фон бледной заливкой. Заливка идёт градиентом
+   поверх Canvas, а не цветом с альфой: панели перекрываются, и полупрозрачный фон
+   просвечивал бы соседнюю. Градиент — верхний слой, Canvas — нижний непрозрачный. */
+section { position:relative; display:flex; flex-direction:column; overflow:hidden;
+  min-width:0; min-height:0; border-radius:6px;
+  border:2px solid oklch(0.62 0.16 var(--hue,250) / .6);
+  background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .12),
+                             oklch(0.62 0.16 var(--hue,250) / .12)), Canvas;
+  grid-column:var(--c,1) / span var(--w,4); grid-row:var(--r,1) / span var(--h,4) }
+/* Активная — та же рамка, но в полную насыщенность, плюс тень. Цвет не единственный
+   признак: в заголовке остаются проект и id сессии. */
+/* Окно закончило работу, пока смотрели в другое: всё окно затягивает пеленой в цвет
+   исхода — зелёной, если прогон дошёл до конца, красной, если упал. Те же два цвета, что
+   у знака посреди окна и у отметки в списке: зелёное и красное значат одно у всех, а тон
+   окна отвечает за «чьё это окно» и в исход не вмешивается.
+   До 2026-09-29 тут была косая штриховка тоном окна. Она читалась, но тоном же и
+   говорила — по фактуре было видно «что-то случилось», а что именно, приходилось искать
+   глазами в знаке. Сплошная заливка тоном окна спорила с самим тоном (2026-09-26), и
+   пелена это обходит: цвет чужой тону, но свой смыслу.
+   Пелена закрывает, а не подкрашивает: под ней текст угадывается, но не читается, и
+   окно говорит «тут закончилось» раньше, чем в него всмотришься. Фоном секции этого не
+   добиться при любой плотности — содержимое лежит поверх фона, — поэтому это отдельный
+   слой поверх всей панели.
+   Заголовок пелена не трогает вовсе: она лежит на логе и на композере, а не на всей
+   панели. По цвету заголовка опознают окно, и терять его нельзя. Порядком слоёв это
+   решалось до 2026-09-29 и решалось хрупко — в окне уже четыре разных `z-index`.
+   Композер накрыт вместе с его полями: иначе он остаётся островом нетронутого цвета
+   посреди закрашенного окна, а вырез под него выглядит как «тут ещё можно печатать».
+   `pointer-events:none` обязателен — пелена лежит на всей панели, и клик по ней обязан
+   попадать в окно, иначе снять её нечем.
+   Мигание не использую: оно занято состоянием «идёт прогон» и значит обратное.
+   Пелена держится до первого клика по окну — снимает её `raise`. */
+section.ready { --veil:oklch(0.60 0.19 145 / .55); border-color:oklch(0.60 0.19 145) }
+section.ready.bad { --veil:oklch(0.58 0.22 25 / .55); border-color:oklch(0.58 0.22 25) }
+section.ready .logbox::after, section.ready form::after {
+  content:''; position:absolute; z-index:2; pointer-events:none; background:var(--veil) }
+section.ready .logbox::after { inset:0 }
+/* Отрицательные отступы повторяют `margin` композера: без них вокруг него остаётся
+   неокрашенный кант в цвет окна. */
+section.ready form::after { inset:-8px -20px -8px -8px }
+/* Поверх пелены — крупный знак посреди окна: галочка, если прогон дошёл до конца, и
+   крест, если упал. Цвета тут не от тона окна: зелёное и красное читаются как «сделано»
+   и «сломалось» без чтения текста, а тон окна отвечает за «чьё это окно».
+   `pointer-events:none` обязателен — знак закрывает половину окна, и клик по нему обязан
+   попадать в само окно, иначе снять метку нечем. */
+section.ready::after { content:'\2714'; position:absolute; inset:0; margin:auto;
+  width:72px; height:72px; border-radius:50%; display:grid; place-items:center;
+  font-size:40px; line-height:1; color:#fff; pointer-events:none; z-index:5;
+  background:oklch(0.60 0.19 145 / .9); box-shadow:0 4px 18px #0004 }
+section.ready.bad::after { content:'\2715'; background:oklch(0.58 0.22 25 / .9) }
+/* Свёрнутое окно — одна полоска заголовка, и знак посреди неё накрывает название.
+   Там он становится значком у левого края, на месте карандаша: место в заголовке
+   занято, а придумывать ему новое ради состояния, которое живёт до первого клика,
+   незачем. Карандаш на это время прячем — переименовать можно и развернув окно. */
+section.rolled.ready::after { inset:auto auto 50% 10px; transform:translateY(50%);
+  margin:0; width:22px; height:22px; font-size:13px; box-shadow:none }
+section.rolled.ready .ren { visibility:hidden }
+section.act { z-index:5; box-shadow:0 6px 24px #0005;
+  border-color:oklch(0.62 0.20 var(--hue,250)) }
+/* touch-action:none — без него Safari и тач-устройства отдают жест прокрутке страницы
+   и pointermove до нас не доходит. */
+.grip, .h { touch-action:none }   /* иначе жест уходит прокрутке, pointermove не придёт */
+.grip { cursor:grab; user-select:none }
+.grip.moving { cursor:grabbing }
+/* Ручка внутри панели, а не на 3px снаружи: у section стоит overflow:hidden, и он
+   обрезает абсолютно позиционированных потомков — снаружи оставалась прозрачная полоска
+   в считанные пиксели, по которой было не попасть.
+   Уголок виден всегда, а не только у активной панели: невидимую ручку не найти. */
+.h { position:absolute; z-index:2 }
+.h-se { right:0; bottom:0; width:16px; height:16px; cursor:nwse-resize;
+  background:linear-gradient(135deg, transparent 45%, #8887 45%) }
+header { position:relative; display:flex; gap:6px; align-items:center; padding:6px 10px;
+  border-bottom:1px solid oklch(0.62 0.16 var(--hue,250) / .4);
+  background:oklch(0.62 0.18 var(--hue,250) / .45) }
+header .who { flex:1; font-size:12px; opacity:.7; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap }
+header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; flex:none }
+
+/* Занятость показывает сам заголовок: полоса во всю ширину панели, горит ровно. Мигала
+   до 2026-09-29 — и оказалась единственной анимацией в файле, от которой уставали глаза
+   при нескольких открытых панелях. Рядом с ней и так идёт таймер, а заливка отличает
+   занятую панель от свободной не хуже, чем движение.
+   Насыщенность умеренная: в заголовке лежит текст, и заливка в полную силу его утопит.
+   `prefers-reduced-motion` после этого стало нечего обслуживать — блок снят. */
+section.busy header { background:oklch(0.68 0.21 var(--hue,250) / .70) }
+/* Занятый контекст — полоска в нижней кромке заголовка: места не занимает, а через всю
+   сетку видно, какая панель подошла к пределу. Без чисел и подсказки: текст в узкой
+   панели вытеснил бы название сессии, а title на полоске в два пикселя недостижим —
+   имя сессии растянуто на всю ширину и перекрывает его своим, даже пустым. */
+header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
+  background:oklch(0.62 0.18 var(--hue,250)) }
+header .ctx.full { background:#e55 }
+header button { padding:1px 6px; line-height:1.2 }
+/* Пальцем в кнопку высотой 21 пиксель не попасть — растим сами кнопки, заголовок
+   поднимается следом. Признак — `pointer: coarse`, а не ширина экрана: на планшете в
+   альбомной ориентации экран широкий, а палец тот же. По этому же признаку скрипт не
+   отправляет промпт по Enter. Перенос окна от этого не страдает: `wireGrab` и так
+   пропускает жест, начатый на кнопке. */
+@media (pointer: coarse) {
+  header { padding:6px 8px; gap:8px }
+  header button { min-width:30px; min-height:30px; padding:4px 10px }
+}
+/* Значок разворота — через `content`, чтобы состояние окна рисовал CSS, а не переписывал
+   скрипт: та же механика, что у полоски сайдбара. */
+header .max::before { content:'\2922' }
+section.zoomed header .max::before { content:'\2921' }
+/* Обёртка нужна только как система координат для кнопки «вниз»: внутри самого лога
+   абсолютная кнопка уехала бы вместе с прокруткой, а снаружи ей не на что опереться —
+   высота лога известна только здесь. */
+.logbox { position:relative; flex:1; min-height:0; display:flex }
+/* `user-select` задан явно: у соседей по окну он снят (заголовок — ручка переноса), и
+   выделение в логе не должно зависеть от того, что унаследуется сверху. */
+.log { flex:1; overflow:auto; padding:12px 14px; user-select:text; -webkit-user-select:text }
+/* Полоска во всю ширину лога, устроена как #termbar у окна: узкая, в тоне панели,
+   поверх текста. Полупрозрачная нарочно — сквозь неё видно последнюю строку, поэтому
+   низ лога не читается как обрыв, а промахнуться по ней нельзя даже пальцем.
+   Видна, только пока лог отлистан от низа. */
+.down { position:absolute; left:0; right:0; bottom:0; height:25px; padding:0;
+  display:grid; place-items:center; border:0; border-radius:0; font-size:11px;
+  line-height:1; opacity:.75; background:oklch(0.62 0.18 var(--hue,250) / .35) }
+.down:hover { opacity:1; background:oklch(0.62 0.18 var(--hue,250) / .55) }
+.down[hidden] { display:none }
+.msg { margin:0 0 12px; overflow-wrap:anywhere }
+.user, .tool { white-space:pre-wrap }
+/* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
+   «где я говорил» первым делом. Полупрозрачный oklch читается и в тёмной теме, и в
+   светлой — страница живёт под color-scheme: dark light. */
+.user { background:oklch(0.62 0.10 165 / .20); padding:8px 10px; border-radius:6px }
+.body p { margin:.5em 0 }
+.body > :first-child { margin-top:0 }
+.body > :last-child { margin-bottom:0 }
+.body h1, .body h2, .body h3, .body h4, .body h5, .body h6 { margin:.6em 0 .3em; font-size:1em }
+.body h1, .body h2 { font-size:1.08em }
+.body ul, .body ol { margin:.3em 0; padding-left:1.4em }
+.body pre { position:relative; margin:.4em 0; padding:8px; overflow:auto;
+  background:#8881; border-radius:4px }
+/* Кнопка появляется по наведению: в узкой панели постоянная отнимала бы место у кода.
+   Лежит в обёртке НАД блоком кода, а не внутри него. Внутри стоял `position:sticky`, но
+   у прилипшего элемента блок-контейнер совпадает со скроллпортом `<pre>` — двигаться
+   некуда, и при горизонтальной прокрутке кнопка уезжала влево вместе с кодом. Обёртка
+   не прокручивается, поэтому кнопка держится за свой угол. */
+.codebox { position:relative }
+.codebox .copy { position:absolute; top:4px; right:4px; z-index:1; opacity:0;
+  font:inherit; font-size:11px; padding:1px 5px; cursor:pointer; color:inherit;
+  background:Canvas; border:1px solid #8884; border-radius:3px }
+.codebox:hover .copy, .codebox .copy:focus { opacity:.9 }
+.body code { font-family:ui-monospace,monospace; font-size:.92em }
+.body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
+.body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }
+.body th, .body td { border:1px solid #8884; padding:2px 6px; text-align:left }
+.body a { color:#7ad }
+.body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
+.assistant { border-left:3px solid #88f; padding-left:10px }
+.tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
+/* Раскрытый шаг: аргумент столбиком, как он и был набран. Маркер остаётся штатный —
+   свой треугольник рисовать незачем. */
+details.tool summary { cursor:pointer }
+/* Пачка вызовов: одна строка со счётчиком и последним вызовом. Заголовок не переносим —
+   иначе свёрнутая группа занимает столько же места, сколько развёрнутая. */
+.tools > summary { cursor:pointer; opacity:.65; font-size:13px;
+  font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis }
+.tools > :not(summary) { margin:2px 0 0 1.2em }
+details.tool pre { margin:4px 0 0 1.2em; padding:6px; background:#8881; border-radius:4px;
+  overflow:auto; white-space:pre-wrap }
+.note { opacity:.45; font-size:12px; font-style:italic }
+.err { color:#e55 }
+.role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
+/* Композер: рамка одна на всё, поле внутри без своей, под ним ряд управления. Раньше
+   тут стояли в ряд три рамки разной высоты — селект, скрепка и поле.
+   Правый отступ 20px — под ручку .h-se: она лежит в том же углу, и кнопка отправки
+   вплотную к краю её бы накрыла. */
+form { position:relative; display:flex; flex-direction:column; gap:4px;
+  margin:8px 20px 8px 8px; padding:6px;
+  border:1px solid #8886; border-radius:12px;
+  background:oklch(0.62 0.16 var(--hue,250) / .05) }
+form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Сворачивание в заголовок — мобильное, правила лежат в медиаблоке внизу. На большом
+   экране оно бессмысленно: окна стоят в явных клетках сетки, освободившиеся ряды никто
+   не занимает, и свёрнутое оставляло бы под собой дыру. Кнопка спрятана здесь, а не
+   показана там, чтобы состояние `roll` могло пережить переход между экранами: панель
+   с телефона открывают на десктопе целой, а не полоской заголовка без кнопки. */
+header .foldbar { display:none }
+/* Поле правки во всю высоту окна. Потолок в 240px ниже поставлен композеру, здесь он
+   не нужен — окно тянется само, и файл должен занимать его целиком.
+   `white-space:pre` и `wrap=off`: перенос длинной строки сдвинул бы нумерацию строк в
+   голове у читающего, а код чаще смотрят по строкам, чем читают сплошняком. */
+.edit { flex:1; min-height:0; max-height:none; margin:8px; padding:6px;
+  border:1px solid #8886; border-radius:8px; font:12px/1.45 ui-monospace,monospace;
+  white-space:pre; overflow:auto }
+.edit:focus { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Картинка на месте редактора: вписывается целиком, зума нет. Клетчатый фон нужен
+   прозрачным png — иначе белый логотип на тёмной теме выглядит пустым окном. */
+.view { flex:1; min-height:0; margin:8px; object-fit:contain; border-radius:8px;
+  background:repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0/16px 16px }
+.filebar { display:flex; gap:8px; align-items:center; margin:0 8px 8px }
+.filebar .state { flex:1; font-size:12px; opacity:.6; white-space:nowrap;
+  overflow:hidden; text-overflow:ellipsis }
+.filebar .state.bad { color:#e55; opacity:1 }
+textarea { position:relative; resize:none; min-height:40px; max-height:240px;
+  padding:4px 4px 0; font:inherit; background:none; color:inherit; border:0; outline:none }
+/* Подсветка слеш-команды: залить текст внутри textarea нельзя, поэтому под полем лежит
+   слой с той же геометрией, и в нём — одна метка на первое слово. Остального текста в
+   слое нет специально: метка стоит в начале, её место не зависит от того, что дальше,
+   и переносы повторять не нужно. Прокрутку поля слой повторяет за скриптом. */
+.ghost { position:absolute; left:6px; right:6px; top:6px; max-height:240px;
+  overflow:hidden; padding:4px 4px 0; font:inherit; color:transparent;
+  white-space:pre-wrap; pointer-events:none }
+.ghost mark { color:transparent; border-radius:4px;
+  background:oklch(0.62 0.16 var(--hue,250) / .25) }
+/* Подсказка по `/`: над композером, поверх лога. Выбранная строка — заливка того же
+   тона, что и панель. */
+.menu { position:absolute; left:0; right:0; bottom:100%; z-index:5; margin-bottom:4px;
+  max-height:200px; overflow:auto; background:Canvas; border:1px solid #8886;
+  border-radius:8px; box-shadow:0 6px 20px #0005 }
+.menu[hidden] { display:none }
+.menu div { padding:4px 8px; cursor:pointer; white-space:nowrap; overflow:hidden;
+  text-overflow:ellipsis }
+.menu div[aria-selected=true] { background:oklch(0.62 0.16 var(--hue,250) / .25) }
+.menu b { font-weight:600 }
+.menu i { opacity:.55; font-style:normal; font-size:12px }
+.bar { display:flex; gap:4px; align-items:center }
+/* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
+.bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
+  border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
+.bar .model, .bar .effort { appearance:none; width:auto }
+.bar .effort { border:0; background:none; opacity:.65; padding:3px 6px; border-radius:8px;
+  font:inherit; font-size:12px; color:inherit; cursor:pointer }
+.bar .effort:hover { background:#8882; opacity:1 }
+/* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
+.bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
+  border-radius:50%; font-size:18px; line-height:1 }
+.bar .clip:hover, .bar .model:hover { background:#8882; opacity:1 }
+.bar .clip input { display:none }
+/* Правый угол ряда: пока запуск идёт, вместо «отправить» стоит «стоп». Переключает
+   класс `busy` на секции, его же ставит tick() — своего состояния в JS не нужно. */
+.bar .send, .bar .stop { margin-left:auto; width:28px; height:28px; padding:0; flex:none;
+  place-items:center; border:0; border-radius:8px; font-size:13px; line-height:1 }
+.bar .send { display:grid; background:oklch(0.62 0.16 var(--hue,250)); color:#fff }
+.bar .send:hover { background:oklch(0.68 0.20 var(--hue,250)) }
+/* Пустое поле — бледная кнопка, без JS: `:placeholder-shown` и есть признак пустоты. */
+textarea:placeholder-shown ~ .bar .send { opacity:.35 }
+/* «Стоп» появляется рядом с «отправить», а не вместо неё. Пряталась она зря: с
+   телефона Enter-а нет, и поставить промпт в очередь к идущему прогону было нечем. */
+.bar .stop { display:none }
+section.busy .bar .stop { display:grid; background:#e90; color:#000; margin-left:6px }
+/* Нажатая «стоп»: прогон ещё гаснет, но кнопка уже отвечает — гасим её и снимаем мигание
+   заголовка, иначе окно выглядит так же, как до нажатия. */
+section.stopping .bar .stop { background:#8884; color:inherit; cursor:default }
+/* Панель под курсором с файлом — заметная рамка, иначе непонятно, куда бросать. */
+section.drop { outline:2px dashed oklch(0.68 0.21 var(--hue,250)); outline-offset:-3px }
+/* Пустая область — не надпись, а два действия: открыть список и завести сессию. Текст
+   тут раньше указывал «слева», а сайдбар на узком экране свёрнут по умолчанию и лежит
+   поверх панелей — указывать было не на что, а вернуть его можно только полоской в 14
+   пикселей. Кнопка списка не нужна, когда список и так открыт. */
+#empty { grid-column:1/-1; margin:auto; display:flex; flex-direction:column; gap:8px }
+/* Своё `display` перебивает `hidden` из стилей браузера — та же ловушка, что у баннера
+   ниже: с открытой панелью кнопки оставались на экране под ней. */
+#empty[hidden] { display:none }
+#empty button { padding:8px 14px }
+body:not(.folded) #empty .list { display:none }
+/* Поверх всего и по центру верха: опрос встал, и пока человек не обновит страницу,
+   ничего живого в панелях больше не появится. */
+#dead { position:fixed; z-index:50; top:12px; left:50%; transform:translateX(-50%);
+  display:flex; gap:10px; align-items:center; padding:10px 14px; border-radius:8px;
+  background:#e5533a; color:#fff; box-shadow:0 6px 24px #0006 }
+/* Своё `display` перебивает `hidden` из стилей браузера — без этой строки баннер
+   висел бы на экране с самого открытия страницы. */
+#dead[hidden] { display:none }
+#dead button { border-color:#fff8 }
+/* Узкий экран: доли области дали бы панель в 30px шириной. Раскладываем столбиком и
+   отключаем ручки — тянуть тут всё равно нечего.
+   Сайдбар ложится поверх панелей, а не отнимает у них колонку: на 390 пикселях он
+   забирал 280 и окно оставалось в сотню. Поля области убраны совсем — окно идёт от
+   края до края, и единственное, что у экрана отъедено, это полоска возврата к списку.
+   Ряды по содержимому, а высота задана самому окну: свёрнутое в заголовок иначе
+   держало бы под собой пустые 70vh своего ряда.
+   align-content:start — не украшение: по умолчанию grid растягивает auto-ряды, раздавая
+   остаток высоты между ними поровну. Окно при этом своего размера не меняет, и довесок
+   ряда вылезает пустотой под ним — свёрнутое в заголовок выглядело так, будто оно и не
+   свернулось. */
+@media (max-width: 700px) {
+  #top { --aw:min(280px, 85vw) }
+  aside { position:absolute; z-index:10; left:0; top:0; height:100%;
+    width:var(--aw); background:Canvas; box-shadow:0 0 24px #0007 }
+  /* Открытый сайдбар лежит поверх панелей и накрывает собой полоску возврата: на
+     телефоне спрятать список было нечем. Пока он открыт, полоска уезжает к его правому
+     краю и поднимается над ним. Ширина вдвое против настольной — 14px пальцем не берутся. */
+  #fold { width:24px }
+  body:not(.folded) #fold { position:absolute; z-index:11; left:var(--aw); top:0; height:100% }
+  aside.files { left:auto; right:0 }
+  #rfold { width:24px }
+  body:not(.rfolded) #rfold { position:absolute; z-index:11; left:auto; right:var(--aw);
+    top:0; height:100% }
+  #panes { overflow:auto; padding:0; gap:6px; grid-template-columns:1fr;
+    grid-template-rows:none; grid-auto-rows:auto; align-content:start }
+  /* `min-height` — пол на случай, если окно осталось без содержимого: пустая секция
+     вырождалась в полоску из двух рамок, которую не за что взять пальцем. Свёрнутому он
+     не мешает: там и так заголовок в 44px. */
+  section { grid-column:1/-1 !important; grid-row:auto !important;
+    height:min(70vh, 480px); min-height:44px;
+    border-radius:0; border-left:0; border-right:0 }
+  /* Окно сворачивается в свой заголовок: остаётся полоса с именем сессии, таймером и
+     кнопками, а всё, что лежало ниже, поднимается вплотную. Состояние живёт в панели и
+     переживает F5. Ручки в списке скрытого нет — на этом экране её и так нет. */
+  header .foldbar { display:revert }
+  section.rolled { height:auto }
+  section.rolled .logbox, section.rolled form { display:none }
+  section.rolled .edit, section.rolled .view, section.rolled .filebar { display:none }
+  /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
+     раньше просто ничего не делала. Окно выходит из потока и накрывает экран целиком,
+     включая полоску терминала: это единственный способ растянуть лог, раз ресайза на
+     телефоне нет. z-index выше сайдбаров (10) и их полосок (11), но ниже плашки `#dead`.
+     Свёрнутое разворачивать некуда — там нечего показывать, кроме заголовка. */
+  section.zoomed { position:fixed; inset:0; z-index:20; height:auto }
+  /* Пока окно развёрнуто, соседей не просто не видно — их нет в отрисовке. Safari на iOS
+     уводит `position:fixed` внутри прокручиваемого #panes в отдельный слой, и соседнее
+     окно всплывает поверх, хотя z-index у него меньше (первым — заголовок свёрнутого,
+     единственное, что от него осталось). Спорить со слоями бесполезно, а скрытое не
+     всплывает. Прячем всех, кроме самого развёрнутого: соседу мало не иметь класса
+     `zoomed`, он всплывал и свёрнутым, с ним заодно. */
+  #panes:has(> section.zoomed) > section { display:none }
+  #panes:has(> section.zoomed) > section.zoomed { display:flex }
+  header .tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
+  .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
+  form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
+  .h { display:none }
+  /* Safari на iOS зумит страницу при фокусе в поле с текстом мельче 16px и обратно уже
+     не отъезжает: композер уезжает вправо, кнопка отправки — за край экрана. Порог ровно
+     16px, и лечится он размером шрифта, а не `maximum-scale` в viewport: тот отнял бы у
+     страницы и ручной зум. `.ghost` в списке обязателен — слой подсветки слеш-команды
+     обязан совпадать с полем по геометрии, иначе метка съедет. */
+  textarea, input, select, .edit, .ghost { font-size:16px }
+}

@@ -1,0 +1,43 @@
+</head><body>
+<div id=top>
+<aside>
+  <input id=find type=search placeholder="поиск по всем проектам">
+  <div id=list></div>
+  <div id=plan hidden></div>
+</aside>
+<button id=fold title="список сессий" aria-label="скрыть или показать список сессий"></button>
+<div id=panes><div id=empty>
+  <button class=list>список сессий</button>
+</div></div>
+<button id=rfold title="дерево файлов" aria-label="скрыть или показать дерево файлов"></button>
+<aside class=files>
+  <select id=root title="корень дерева"></select>
+  <div class=row>
+    <button class=new id=newfile title="создать файл в открытом каталоге">+ файл</button>
+    <button class=new id=newdir title="создать папку в открытом каталоге">+ папка</button>
+    <!-- Значок символом, а не escape-последовательностью: это статическая разметка, а не
+         шаблонная строка JS, и `\u21bb` тут осталось бы текстом. -->
+    <button class="new rescan" id=rescan title="перечитать каталог">↻</button>
+  </div>
+  <div id=crumb></div>
+  <div id=tree></div>
+</aside>
+</div>
+<button id=termbar title="терминал: клик открывает и закрывает, потянуть — высота"
+  aria-label="терминал"></button>
+<div id=term></div>
+<div id=dead hidden>бот не отвечает или кончилась сессия входа
+  <button id=reload>обновить страницу</button></div>
+<!-- Вход по подписке. Своё окно, а не `prompt()`: в нём ссылка — ссылка, по ней можно
+     нажать. В браузерном диалоге она была текстом на триста символов, который оставалось
+     только выделять руками. -->
+<dialog id=auth>
+  <p>Открой ссылку, войди в Claude и вставь сюда код.</p>
+  <a id=authurl target=_blank rel=noopener>открыть вход в Claude</a>
+  <input id=authcode placeholder="код из браузера" autocomplete=off>
+  <div class=row>
+    <span id=authsay></span>
+    <button id=authno>отмена</button>
+    <button id=authok>войти</button>
+  </div>
+</dialog>

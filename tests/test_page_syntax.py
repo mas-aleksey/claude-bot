@@ -182,7 +182,9 @@ def test_own_prompt_is_shown_once(tmp_path):
     js.write_text("""
 const echoes = new Map();
 const NOW = 1000000;
-const rec = (text, age = 0) => ({ text, at: NOW - age });
+// Запись эха несёт узлы своих строк в логе: их снимает absorb, когда тот же промпт
+// приедет из транскрипта. Тут важно только, что они доезжают до вызывающего.
+const rec = (text, age = 0) => ({ text, at: NOW - age, nodes: ['узел ' + text] });
 const texts = (q) => q.map(e => e.text);
 """ + body + """
 const q1 = [rec('/refine текст')];
@@ -208,19 +210,23 @@ echoes.set('p2', [rec('единственное', ECHO_IDLE + 1)]);
 sweepEchoes('p2', true, NOW);
 const gone = echoes.has('p2');
 
-console.log(JSON.stringify([same.length, texts(q1), after.length, texts(q2),
-                            rest.length, texts(q3), busy, idle, gone]));
+console.log(JSON.stringify([texts(same), texts(q1), texts(after), texts(q2),
+                            texts(rest), texts(q3), busy, idle, gone,
+                            same[0] && same[0].nodes]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    same, q1, after, q2, rest, q3, busy, idle, gone = json.loads(done.stdout)
+    same, q1, after, q2, rest, q3, busy, idle, gone, nodes = json.loads(done.stdout)
 
-    assert [same, q1] == [0, []]                  # лишний пробел совпадению не мешает
-    assert [after, q2] == [0, ["застряло"]]       # снят свой, застрявшее осталось лежать
-    assert [rest, q3] == [2, ["моё"]]             # ответ и чужой промпт не съедены
-    assert busy == ["старое", "только что"]       # панель занята — не трогаем ничего
-    assert idle == ["только что"]                 # свободна — ушло только протухшее
-    assert gone is False                          # пустая очередь снимается целиком
+    # Возвращаются совпавшие записи: их узлы снимает absorb, а сам промпт рисуется из
+    # транскрипта, на своём месте. Раньше было наоборот — выбрасывался транскрипт.
+    assert [same, q1] == [["/refine текст"], []]   # лишний пробел совпадению не мешает
+    assert nodes == ["узел /refine текст"]         # узлы доехали до вызывающего
+    assert [after, q2] == [["новый промпт"], ["застряло"]]   # застрявшее осталось лежать
+    assert [rest, q3] == [[], ["моё"]]             # ответ и чужой промпт не тронуты
+    assert busy == ["старое", "только что"]        # панель занята — не трогаем ничего
+    assert idle == ["только что"]                  # свободна — ушло только протухшее
+    assert gone is False                           # пустая очередь снимается целиком
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -959,3 +965,69 @@ console.log(JSON.stringify([empty.style.height, empty.placeholder,
     # Подсказку возвращаем на место, иначе серый текст пропадал бы на каждой букве.
     hint = "скажи «собери» — соберу образ и поставлю отложенный рестарт"
     assert kept_bare == kept_typed == hint
+
+
+def test_page_is_assembled_from_the_three_files():
+    """Страница собирается из `src/web/`, и потерянный при сборке файл — это живой бот с
+    пустой панелью. Проверяем оба конца: файлы на месте и целиком доехали в `PAGE`.
+
+    Отсутствие файла в колесе этим тестом не ловится — он читает `src/`, а не
+    установленный пакет. Для этого есть проверка внутри образа при раскатке.
+    """
+    import page
+
+    parts = {"style.css": "grid-column:var(--c,1)",
+             "body.html": "<div id=panes>",
+             "app.js": "function drawPane"}
+    for name, anchor in parts.items():
+        text = (page.WEB / name).read_text(encoding="utf-8")
+        assert anchor in text, f"{name} не тот файл"
+        assert text in page.PAGE, f"{name} не целиком попал в PAGE"
+
+    # Один `<style>` и один `<script>`: страница отдаётся одним ответом, и тесты режут
+    # её по этим тегам.
+    assert page.PAGE.count("<style>") == page.PAGE.count("<script>") == 1
+
+
+def test_finished_pane_is_veiled_in_the_colour_of_its_outcome():
+    """Законченное окно затянуто пеленой в цвет исхода, а в списке от исхода остаётся
+    только знак. Пелена заменила косую штриховку тоном окна: фактура говорила «что-то
+    случилось», а какой именно исход, приходилось искать глазами в знаке.
+
+    Заливку строки в списке пробовали дважды, бледную и плотную, и оба раза она спорила
+    с фоном строки, занятым цветом окна. Мигание ушло оттуда же: в окне мигает одна
+    панель, в списке мигали все занятые сразу.
+    """
+    css = slice_out("style")
+    GREEN, RED = "oklch(0.60 0.19 145", "oklch(0.58 0.22 25"
+
+    assert "repeating-linear-gradient" not in css      # штриховки больше нет
+    assert f"border-color:{GREEN}) }}" in css
+    assert f"border-color:{RED}) }}" in css
+    # Тот же зелёный и красный, что у знака посреди окна — цвета не разъезжаются.
+    assert "section.ready::after" in css and f"{GREEN} / .9)" in css
+    assert "section.ready.bad::after" in css and f"{RED} / .9)" in css
+
+    # Пелена — слой НАД содержимым, а не фон под ним: фоном текст не закрыть при любой
+    # плотности. Кликабельная насквозь, иначе её нечем снять.
+    assert "section.ready .logbox::after, section.ready form::after" in css
+    assert "pointer-events:none; background:var(--veil)" in css
+    assert f"section.ready {{ --veil:{GREEN} / .55)" in css
+    assert f"section.ready.bad {{ --veil:{RED} / .55)" in css
+
+    # Заголовка пелена не касается вовсе: правила на него нет, и порядком слоёв это
+    # больше не решается — в окне уже четыре разных z-index.
+    assert "section.ready header" not in css
+    # Композер накрыт вместе с полями, иначе вокруг него остаётся неокрашенный кант.
+    assert "section.ready form::after { inset:-8px -20px -8px -8px }" in css
+
+    # В списке от исхода остаётся только знак: заливку строки пробовали дважды и сняли.
+    assert "#list button.ok, #list button.done:not(.open) { background:" not in css
+    assert "#list button.ok .ago::after" in css
+
+    # Анимаций в файле не осталось ни одной: мигали и строка списка, и заголовок окна.
+    assert "animation" not in css
+    assert "prefers-reduced-motion" not in css.split("*/")[-1]
+
+    assert "inset 4px 0 0" not in css      # цветная рельса исхода снята
+    assert "inset 3px 0 0" in css          # полоса «это окно открыто» осталась
