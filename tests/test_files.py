@@ -1,5 +1,6 @@
 """Файл из чата: что именно уходит в промпт."""
 
+import asyncio
 import os
 
 import pytest
@@ -18,8 +19,10 @@ class FakeFile:
 class FakeMessage:
     """Ровно те поля Message, которых касается on_file."""
 
-    def __init__(self, document=None, photo=None, caption=None):
+    def __init__(self, document=None, photo=None, caption=None,
+                 media_group_id=None, message_id=1):
         self.document, self.photo, self.caption = document, photo, caption
+        self.media_group_id, self.message_id = media_group_id, message_id
         self.replies: list[str] = []
         self.downloaded: list[tuple] = []
         self.bot = self
@@ -86,3 +89,33 @@ async def test_file_during_login_is_refused(inbox, monkeypatch):
     await app.on_file(msg)
     assert not sent
     assert "логин" in msg.replies[0]
+
+
+async def test_album_becomes_one_prompt(inbox, monkeypatch):
+    """Альбом Telegram — это N сообщений с общим media_group_id и подписью ровно на
+    одном. Без склейки каждое давало свой прогон, и контекст доставался одному файлу."""
+    monkeypatch.setattr(app, "ALBUM_WAIT", 0.01)
+    _, sent = inbox
+    album = [
+        FakeMessage(document=FakeFile("b.txt"), media_group_id="g1", message_id=2),
+        FakeMessage(document=FakeFile("a.txt"), media_group_id="g1", message_id=1,
+                    caption="разбери эти три"),
+        FakeMessage(document=FakeFile("c.txt"), media_group_id="g1", message_id=3),
+    ]
+    await asyncio.gather(*(app.on_file(m) for m in album))
+
+    assert len(sent) == 1, sent
+    lines = sent[0].splitlines()
+    assert lines[0] == "разбери эти три"
+    # По message_id, а не по порядку прихода: задачи апдейтов идут параллельно.
+    assert [x.split("-")[-1] for x in lines[2:]] == ["a.txt", "b.txt", "c.txt"]
+    assert not app.albums   # группа снята, иначе следующий альбом дописался бы к ней
+
+
+async def test_second_album_is_not_glued_to_the_first(inbox, monkeypatch):
+    monkeypatch.setattr(app, "ALBUM_WAIT", 0.01)
+    _, sent = inbox
+    await app.on_file(FakeMessage(document=FakeFile("a.txt"), media_group_id="g1"))
+    await app.on_file(FakeMessage(document=FakeFile("b.txt"), media_group_id="g2"))
+    assert len(sent) == 2
+    assert sent[0].endswith("a.txt") and sent[1].endswith("b.txt")

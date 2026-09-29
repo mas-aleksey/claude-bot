@@ -45,6 +45,11 @@ WEB_PORT = int(os.environ.get("WEB_PORT") or 0)
 
 
 THROTTLE = 2.0   # секунд между editMessageText
+# Тишина после последнего файла альбома, после которой группа уходит в промпт. Отсчёт
+# идёт от скачивания, а не от прихода сообщения: пачка на десяток мегабайт качается
+# дольше, чем Telegram её присылает.
+ALBUM_WAIT = 1.5
+albums: dict[str, dict] = {}
 LONG_RUN = 120   # после стольких секунд шлём отдельный пинг «готово»
 # Заголовок хода, который claude начал сам — по завершившейся фоновой задаче, а не по
 # промпту человека. Промпта у такого хода нет, а заголовок сообщению нужен.
@@ -491,16 +496,8 @@ async def on_prompt(msg: Message) -> None:
     await handle(msg, (msg.text or "").strip())
 
 
-@dp.message(F.photo | F.document)
-async def on_file(msg: Message) -> None:
-    """Файл из чата → на диск, путь уходит в промпт вместе с подписью.
-
-    Claude читает файл сам, если в промпте есть путь, — конвертировать и слать
-    содержимое не нужно. Подпись к файлу Telegram кладёт в `caption`, не в `text`.
-    """
-    if login:  # ждём код из чата — файл сейчас не к месту
-        await msg.answer("идёт логин: пришли код или /cancel")
-        return
+async def _save(msg: Message) -> Path | None:
+    """Файл сообщения на диск. None — не забрали, человеку уже ответили."""
     # photo — набор превью одной картинки, последний элемент самый крупный.
     file = msg.document or msg.photo[-1]
     name = getattr(file, "file_name", None) or f"{file.file_unique_id}.jpg"
@@ -513,9 +510,60 @@ async def on_file(msg: Message) -> None:
         # Bot API не отдаёт файлы больше 20 МБ — своего Local Bot API server тут нет.
         log.warning("download failed: %s", e)
         await msg.answer(f"не смог забрать файл (лимит Telegram — 20 МБ)\n{e}")
+        return None
+    return dest
+
+
+def _prompt(caption: str, paths: list[Path]) -> str:
+    """Подпись первой строкой, дальше пути по одному на строку — ровно та же форма,
+    в которой их дописывает панель."""
+    return "\n".join([caption, "", *map(str, paths)]).strip() if caption \
+        else "\n".join(map(str, paths))
+
+
+@dp.message(F.photo | F.document)
+async def on_file(msg: Message) -> None:
+    """Файл из чата → на диск, путь уходит в промпт вместе с подписью.
+
+    Claude читает файл сам, если в промпте есть путь, — конвертировать и слать
+    содержимое не нужно. Подпись к файлу Telegram кладёт в `caption`, не в `text`.
+
+    Альбом приходит отдельными сообщениями с общим `media_group_id`, и подпись лежит
+    ровно на одном из них. Копим такие и отдаём одним промптом: иначе три файла дают
+    три прогона подряд в очереди скоупа, а контекст достаётся одному из них.
+    """
+    if login:  # ждём код из чата — файл сейчас не к месту
+        await msg.answer("идёт логин: пришли код или /cancel")
+        return
+    dest = await _save(msg)
+    if dest is None:
         return
     caption = (msg.caption or "").strip()
-    await handle(msg, f"{caption}\n\n{dest}".strip() if caption else str(dest))
+    if not msg.media_group_id:
+        await handle(msg, _prompt(caption, [dest]))
+        return
+
+    box = albums.get(msg.media_group_id)
+    first = box is None
+    if box is None:
+        box = albums[msg.media_group_id] = {"files": [], "caption": caption}
+    else:
+        box["caption"] = box["caption"] or caption
+    box["files"].append((msg.message_id, dest))
+    box["at"] = time.monotonic()
+    if not first:
+        return
+    # Ждёт первое сообщение группы, остальные уже вышли. aiogram гонит каждый апдейт
+    # своей задачей (`handle_as_tasks=True`), поэтому ожидание тут соседей не держит.
+    # ASYNC110 предлагает Event, но ждём мы не события, а тишины на стене часов: сколько
+    # файлов в альбоме, Telegram не сообщает, и «последний» узнаётся только паузой.
+    while time.monotonic() - box["at"] < ALBUM_WAIT:  # noqa: ASYNC110
+        await asyncio.sleep(ALBUM_WAIT)
+    albums.pop(msg.media_group_id, None)
+    # По message_id, а не по порядку прихода: задачи апдейтов идут параллельно и
+    # крупный файл легко доезжает последним.
+    paths = [path for _, path in sorted(box["files"])]
+    await handle(msg, _prompt(box["caption"], paths))
 
 
 async def handle(msg: Message, prompt: str) -> None:

@@ -699,3 +699,53 @@ def test_one_badge_for_every_unseen_answer():
     css = slice_out("style")
     assert "button.done::after" not in css          # точки больше нет
     assert "#list button.done .ago::after" in css   # тот же квадрат, что у `ok`
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_every_picked_file_is_uploaded(tmp_path):
+    """FileList у `<input type=file>` живой, и обработчик выбора чистит его сразу после
+    первого `await` внутри attach. Пока цикл шёл по самому списку, из выбранной пачки
+    доезжал ровно один файл: на второй итерации список уже пуст."""
+    body = slice_out("script").split("// --- attach:begin ---")[1].split("// --- attach:end ---")[0]
+    js = tmp_path / "attach.js"
+    js.write_text("""
+// Подставной FileList: длина и обход читают одно хранилище, поэтому `clear()` виден
+// уже начатому циклу — ровно как настоящий список после `pick.value = ''`.
+function fileList(names) {
+  const items = names.map(name => ({ name, size: 10 }));
+  return {
+    clear: () => { items.length = 0; },
+    [Symbol.iterator]() {
+      let i = 0;
+      return { next: () => i < items.length ? { value: items[i++], done: false }
+                                            : { value: undefined, done: true } };
+    },
+  };
+}
+const log = () => null;
+const kb = () => '10 б';
+const grow = () => {};
+const esc = (s) => s;
+const upload = async (file) => ({ path: '/data/inbox/' + file.name });
+""" + body + """
+(async () => {
+  const ta = { value: '', focus: () => {} };
+  const list = fileList(['a.txt', 'b.txt', 'c.txt']);
+  const done = attach({}, ta, list);
+  list.clear();            // ровно то, что делает `pick.value = ''` в обработчике
+  await done;
+
+  // Выбор без файлов и отсутствие списка вовсе не должны ронять обработчик.
+  const empty = { value: '', focus: () => {} };
+  await attach({}, empty, fileList([]));
+  await attach({}, empty, undefined);
+
+  console.log(JSON.stringify([ta.value.trim().split('\\n'), empty.value]));
+})();
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    paths, empty = json.loads(done.stdout)
+
+    assert paths == ["/data/inbox/a.txt", "/data/inbox/b.txt", "/data/inbox/c.txt"]
+    assert empty == ""

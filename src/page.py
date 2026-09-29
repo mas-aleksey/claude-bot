@@ -1383,7 +1383,8 @@ function drawPane(p) {
   const form = el.querySelector('form');
   const ta = el.querySelector('textarea');
   // Выбор файлов — тот же путь, что у перетаскивания. `value = ''` нужен, чтобы второй
-  // выбор того же файла тоже дал событие.
+  // выбор того же файла тоже дал событие. Он же очищает `pick.files`, поэтому `attach`
+  // копирует список первой строкой — иначе доедет только первый файл.
   const pick = el.querySelector('.clip input');
   pick.onchange = () => { attach(p, ta, pick.files); pick.value = ''; };
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
@@ -1864,8 +1865,12 @@ function upload(file, onProgress) {
   });
 }
 
+// --- attach:begin ---
 async function attach(p, ta, files) {
-  for (const file of files || []) {
+  // Копия списка, а не сам FileList: он живой. `pick.value = ''` в обработчике выбора
+  // очищает его на первом же `await` ниже, и цикл заканчивался после первого файла —
+  // из десяти выбранных доходил один.
+  for (const file of [...(files || [])]) {
     // Строка в логе, а не отдельная плашка: лог и так на виду, а место под панелью
     // занято полем промпта. textContent вместо разметки — имя файла приходит от
     // человека и экранировать его иначе пришлось бы руками.
@@ -1890,6 +1895,7 @@ async function attach(p, ta, files) {
     }
   }
 }
+// --- attach:end ---
 
 // Вставка мимо потока: свой промпт и красные строки. Прокрутка тут обязательна —
 // без неё длинный промпт уезжал за нижний край, и absorb() дальше считал панель
