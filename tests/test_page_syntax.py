@@ -770,9 +770,13 @@ let box;
 const $ = () => box;
 const esc = (s) => String(s);
 const since = () => '1 мин назад';
+// `GONE` живёт рядом с настоящим `until`, вне вырезанного блока: подставляем оба вместе,
+// иначе прошедший срок в блоке не с чем сравнить.
+const GONE = 'gone';
 const until = (iso) => {
   const h = Math.floor((new Date(iso) - NOW) / 3600e3);
-  return h > 0 ? (h >= 24 ? Math.floor(h / 24) + 'д ' + (h % 24) + 'ч' : h + 'ч 0м') : '';
+  if (!iso) return '';
+  return h > 0 ? (h >= 24 ? Math.floor(h / 24) + 'д ' + (h % 24) + 'ч' : h + 'ч 0м') : GONE;
 };
 const doLogin = () => {};
 """ + body + """
@@ -795,7 +799,8 @@ function draw(lim, auth) {
 
 const lim = { email: 'me@x.dev', plan: 'max 5x', at: NOW / 1000,
               bars: [{ name: 'сессия', percent: 60, resets: NOW + 2 * 3600e3 },
-                     { name: 'неделя', percent: 95, resets: NOW + 3 * 3600e3 }] };
+                     { name: 'неделя', percent: 95, resets: NOW + 3 * 3600e3 },
+                     { name: 'месяц', percent: 100, resets: NOW - 3600e3 }] };
 const alive = { ok: true, fresh: true, renewable: true, until: (NOW + 4 * DAY) / 1000 };
 const soon = { ok: true, fresh: true, renewable: true, until: (NOW + DAY) / 1000 };
 const dead = { ok: true, fresh: false, renewable: false, until: null };
@@ -819,8 +824,15 @@ console.log(JSON.stringify({
     # Спокойная полоска: процент в строке, срок сброса только в подсказке.
     assert got["alive"]["bars"][0] == ["сброс лимитов через 2ч 0м", "сессия", "60%"]
     # Покрасневшая: срок возвращается в строку — тянуться за ним мышью уже поздно.
+    # Вместо слова «через» стоит знак обновления: в узкой полосе сайдбара предлог
+    # занимал место, а смысл нёс тот же.
     assert got["alive"]["bars"][1] == ["сброс лимитов через 3ч 0м", "неделя",
-                                       "через 3ч 0м · 95%"]
+                                       "\u21bb 3ч 0м · 95%"]
+    # Прошедший срок — это устаревшие цифры, а не незнание. До 2026-09-30 оба случая
+    # давали у `until` пустую строку, и панель печатала «время сброса неизвестно» ровно
+    # тогда, когда срок был известен и истёк.
+    assert got["alive"]["bars"][2] == ["сброс уже прошёл, цифры сейчас обновятся",
+                                       "месяц", "100%"]
     # Ключ: состояние словами, срок в подсказке, кнопка только когда она нужна.
     assert got["alive"]["key"] == ["", "рефреш через 4д 0ч", "ключ активен", False]
     assert got["soon"]["key"] == ["warn", "рефреш через 1д 0ч", "ключ скоро кончится", True]
@@ -855,7 +867,7 @@ const ghost = { innerHTML: '', scrollTop: 0 };
 const ta = { value: '', selectionStart: 0, selectionEnd: 0, scrollTop: 0, focus() {} };
 const el = { querySelector: (s) => s === '.menu' ? menu : ghost };
 """ + body + """
-const key = (k) => ta.onkeydown({ key: k, preventDefault() {} });
+const key = (k, mod = {}) => ta.onkeydown({ key: k, preventDefault() {}, ...mod });
 const put = (text) => { ta.value = text; ta.selectionStart = ta.selectionEnd = text.length; };
 const p = { pane: 'p1', project: '/projects/rp' };
 wireSlash(p, el, ta);
@@ -894,6 +906,40 @@ put(''); ta.oninput();
 key('Tab');
 out.bare = [ta.value, ta.placeholder];
 
+// На телефоне клавиши Tab нет, и подсказку берёт Enter. На десктопе он по-прежнему
+// отправляет, поэтому ветка включается только при coarse-указателе.
+hints.set('p1', 'собери');
+TOUCH.matches = false;
+put(''); key('Enter');
+out.mouseEnter = [ta.value, sent];
+TOUCH.matches = true;
+put(''); key('Enter');
+out.touchEnter = [ta.value, sent];
+// Настоящая клавиатура у планшета: Shift+Enter остаётся переносом строки.
+put(''); key('Enter', { shiftKey: true });
+out.shiftEnter = ta.value;
+
+// Экранная клавиатура: iOS не обещает `key: 'Enter'` в keydown, поэтому тот же ввод
+// ловится намерением. Проверяем без keydown вовсе — как оно и приходит на телефоне.
+const typed = (inputType) => {
+  let stopped = false;
+  ta.onbeforeinput({ inputType, preventDefault() { stopped = true; } });
+  return stopped;
+};
+hints.set('p1', 'собери');
+put('');
+out.softEnter = [typed('insertLineBreak'), ta.value];
+// Обычный набор букв подсказку не трогает.
+hints.set('p1', 'собери');
+put('');
+out.softType = [typed('insertText'), ta.value];
+// Мышь: намерение то же, но путь не наш — там Enter отправляет.
+TOUCH.matches = false;
+hints.set('p1', 'собери');
+put('');
+out.mouseSoft = [typed('insertLineBreak'), ta.value];
+TOUCH.matches = true;
+
 console.log(JSON.stringify(out));
 """, encoding="utf-8")
     done = subprocess.run(["node", "--input-type=module", "-e", js.read_text(encoding="utf-8")],
@@ -913,6 +959,17 @@ console.log(JSON.stringify(out));
     assert out["back"] == "собери"                     # стёр своё — подсказка вернулась
     # Пробел, а не пустая строка: на нём держится `:placeholder-shown`, гасящий кнопку.
     assert out["bare"] == ["", " "]
+
+    # Мышь: Enter на пустом поле уходит в отправку, а она сама отбивает пустой промпт.
+    assert out["mouseEnter"] == ["", 1]
+    # Палец: тот же Enter кладёт подсказку в поле и ничего не отправляет.
+    assert out["touchEnter"] == ["собери", 1]
+    assert out["shiftEnter"] == ""      # перенос строки остаётся переносом строки
+
+    # Экранная клавиатура: подсказка встаёт по намерению «ввод», без опоры на `key`.
+    assert out["softEnter"] == [True, "собери"]
+    assert out["softType"] == [False, ""]     # обычный набор ничего не подставляет
+    assert out["mouseSoft"] == [False, ""]    # с мышью эта дорога не работает
 
 
 def test_hint_runs_after_the_pane_is_marked_free():
@@ -1036,3 +1093,24 @@ def test_finished_pane_is_veiled_in_the_colour_of_its_outcome():
 
     assert "inset 4px 0 0" not in css      # цветная рельса исхода снята
     assert "inset 3px 0 0" in css          # полоса «это окно открыто» осталась
+
+
+def test_file_pane_has_no_idle_embed_and_scopes_the_preview_rule():
+    """Две ловушки окна файла, обе стоили половины его высоты.
+
+    `<embed>` не прячется атрибутом `hidden`: WebKit рисует плагин отдельным слоем, и
+    пустой бокс с `flex:1` забирал полокна — под редактором в режиме исходника и над
+    вёрсткой в режиме просмотра. Поэтому в разметке его нет вовсе, он создаётся под
+    открытый PDF.
+
+    Второе: класс `look` носят и блок вёрстки, и кнопка-переключатель. Незаякоренный
+    селектор раздавал `flex:1` обоим, и кнопка растягивалась на треть строки.
+    """
+    js, css = slice_out("script"), slice_out("style")
+
+    assert "<embed" not in js.split("function drawFile")[1][:1200], "embed в шаблоне окна"
+    assert "document.createElement('embed')" in js      # создаётся под файл
+    assert "dropDoc()" in js                            # и снимается при смене файла
+
+    assert "div.look {" in css and "\n.look {" not in css
+    assert "button.look" in css                         # кнопка стилизуется отдельно

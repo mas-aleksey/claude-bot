@@ -350,3 +350,22 @@ async def test_dotfiles_keep_their_dot(client, roots):
 
     assert files._filename(".") == "file"
     assert files._filename("..") == "file"
+
+
+async def test_pdf_is_shown_by_the_browser_not_read_as_text(client, roots):
+    """PDF уходит в `<embed>` тем же путём, что картинка в `<img>`: сервер его не читает.
+
+    Без этой ветки он падал в общую дорогу для текста и отбивался как «двоичный файл» —
+    то есть открыть документ в панели было нечем.
+    """
+    demo, _ = roots
+    doc = demo / "offer.pdf"
+    doc.write_bytes(b"%PDF-1.4\n%\xe2\xe3\xcf\xd3\n")
+    got = await (await client.get("/api/file", params={"path": str(doc)})).json()
+
+    assert got["pdf"] == "application/pdf"
+    assert "text" not in got and "why" not in got   # ни содержимого, ни отказа
+    # Байты приезжают существующей ручкой: второй двери к тем же файлам не заведено.
+    raw = await client.get("/api/raw", params={"path": str(doc)})
+    assert raw.status == 200
+    assert (await raw.read()).startswith(b"%PDF")

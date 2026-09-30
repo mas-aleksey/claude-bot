@@ -436,6 +436,16 @@ header .foldbar { display:none }
 .edit:focus { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
 /* Картинка на месте редактора: вписывается целиком, зума нет. Клетчатый фон нужен
    прозрачным png — иначе белый логотип на тёмной теме выглядит пустым окном. */
+/* PDF и вёрстка markdown занимают место редактора и живут по его правилам: растут на
+   всё окно, сворачиваются вместе с ним. `.doc` — `<embed>`, рисует его сам браузер, и в
+   разметке он появляется только под открытый файл.
+   `div.look`, а не `.look`: тот же класс носит кнопка-переключатель в строке ниже, и
+   незаякоренный селектор растягивал её на треть строки своим `flex:1`. */
+.doc { flex:1; min-height:0; margin:8px; border:0; border-radius:8px }
+div.look { flex:1; min-height:0; overflow:auto; margin:8px; padding:4px 10px;
+  user-select:text; -webkit-user-select:text }
+/* Нажатая кнопка вёрстки — та же рамка в полную силу, как у активного окна. */
+.filebar button.look.on { border-color:oklch(0.62 0.20 var(--hue,250)) }
 .view { flex:1; min-height:0; margin:8px; object-fit:contain; border-radius:8px;
   background:repeating-conic-gradient(#8882 0 25%, transparent 0 50%) 0 0/16px 16px }
 .filebar { display:flex; gap:8px; align-items:center; margin:0 8px 8px }
@@ -551,7 +561,8 @@ body:not(.folded) #empty .list { display:none }
   header .foldbar { display:revert }
   section.rolled { height:auto }
   section.rolled .logbox, section.rolled form { display:none }
-  section.rolled .edit, section.rolled .view, section.rolled .filebar { display:none }
+  section.rolled .edit, section.rolled .view, section.rolled .doc,
+  section.rolled div.look, section.rolled .filebar { display:none }
   /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
      раньше просто ничего не делала. Окно выходит из потока и накрывает экран целиком,
      включая полоску терминала: это единственный способ растянуть лог, раз ресайза на

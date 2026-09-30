@@ -13,6 +13,7 @@ import signal
 import subprocess
 import time
 from collections.abc import AsyncIterator
+from datetime import datetime
 
 import aiohttp
 
@@ -37,8 +38,11 @@ URL_RE = re.compile(r"https://\S+/oauth/\S+")
 # сессии и текстом, — зато CLI берёт их с этого эндпоинта, и токен для него уже лежит
 # в CREDS. Ходим туда же сами.
 OAUTH_API = "https://api.anthropic.com/api/oauth"
-# Две минуты: проценты столько не меняются, а запрос идёт от каждого инстанса.
-LIMITS_TTL = 120
+# Пока идёт прогон, проценты растут на глазах и полминуты — предел, за которым цифра
+# врёт заметно. В простое им меняться не с чего: единственное событие — сам сброс, а его
+# ловит проверка прошедшей даты ниже, не дожидаясь конца паузы.
+LIMITS_TTL_BUSY = 30
+LIMITS_TTL_IDLE = 300
 # Разброс разводит инстансы по времени. Считается один раз на процесс, а не на каждую
 # проверку: поднятые одной командой, они иначе ходят в API в одну и ту же секунду, и
 # именно так эндпоинт и отвечал `rate_limit_error`. Свежая случайность на каждой проверке
@@ -609,6 +613,24 @@ def _bars(usage: dict) -> list[dict]:
     return out
 
 
+def _reset_passed(out: dict) -> bool:
+    """Есть ли полоска, чей срок сброса уже позади.
+
+    Такой ответ описывает мир до сброса, а мир уже после: проценты в нём завышены, а
+    чаще всего стоят на сотне — именно в этот момент на них и смотрят. Сравниваем с
+    запасом в минуту: часы сервера и наши расходятся, и секундная разница не повод
+    ходить в API на каждый вызов.
+    """
+    for bar in out.get("bars") or []:
+        try:
+            gone = datetime.fromisoformat(bar["resets"]).timestamp() < time.time() - 60
+        except (KeyError, TypeError, ValueError):
+            continue
+        if gone:
+            return True
+    return False
+
+
 def _plan(profile: dict) -> str:
     """Тариф коротко: `default_claude_max_5x` → `max 5x`."""
     tier = (profile.get("organization") or {}).get("rate_limit_tier") or ""
@@ -616,7 +638,7 @@ def _plan(profile: dict) -> str:
 
 
 async def limits() -> dict:
-    """Занятость лимитов подписки и чей это аккаунт, с кешем на LIMITS_TTL.
+    """Занятость лимитов подписки и чей это аккаунт, с кешем.
 
     Пустой словарь значит «показывать нечего»: нет файла с токеном, токен протух или
     ответ не той формы. Эндпоинт недокументированный, и смена его формы не должна
@@ -624,14 +646,22 @@ async def limits() -> dict:
     чиним не мы: CLI обновляет CREDS на следующем прогоне, поэтому файл читаем заново
     на каждый промах кеша, а неудачу кешируем наравне с успехом — иначе трёхсекундный
     опрос панели будет долбить API.
+
+    Срок жизни кеша зависит от занятости: под прогоном цифры движутся, в простое стоят.
+    Плюс отдельный повод перезапросить — прошедший `resets` хоть у одной полоски. Это
+    доказательство, что лимит уже сбросился, а у нас лежит доотказный ответ: без такой
+    проверки панель держала 100% ещё пять минут после сброса и говорила «время сброса
+    неизвестно», потому что срок истёк.
     """
     global _limits, _limits_wait
     now = time.monotonic()
+    ttl = LIMITS_TTL_BUSY if _runs else LIMITS_TTL_IDLE
     # Холодный старт: показываем запомненное сразу, а запрос уходит этим же вызовом.
     # Числа с отметкой времени — панель сама решит, насколько они устарели.
     if _limits[0] == float("-inf") and (was := _remembered(LIMITS_KEY, {})):
-        _limits = (now - LIMITS_TTL - LIMITS_JITTER, was)
-    if now - _limits[0] < (LIMITS_TTL + LIMITS_JITTER if _limits[1] else _limits_wait):
+        _limits = (now - ttl - LIMITS_JITTER, was)
+    fresh = now - _limits[0] < (ttl + LIMITS_JITTER if _limits[1] else _limits_wait)
+    if fresh and not _reset_passed(_limits[1]):
         return _limits[1]
     out: dict = {}
     try:
@@ -649,7 +679,7 @@ async def limits() -> dict:
     else:
         # Пауза растёт: сбой бывает и общим на аккаунт, и тогда три инстанса, долбящие
         # раз в полминуты, сами и держат эндпоинт в отказе.
-        _limits_wait = min(_limits_wait * 2, LIMITS_TTL)
+        _limits_wait = min(_limits_wait * 2, LIMITS_TTL_IDLE)
         out = _limits[1]  # не вышло сейчас — показываем прошлое, а не пустоту
     _limits = (now, out)
     return out

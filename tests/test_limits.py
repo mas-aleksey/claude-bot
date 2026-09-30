@@ -7,6 +7,7 @@
 import json
 import os
 import time
+from datetime import UTC, datetime
 
 import pytest
 
@@ -280,3 +281,68 @@ def test_until_counts_down_in_the_same_units_as_session_age():
     assert left(minutes=7) == " (↻7м)"
     assert left(days=3) == " (↻3д)"
     assert left(seconds=29) == " (↻29с)"   # прежний каскад показывал тут «0м»
+
+
+def test_reset_passed_spots_stale_numbers():
+    """Прошедший срок сброса — доказательство, что ответ описывает мир до сброса.
+
+    Именно в этот момент на полоски и смотрят: лимит исчерпан, проценты стоят на сотне.
+    Раньше такой ответ жил до конца TTL, а панель говорила «время сброса неизвестно» —
+    хотя срок был известен и как раз истёк.
+    """
+    future = datetime.fromtimestamp(time.time() + 3600, UTC).isoformat()
+    past = datetime.fromtimestamp(time.time() - 3600, UTC).isoformat()
+
+    assert runner._reset_passed({"bars": [{"resets": future}]}) is False
+    assert runner._reset_passed({"bars": [{"resets": future}, {"resets": past}]}) is True
+    # Запас в минуту: часы сервера и наши расходятся, и секундная разница не повод
+    # ходить в API на каждый вызов.
+    just = datetime.fromtimestamp(time.time() - 5, UTC).isoformat()
+    assert runner._reset_passed({"bars": [{"resets": just}]}) is False
+    # Мусор и пустота — не повод перезапрашивать: это другой случай, и он не наш.
+    assert runner._reset_passed({}) is False
+    assert runner._reset_passed({"bars": [{"resets": ""}, {}, {"resets": "не дата"}]}) is False
+
+
+async def test_limits_refetch_when_the_reset_is_behind(monkeypatch):
+    """Свежий по времени кеш всё равно перезапрашивается, если срок сброса уже позади."""
+    calls = 0
+
+    def creds(*a, **kw):
+        nonlocal calls
+        calls += 1
+        raise FileNotFoundError("нет токена")
+
+    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
+    monkeypatch.setattr("builtins.open", creds)
+    stale = {"bars": [{"resets": datetime.fromtimestamp(time.time() - 3600, UTC).isoformat()}]}
+    monkeypatch.setattr(runner, "_limits", (time.monotonic(), stale))
+
+    await runner.limits()
+    assert calls == 1, "прошедший сброс обязан пробить кеш"
+
+
+async def test_limits_ttl_follows_the_load(monkeypatch):
+    """Под прогоном проценты движутся, в простое стоят — и срок кеша идёт за этим."""
+    calls = 0
+
+    def creds(*a, **kw):
+        nonlocal calls
+        calls += 1
+        raise FileNotFoundError("нет токена")
+
+    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
+    monkeypatch.setattr("builtins.open", creds)
+    fresh = {"bars": [{"resets": datetime.fromtimestamp(time.time() + 3600, UTC).isoformat()}]}
+
+    # Возраст между двумя порогами: в простое ещё свеж, под прогоном уже протух.
+    age = time.monotonic() - (runner.LIMITS_TTL_BUSY + runner.LIMITS_JITTER + 1)
+    monkeypatch.setattr(runner, "_runs", {})
+    monkeypatch.setattr(runner, "_limits", (age, fresh))
+    await runner.limits()
+    assert calls == 0, "в простое кеш живёт пять минут"
+
+    monkeypatch.setattr(runner, "_runs", {"web:1": object()})
+    monkeypatch.setattr(runner, "_limits", (age, fresh))
+    await runner.limits()
+    assert calls == 1, "под прогоном тот же кеш уже протух"

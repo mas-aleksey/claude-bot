@@ -716,3 +716,4 @@ async def test_login_code_without_a_started_flow_is_409(client):
     """Код без начатого входа принимать не за что: pty с `claude auth login` не поднят."""
     r = await client.post("/api/login/code", json={"code": "123"})
     assert r.status == 409
+

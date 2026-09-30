@@ -147,12 +147,16 @@ async def api_file(req: web.Request) -> web.Response:
     if not path.is_file():
         raise web.HTTPBadRequest(text="не файл")
     head = {"path": str(path), "size": st.st_size, "version": _version(st)}
-    # Картинку не читаем вовсе: её покажет `<img>` через `api_raw`, а сюда она попала бы
-    # отказом «не текст в utf-8». Проверка до потолка редактора — фото с телефона крупнее
-    # мегабайта, а смотреть его это не мешает.
+    # Картинку и PDF не читаем вовсе: их покажет браузер через `api_raw`, а сюда они
+    # попали бы отказом «не текст в utf-8». Проверка до потолка редактора — и фото с
+    # телефона, и документ крупнее мегабайта, а смотреть их это не мешает.
+    # Поле разное, потому что разные теги: `<img>` и `<embed>` не взаимозаменяемы, и
+    # решать это по строке типа пришлось бы уже в панели.
     kind = mimetypes.guess_type(path.name)[0] or ""
     if kind.startswith("image/"):
         return web.json_response({**head, "image": kind})
+    if kind == "application/pdf":
+        return web.json_response({**head, "pdf": kind})
     if st.st_size > MAX_EDIT:
         return web.json_response({**head, "why": "больше 1 МБ"})
     try:

@@ -82,9 +82,12 @@ const copy = async (text) => {
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
-// Усилие новых окон. `high` — осознанный выбор человека, а не дефолт CLI: тот не назван
-// ни в `--help`, ни в событии init, и молча меняться может с версией.
-const EFFORT = 'high';
+// Усилие новых окон. Названо явно, а не оставлено на CLI: его дефолт не указан ни в
+// `--help`, ни в событии init, и молча меняться может с версией.
+// `medium` с 2026-09-30, до того стоял `high`: большинство промптов в панели — короткие
+// вопросы и правки, и платить за них верхним усилием незачем. Кому нужно выше, поднимает
+// селектором в своём окне, и выбор переживает F5.
+const EFFORT = 'medium';
 
 // --- hue:begin ---
 // Оттенок окна — середина самого широкого свободного промежутка на круге. Насыщенность
@@ -943,7 +946,9 @@ function drawFile(p) {
     </header>
     <textarea class=edit spellcheck=false wrap=off></textarea>
     <img class=view hidden alt="">
+    <div class="look body" hidden></div>
     <div class=filebar>
+      <button class=look hidden title="исходник или вёрстка">\u25a4\ufe0e</button>
       <button class=save>сохранить</button>
       <button class=reread title="перечитать с диска">↻</button>
       <span class=state></span>
@@ -969,6 +974,25 @@ function drawFile(p) {
   who.onclick = () => { if (NARROW.matches) copyPath(); };
 
   const view = el.querySelector('.view');
+  // `<embed>` создаётся под конкретный PDF и снимается при смене файла. Держать его в
+  // разметке скрытым не выходит: WebKit рисует плагин отдельным слоем, `hidden` до него
+  // не доходит, и пустой бокс с `flex:1` забирал половину окна в обоих режимах.
+  let doc = null;
+  const dropDoc = () => { doc?.remove(); doc = null; };
+  // Вёрстка markdown рисуется тем же `md()`, что и ответы claude, и лежит в `.body` —
+  // иначе к ней пришлось бы писать второй набор стилей для тех же заголовков и списков.
+  const look = el.querySelector('div.look');
+  const lookBtn = el.querySelector('button.look');
+  // Просмотр — это взгляд на файл, а не настройка панели: между окнами не переносится и
+  // F5 не переживает. Редактор остаётся главным, поэтому исходник — начальное состояние.
+  let shown = false;
+  const draw = () => {
+    look.innerHTML = shown ? md(ta.value) : '';
+    look.hidden = !shown;
+    ta.hidden = shown;
+    lookBtn.classList.toggle('on', shown);
+  };
+  lookBtn.onclick = () => { shown = !shown; draw(); };
   // Скачивание идёт по той же ручке, что и картинка: файл уже отдаётся байтами, тут
   // нужен только адрес. `?v=` — версия из `api/file`, иначе браузер вернёт из кеша
   // прежнее содержимое. С телефона это единственный способ забрать файл себе.
@@ -985,7 +1009,24 @@ function drawFile(p) {
       view.hidden = false; ta.hidden = true; save_.hidden = true; dirty = false;
       return say(f.image.replace('image/', '') + ', ' + kb(f.size));
     }
+    // PDF рисует сам браузер, редактора у него нет — как и у картинки.
+    if (f.pdf) {
+      dropDoc();
+      doc = document.createElement('embed');
+      doc.className = 'doc';
+      doc.type = 'application/pdf';
+      doc.src = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+      look.before(doc);
+      ta.hidden = true; save_.hidden = true; dirty = false;
+      return say('pdf, ' + kb(f.size));
+    }
+    dropDoc();
     ta.value = f.text ?? '';
+    // Кнопка вёрстки только у markdown: у остального её нечем наполнить, а пустая кнопка
+    // в строке рядом с «сохранить» читалась бы как сломанная.
+    lookBtn.hidden = !/\.(md|markdown)$/i.test(p.file);
+    if (lookBtn.hidden) { shown = false; }
+    draw();
     // Отказ приходит полем `why`: файл больше мегабайта или не текст. Показываем имя,
     // размер и причину — пустое окно без объяснения читалось бы как поломка.
     ta.readOnly = !!f.why;
@@ -1245,6 +1286,19 @@ function wireSlash(p, el, ta) {
     menu.hidden = false;
   }
 
+  // Подсказку в поле, курсор в конец. Возвращает, случилось ли: зовущие по этому ответу
+  // решают, гасить ли своё событие. Отдельной функцией, потому что путей к ней уже два —
+  // клавиша и ввод, — и копия разъехалась бы на первой же правке.
+  function takeHint() {
+    const hint = menu.hidden && !ta.value ? hints.get(p.pane) : null;
+    if (!hint) return false;
+    ta.value = hint;
+    ta.selectionStart = ta.selectionEnd = ta.value.length;
+    grow(ta);
+    paint();
+    return true;
+  }
+
   function accept(i) {
     const rest = ta.value.slice(ta.selectionStart).replace(/^\s+/, '');
     ta.value = '/' + shown[i].name + ' ' + rest;
@@ -1278,16 +1332,31 @@ function wireSlash(p, el, ta) {
       if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); return accept(sel); }
       if (e.key === 'Escape') { e.preventDefault(); return close(); }
     }
-    // Серая подсказка после прогона: Tab кладёт её в поле, отправку оставляет за Enter.
-    // Предложение бывает не тем, и одна клавиша до отправки — это слишком коротко.
-    if (e.key === 'Tab' && menu.hidden && !ta.value && hints.get(p.pane)) {
-      e.preventDefault();
-      ta.value = hints.get(p.pane);
-      ta.selectionStart = ta.selectionEnd = ta.value.length;
-      grow(ta);
-      return paint();
-    }
+    // Серая подсказка после прогона. Tab кладёт её в поле везде, Enter — только на
+    // тач-устройствах: клавиши Tab там нет вовсе, а Enter в пустом поле и так не делал
+    // ничего. Отправку с него на тач отключает строка ниже, а одинокий перенос строки
+    // всё равно срезается при отправке — то есть клавиша свободна ровно в том состоянии,
+    // где нужна подсказка, и клавиатура в этот момент уже открыта.
+    // Shift и Alt отбиты: к планшету бывает приставлена настоящая клавиатура, и перенос
+    // строки на ней набирают именно ими.
+    // Отправку оставляем за вторым нажатием: предложение бывает не тем, и одна клавиша
+    // до отправки — это слишком коротко.
+    const grab = e.key === 'Tab'
+              || (e.key === 'Enter' && TOUCH.matches && !e.shiftKey && !e.altKey);
+    if (grab && takeHint()) return e.preventDefault();
     if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !TOUCH.matches) { e.preventDefault(); send(p, ta); }
+  };
+  // Второй заход на ту же подсказку, для экранной клавиатуры. `keydown` выше рассчитан
+  // на то, что Return приедет как `key: 'Enter'`, а iOS на софт-клавиатуре этого не
+  // обещает: там в `keydown` регулярно приходит `Unidentified`, и ветка не срабатывает.
+  // `beforeinput` от способа ввода не зависит — он несёт намерение: `insertLineBreak` и
+  // есть «нажали ввод». `insertParagraph` рядом на случай, если Safari назовёт то же
+  // самое иначе.
+  // Дубля не будет: сработал `keydown` — он отменил ввод, и сюда уже не придёт.
+  ta.onbeforeinput = (e) => {
+    if (!TOUCH.matches) return;
+    if (e.inputType !== 'insertLineBreak' && e.inputType !== 'insertParagraph') return;
+    if (takeHint()) e.preventDefault();
   };
   ta.oninput = () => { grow(ta); paint(); open(); };
   // Курсор переехал мышью — меню либо открывается на новом месте, либо закрывается.
@@ -1398,9 +1467,15 @@ function setCtx(p, ctx) {
 // Сколько осталось до сброса лимита. Дата сброса приходит с каждой полоской и до сих
 // пор лежала только в подсказке — до неё не дотянуться ни пальцем, ни взглядом, а это
 // главное число после самого процента: упёрся в лимит и решаешь, ждать или менять план.
+// Пустая строка тут значит «нечего показать», и до 2026-09-30 она значила это сразу для
+// двух разных случаев: даты нет и дата прошла. Второй печатался как «время сброса
+// неизвестно» — на данных, где срок как раз известен и как раз истёк. Прошедшее теперь
+// отдаётся отдельным значением, а зовущий сам решает, что сказать.
+const GONE = 'gone';
 const until = (iso) => {
   const sec = (new Date(iso) - Date.now()) / 1000;
-  if (!iso || !(sec > 0)) return '';
+  if (!iso || isNaN(sec)) return '';
+  if (!(sec > 0)) return GONE;
   const h = Math.floor(sec / 3600), m = Math.floor(sec % 3600 / 60);
   return h >= 24 ? `${Math.floor(h / 24)}д ${h % 24}ч` : h ? `${h}ч ${m}м` : `${m}м`;
 };
@@ -1473,7 +1548,8 @@ function setPlan(lim, auth) {
   // которой человек наводит мышь. В строке остаётся только то, что меняет решение:
   // проценты у лимитов и состояние у ключа.
   const who = [lim?.email, lim?.plan].filter(Boolean).join(' · ');
-  const left = auth?.until ? until(auth.until * 1000) : '';
+  const raw = auth?.until ? until(auth.until * 1000) : '';
+  const left = raw === GONE ? '' : raw;
   // Кнопка только там, где она нужна: на живом ключе жать её незачем, а без неё строка
   // занимает всю ширину.
   const state = need ? (auth.ok ? 'нужен вход' : 'не авторизован')
@@ -1490,12 +1566,15 @@ function setPlan(lim, auth) {
     const p = Math.max(0, Math.min(100, b.percent));
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
     const left = until(b.resets);
-    const when = left ? `сброс лимитов через ${left}` : 'время сброса неизвестно';
+    // Прошедший срок — это устаревшие цифры, а не незнание: сервер их уже перезапрашивает
+    // (см. `_reset_passed`), и полоска обновится ближайшим тиком.
+    const when = left === GONE ? 'сброс уже прошёл, цифры сейчас обновятся'
+               : left ? `сброс лимитов через ${left}` : 'время сброса неизвестно';
     // Срок сброса возвращается в строку, как только полоска пожелтела или покраснела.
     // На спокойной это справка, за которой наводят мышь; на тревожной — то самое, ради
     // чего в блок и смотрят, и прятать его туда, куда надо тянуться, незачем.
     return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em>` +
-      `<span>${cls && left ? `через ${esc(left)} · ` : ''}${p}%</span>
+      `<span>${cls && left && left !== GONE ? `\u21bb ${esc(left)} · ` : ''}${p}%</span>
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
   }).join('');
   const btn = box.querySelector('#login');
