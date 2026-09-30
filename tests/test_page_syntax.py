@@ -1011,9 +1011,14 @@ def test_finished_pane_is_veiled_in_the_colour_of_its_outcome():
     # Пелена — слой НАД содержимым, а не фон под ним: фоном текст не закрыть при любой
     # плотности. Кликабельная насквозь, иначе её нечем снять.
     assert "section.ready .logbox::after, section.ready form::after" in css
-    assert "pointer-events:none; background:var(--veil)" in css
-    assert f"section.ready {{ --veil:{GREEN} / .55)" in css
-    assert f"section.ready.bad {{ --veil:{RED} / .55)" in css
+    assert "background:var(--veil); opacity:.80" in css
+    # Цвет разбавлен фоном: бледный и плотный читается как «поверх всего», насыщенный
+    # вполсилы — как подсветка текста. `Canvas` в примеси уводит пелену за темой.
+    assert f"--veil:color-mix(in oklch, {GREEN}) 20%, Canvas)" in css
+    assert f"--veil:color-mix(in oklch, {RED}) 20%, Canvas)" in css
+    # Размытие закрывает читаемость вместо плотности краски. Префикс обязателен: без
+    # него Safari старше 18 оставляет пелену простой заливкой.
+    assert "-webkit-backdrop-filter:blur(3px); backdrop-filter:blur(3px)" in css
 
     # Заголовка пелена не касается вовсе: правила на него нет, и порядком слоёв это
     # больше не решается — в окне уже четыре разных z-index.
