@@ -151,6 +151,19 @@ if (new URLSearchParams(location.search).has('reset')) {
   history.replaceState(null, '', location.pathname);
 }
 let panes = JSON.parse(localStorage.getItem('panes') || '[]');
+// Сетка выросла с 12x8 до 60x24, а клетки панелей лежат в localStorage. Без пересчёта
+// после обновления все окна съёжились бы в левый верхний угол в пятую долю прежнего
+// размера. Разовый проход, помеченный ключом; промах лечится кнопкой «разложить окна».
+if (localStorage.getItem('grid') !== '60x24') {
+  const grow = (x) => {
+    if (!x) return;
+    x.c = (x.c - 1) * 5 + 1; x.w *= 5;
+    x.r = (x.r - 1) * 3 + 1; x.h *= 3;
+  };
+  for (const p of panes) { grow(p); grow(p.prev); }
+  localStorage.setItem('panes', JSON.stringify(panes));
+  localStorage.setItem('grid', '60x24');
+}
 const save = () => localStorage.setItem('panes', JSON.stringify(panes));
 
 // Отправленный промпт панель печатает сразу, а через секунды он же приезжает из
@@ -539,7 +552,17 @@ async function runFind() {
 // Сетка фиксированного размера в клетках: 12 на 8. Клетка — доля области, а не пиксели,
 // поэтому панели тянутся и сжимаются вместе с окном, сохраняя свои пропорции. Панель по
 // умолчанию 6x4, то есть ровно четверть: четыре сессии раскладываются по углам.
-const COLS = 12, ROWS = 8, W = COLS / 2, H = ROWS / 2, GAP = 8, PAD = 8;
+// Сетка 60 на 24, а не 12 на 8: 12 не делится на 5 и на 7, и остаток раздавался
+// соседям — пять окон в ряд выходили 2,3,2,3,2 клетки, то есть каждое второе в полтора
+// раза шире. 60 делится на 1..6 и на 10 и 12, 24 — на 1,2,3,4,6,8,12; разброс остаётся
+// только на семи окнах и падает с 2x до 1.13x.
+// Зазор между окнами перенесён из `gap` сетки в `margin` самих окон. При 60 колонках
+// `gap:8px` съедал бы 59 промежутков, то есть 472 пикселя ширины области; у margin
+// промежуток один на пару соседей, сколько бы колонок ни было.
+const COLS = 60, ROWS = 24, W = COLS / 2, H = ROWS / 2, GAP = 0, PAD = 4;
+// Нижний предел размера — прежняя клетка 12x8. Без него окно тянется до 1/60 ширины,
+// а это полоска в тридцать пикселей, из которой уже не выбраться мышью.
+const MINW = COLS / 12, MINH = ROWS / 8;
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Шаг клетки меряем по факту, а не считаем от константы: окно могли изменить, а grid
@@ -550,8 +573,8 @@ const rowStep = () => ($('panes').clientHeight - PAD * 2 - GAP * (ROWS - 1)) / R
 // Прямоугольник обязан лежать внутри сетки: за её краем grid добавил бы неявные ряды,
 // и панель уехала бы за границу области.
 function fit(p) {
-  p.w = clamp(p.w || W, 1, COLS);
-  p.h = clamp(p.h || H, 1, ROWS);
+  p.w = clamp(p.w || W, MINW, COLS);
+  p.h = clamp(p.h || H, MINH, ROWS);
   p.c = clamp(p.c || 1, 1, COLS - p.w + 1);
   p.r = clamp(p.r || 1, 1, ROWS - p.h + 1);
 }
@@ -692,8 +715,8 @@ function wireGrab(p, el, node, edge) {
         p.c = clamp(from.c + dc, 1, COLS - p.w + 1);
         p.r = clamp(from.r + dr, 1, ROWS - p.h + 1);
       } else {
-        if (edge.includes('e')) p.w = clamp(from.w + dc, 1, COLS - p.c + 1);
-        if (edge.includes('s')) p.h = clamp(from.h + dr, 1, ROWS - p.r + 1);
+        if (edge.includes('e')) p.w = clamp(from.w + dc, MINW, COLS - p.c + 1);
+        if (edge.includes('s')) p.h = clamp(from.h + dr, MINH, ROWS - p.r + 1);
       }
       applyGeom(p);  // панель переставляется по клеткам сразу, а не после отпускания
     };

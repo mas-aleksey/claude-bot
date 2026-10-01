@@ -118,7 +118,10 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             # Занято — сумма по последнему `assistant`: свежий ввод, записанный кэш,
             # прочитанный кэш и ответ. Суммировать по всей сессии нельзя, контекст не
             # растёт линейно — после `/compact` он падает.
-            if role == "assistant" and (u := msg.get("usage")):
+            # Ответы субагента (`isSidechain`) не в счёт: у Task свой контекст, обычно
+            # много меньше родительского, и взятый оттуда замер ронял полоску до чужого
+            # числа, пока не придёт следующий ответ основной сессии.
+            if role == "assistant" and not ev.get("isSidechain") and (u := msg.get("usage")):
                 used = render.tokens_total(u)
                 model = msg.get("model") or model
             content = msg.get("content")
@@ -193,7 +196,7 @@ def ctx_of(path: Path) -> dict | None:
             ev = json.loads(raw.decode("utf-8", "replace"))
         except ValueError:
             continue
-        if ev.get("type") != "assistant":
+        if ev.get("type") != "assistant" or ev.get("isSidechain"):
             continue
         msg = ev.get("message") or {}
         if u := msg.get("usage"):

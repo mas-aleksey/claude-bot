@@ -215,10 +215,10 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
   display:inline-block; width:25px; height:25px; line-height:25px; text-align:center;
   font-size:14px; padding:0; margin:-3px 0; cursor:pointer }
 #tree .rm, #tree .mv, #tree .cp { float:right; margin:-3px 0 -3px 4px }
-/* Заголовок окна кликабелен: у сессии это переименование, у файла — путь в буфер. Та же
-   пара живёт кнопкой в начале строки — заголовок ещё и ручка переноса, и по нему жмут
-   не только ради этого. */
-header .who { cursor:pointer }
+/* Имя сессии кликабельно (переименование, у файла — путь в буфер), но курсор над ним
+   остаётся ладонью от `.grip`: заголовок целиком — ручка переноса, и палец на одном его
+   куске против ладони на остальных обещал разное поведение там, где оно одинаковое.
+   Клик никуда не делся, и та же пара висит кнопкой в начале строки. */
 header .ren { opacity:.6; padding:1px 4px }
 header .ren:hover { opacity:1 }
 header .dl { text-decoration:none; opacity:.7 }
@@ -238,11 +238,15 @@ header .dl:hover { opacity:1 }
    разрешено — это рабочий стол, а не плиточный менеджер; поверх лежит та, которую
    трогали последней. Фон непрозрачный по той же причине.
    Клетка — доля области (1fr), а не пиксели: панели тянутся вместе с окном и держат
-   свои пропорции. Числа 12 и 8 дублируют COLS и ROWS в скрипте — вёрстка рисует сетку,
-   а скрипт по ней считает шаг перетаскивания, поэтому значения обязаны совпадать. */
-#panes { flex:1; overflow:hidden; display:grid; gap:8px; padding:8px;
-  grid-template-columns:repeat(12, minmax(0,1fr));
-  grid-template-rows:repeat(8, minmax(0,1fr)) }
+   свои пропорции. Числа 60 и 24 дублируют COLS и ROWS в скрипте — вёрстка рисует сетку,
+   а скрипт по ней считает шаг перетаскивания, поэтому значения обязаны совпадать.
+   Зазор между окнами держит их `margin`, а не `gap` сетки: `gap` считается на каждую
+   границу колонки, и при 60 колонках 59 промежутков по 8px отняли бы 472 пикселя
+   ширины. У margin промежуток один на пару соседей, сколько бы колонок ни было, —
+   поэтому 4px на окно и 4px padding у области дают те же 8px и внутри, и по краю. */
+#panes { flex:1; overflow:hidden; display:grid; gap:0; padding:4px;
+  grid-template-columns:repeat(60, minmax(0,1fr));
+  grid-template-rows:repeat(24, minmax(0,1fr)) }
 /* Цвет панели: рамка в полную силу, фон бледной заливкой. Заливка идёт градиентом
    поверх Canvas, а не цветом с альфой: панели перекрываются, и полупрозрачный фон
    просвечивал бы соседнюю. Градиент — верхний слой, Canvas — нижний непрозрачный. */
@@ -251,7 +255,7 @@ header .dl:hover { opacity:1 }
    в корневой слой — вровень с активным окном (`.act`, тоже 5). При равном z-index решает
    порядок в DOM, и галочка нижнего окна ложилась поверх того, в котором работают. */
 section { position:relative; isolation:isolate; display:flex; flex-direction:column;
-  overflow:hidden; min-width:0; min-height:0; border-radius:6px;
+  overflow:hidden; min-width:0; min-height:0; border-radius:6px; margin:4px;
   border:2px solid oklch(0.62 0.16 var(--hue,250) / .6);
   background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .12),
                              oklch(0.62 0.16 var(--hue,250) / .12)), Canvas;
@@ -355,7 +359,7 @@ section.busy header { background:oklch(0.68 0.21 var(--hue,250) / .70) }
    занятости — полоска в нём растворялась, ради чего её с двух пикселей и растили.
    12% — потолок по читаемости: заливка идёт под текстом заголовка, и плотнее она его
    топит ровно так же, как топила заливка занятости в полную силу. */
-header .ctx { position:absolute; inset:0 auto 0 0; width:0;
+header .ctx { position:absolute; inset:0 auto 0 0; width:0; pointer-events:none;
   background-color:color-mix(in oklch, CanvasText 12%, transparent) }
 header .ctx.full { background-color:oklch(0.58 0.22 25 / .28) }
 /* Идёт прогон — залитая часть штрихуется косыми полосами, бегущими слева направо. Это
@@ -597,7 +601,7 @@ body:not(.folded) #empty .list { display:none }
      вырождалась в полоску из двух рамок, которую не за что взять пальцем. Свёрнутому он
      не мешает: там и так заголовок в 44px. */
   section { grid-column:1/-1 !important; grid-row:auto !important;
-    height:min(70vh, 480px); min-height:44px;
+    height:min(70vh, 480px); min-height:44px; margin:0;
     border-radius:0; border-left:0; border-right:0 }
   /* Окно сворачивается в свой заголовок: остаётся полоса с именем сессии, таймером и
      кнопками, а всё, что лежало ниже, поднимается вплотную. Состояние живёт в панели и

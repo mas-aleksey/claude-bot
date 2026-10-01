@@ -374,3 +374,25 @@ def test_ctx_of_reads_the_whole_session(tmp_path, monkeypatch):
     empty = tmp_path / "empty.jsonl"
     empty.write_text("", encoding="utf-8")
     assert transcript.ctx_of(empty) is None
+
+
+def test_ctx_ignores_subagent_answers(tmp_path, monkeypatch):
+    """У субагента (`Task`, `isSidechain`) свой контекст, обычно много меньше родительского.
+
+    Взятый оттуда замер ронял полоску до чужого числа до следующего ответа основной
+    сессии, а субагент последним в файле — оставлял её такой насовсем.
+    """
+    path = tmp_path / "s.jsonl"
+
+    def ev(read, side=False):
+        row = {"type": "assistant", "isSidechain": side, "message": {
+            "model": "claude-opus-5", "content": [{"type": "text", "text": "x"}],
+            "usage": {"input_tokens": 0, "cache_creation_input_tokens": 0,
+                      "cache_read_input_tokens": read, "output_tokens": 0}}}
+        return json.dumps(row)
+
+    path.write_text("\n".join([ev(90_000), ev(400, side=True)]) + "\n", encoding="utf-8")
+    monkeypatch.setattr(transcript.store, "get", lambda key, default=None: None)
+
+    assert transcript.items(path, 0)[2]["used"] == 90_000
+    assert transcript.ctx_of(path)["used"] == 90_000

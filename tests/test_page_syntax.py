@@ -114,8 +114,13 @@ def test_every_new_pane_retiles_the_whole_grid(tmp_path):
     одном шаге, и сетка занята целиком — пустот внизу и справа не остаётся."""
     body = slice_out("script").split("// --- place:begin ---")[1].split("// --- place:end ---")[0]
     js = tmp_path / "place.js"
-    js.write_text("""
-const COLS = 12, ROWS = 8, W = COLS / 2, H = ROWS / 2;
+    # Размер сетки берём из самого скрипта, а не повторяем числом: на 12 колонках пять
+    # окон в ряд выходили 2,3,2,3,2 клетки, и проверка обязана ловить это на тех числах,
+    # с которыми панель работает на самом деле.
+    grid = re.search(r"const COLS = (\d+), ROWS = (\d+)", slice_out("script"))
+    js.write_text(f"""
+const COLS = {grid[1]}, ROWS = {grid[2]}, W = COLS / 2, H = ROWS / 2;
+""" + """
 const applyGeom = () => {};
 const drawZoom = () => {};
 // Широкий монитор: раскладка считает пропорцию окна по нему, а не по числу окон.
@@ -149,24 +154,39 @@ panes = Array.from({ length: 6 }, () => ({}));
 retile();
 const rows = [...new Set(panes.map(p => p.r))].sort((a, b) => a - b)
   .map(r => panes.filter(p => p.r === r).length);
-console.log(JSON.stringify([seen, count, was, big, back, three, rows]));
+// Разброс ширин в ряду: худшее отношение по числу окон от двух до семи.
+const spread = [];
+for (let n = 2; n <= 7; n++) {
+  panes = Array.from({ length: n }, () => ({}));
+  retile();
+  const top = panes.filter(p => p.r === 1).map(p => p.w);
+  spread.push(Math.max(...top) / Math.min(...top));
+}
+console.log(JSON.stringify([seen, count, was, big, back, three, rows, spread]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    seen, count, was, big, back, three, rows = json.loads(done.stdout)
+    seen, count, was, big, back, three, rows, spread = json.loads(done.stdout)
 
     # На каждом шаге от одного окна до девяти: без перекрытий, без выхода за сетку и
     # ровно 96 занятых клеток. Семь окон и были жалобой — прежняя раскладка теряла
     # остаток от деления и оставляла внизу две пустые полосы.
-    assert seen == [[False, False, 96]] * 9
+    cols, rows_n = int(grid[1]), int(grid[2])
     assert count == 9
-    assert big == [1, 1, 12, 8]           # развёрнутое занимает всю область
+    assert all(not over and not out for over, out, _ in seen)
+    assert {area for _, _, area in seen} == {cols * rows_n}  # сетка занята целиком всегда
+    assert big == [1, 1, cols, rows_n]    # развёрнутое занимает всю область
     assert back == was                    # и возвращается ровно откуда развернули
     # Три окна на широком экране — три колонки во всю высоту, а не два сверху и одно снизу.
-    assert three == [[1, 1, 4, 8], [5, 1, 4, 8], [9, 1, 4, 8]]
+    third = cols // 3
+    assert three == [[1, 1, third, rows_n], [1 + third, 1, third, rows_n],
+                     [1 + 2 * third, 1, third, rows_n]]
     # Шесть — ровно 3 + 3. Раскладка по средней клетке давала 4 + 2: четыре правильных
     # окна перевешивали два растянутых, и ряды выходили разной формы.
     assert rows == [3, 3]
+    # Ширины в ряду ровные до семи окон. На 12 колонках пять окон давали 1.5x, семь — 2x:
+    # 12 не делится ни на 5, ни на 7, и остаток раздавался каждому второму.
+    assert max(spread) <= 1.2, spread
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -1122,3 +1142,17 @@ def test_file_pane_has_no_idle_embed_and_scopes_the_preview_rule():
 
     assert "div.look {" in css and "\n.look {" not in css
     assert "button.look" in css                         # кнопка стилизуется отдельно
+
+
+def test_context_fill_does_not_eat_clicks():
+    """Заливка контекста лежит поверх заголовка во всю его высоту и идёт последней в
+    разметке — то есть рисуется над кнопками. Без `pointer-events:none` она собирает на
+    себя и курсор, и клики: заполнился контекст — перестали нажиматься «закрыть» и
+    «во весь экран». В списке строк это с самого начала было учтено, в заголовке — нет.
+    """
+    import page
+
+    css = (page.WEB / "style.css").read_text(encoding="utf-8")
+    for sel in ("header .ctx {", "#list .ctx {"):
+        rule = css.split(sel, 1)[1].split("}", 1)[0]
+        assert "pointer-events:none" in rule, f"{sel} ловит клики"
