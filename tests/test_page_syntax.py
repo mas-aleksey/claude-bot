@@ -256,12 +256,14 @@ def test_list_marks_follow_runs_not_panes(tmp_path):
     js = tmp_path / "mark.js"
     js.write_text("""
 function btn(id) {
-  const cls = new Set(), vars = {};
-  return { dataset: { id }, cls, vars, title: '',
+  const cls = new Set(), vars = {}, ago = { textContent: '2д' };
+  return { dataset: { id, ago: '2д' }, cls, vars, ago, title: '',
     classList: { toggle: (k, on) => { on ? cls.add(k) : cls.delete(k); } },
+    querySelector: () => ago,
     style: { setProperty: (k, v) => { vars[k] = v; },
              removeProperty: (k) => { delete vars[k]; } } };
 }
+const fmt = (sec) => 'T' + sec;
 const rows = [btn('a'), btn('b')];
 rows[0].dataset.title = 'про сетку';
 // Панель как элемент: `markList` смотрит её классы, чтобы перенести готовность в строку.
@@ -285,10 +287,11 @@ let panes = [];
 const setWho = () => {};
 const save = () => {};
 """ + body + """
-const state = () => rows.map(r => [[...r.cls].sort(), r.vars['--hue'] ?? null]);
+const state = () => rows.map(r => [[...r.cls].sort(), r.vars['--hue'] ?? null,
+                                  r.ago.textContent]);
 const seen = [];
 
-trackRuns([{ session: 'a' }]);            // запуск при закрытом окне
+trackRuns([{ session: 'a', secs: 7 }]);   // запуск при закрытом окне
 markList(); seen.push(state());
 
 trackRuns([]);                            // кончился, окна так и не было
@@ -300,7 +303,7 @@ done.delete('a');
 markList(); seen.push(state());
 
 panes = [{ session: 'a', hue: 25 }];      // прогон при открытом окне
-trackRuns([{ session: 'a' }]);
+trackRuns([{ session: 'a', secs: 7 }]);
 trackRuns([]);                            // кончился на глазах — ни точки, ни звонка
 markList(); seen.push(state());
 
@@ -324,16 +327,16 @@ console.log(JSON.stringify([...seen, sent]));
     assert done.returncode == 0, done.stderr
     (running, finished, stored, opened, watched,
      ready, failed, clicked, forgotten, sent) = json.loads(done.stdout)
-    assert running == [[["busy"], 25], [[], None]]      # мигает, но не залита
-    assert finished == [[["done"], 25], [[], None]]     # точка, цвет тот же
+    assert running == [[["busy"], 25, "T7"], [[], None, "2д"]]   # мигает, тикает, не залита
+    assert finished == [[["done"], 25, "2д"], [[], None, "2д"]]  # точка, возраст вернулся
     assert stored == ["a"]                              # переживёт F5
-    assert opened == [[["open"], 25], [[], None]]       # заливка, точка снята
-    assert watched == [[["open"], 25], [[], None]]      # смотрели сами — точки нет
+    assert opened == [[["open"], 25, "2д"], [[], None, "2д"]]    # заливка, точка снята
+    assert watched == [[["open"], 25, "2д"], [[], None, "2д"]]   # смотрели сами — точки нет
     # Готовность панели переезжает в строку: галочка, у упавшего прогона — кружок.
-    assert ready == [[["ok", "open"], 25], [[], None]]
-    assert failed == [[["bad", "open"], 25], [[], None]]
-    assert clicked == [[["open"], 25], [[], None]]      # клик по окну гасит и строку
-    assert forgotten == [[[], None], [[], None]]        # цвет забыт, карта не растёт
+    assert ready == [[["ok", "open"], 25, "2д"], [[], None, "2д"]]
+    assert failed == [[["bad", "open"], 25, "2д"], [[], None, "2д"]]
+    assert clicked == [[["open"], 25, "2д"], [[], None, "2д"]]   # клик по окну гасит и строку
+    assert forgotten == [[[], None, "2д"], [[], None, "2д"]]     # цвет забыт, карта не растёт
     # звонок ровно один: про закрытое окно, с названием сессии из строки списка
     assert sent == [["claude · ответ готов", "про сетку", "a"]]
 
@@ -650,9 +653,10 @@ console.log(JSON.stringify([got, worstSix, worst,
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_raising_a_pane_unzooms_the_full_screen_one(tmp_path):
-    """Окно во весь экран сворачивается, когда поднимают другое. Иначе оно оставалось
-    развёрнутым под новым, и поверх него ложились окна в клетках."""
+def test_raising_a_pane_takes_over_the_full_screen(tmp_path):
+    """Разворот переезжает на поднятое окно, а прежнее возвращается в свою клетку.
+    Развёрнута всегда ровно одна панель: стопку развёрнутых не видно, и сколько их под
+    верхним окном, узнать нечем."""
     body = slice_out("script").split("// --- raise:begin ---")[1].split("// --- raise:end ---")[0]
     js = tmp_path / "raise.js"
     js.write_text("""
@@ -686,9 +690,9 @@ console.log(JSON.stringify([after, [panes[0].w, panes[0].h, !!panes[0].prev]]));
     assert done.returncode == 0, done.stderr
     after, self_raise = json.loads(done.stdout)
 
-    assert after[0] == [7, 1, 6, 4, False]   # развёрнутое вернулось в свою клетку
-    assert after[1] == [1, 5, 6, 4, False]   # поднятое не тронуто
-    assert self_raise == [12, 8, True]       # своё касание разворот не снимает
+    assert after[0] == [7, 1, 6, 4, False]     # прежнее вернулось в свою клетку
+    assert after[1] == [1, 1, 12, 8, True]    # разворот забрало поднятое
+    assert self_raise == [12, 8, True]        # своё касание разворот не снимает
 
 
 def test_session_title_is_cut_with_an_ellipsis():
@@ -1087,9 +1091,13 @@ def test_finished_pane_is_veiled_in_the_colour_of_its_outcome():
     assert "#list button.ok, #list button.done:not(.open) { background:" not in css
     assert "#list button.ok .ago::after" in css
 
-    # Анимаций в файле не осталось ни одной: мигали и строка списка, и заголовок окна.
-    assert "animation" not in css
-    assert "prefers-reduced-motion" not in css.split("*/")[-1]
+    # Мигание исхода и занятости не вернулось: мигали и строка списка, и заголовок окна,
+    # и обе сразу. Единственная анимация в файле — бегущая штриховка внутри уже
+    # нарисованной заливки контекста, и она обязана выключаться по `prefers-reduced-motion`.
+    assert css.count("@keyframes") == 1 and "@keyframes ctxrun" in css
+    assert "animation:ctxrun" in css
+    assert "@media (prefers-reduced-motion: reduce)" in css
+    assert "animation:none" in css
 
     assert "inset 4px 0 0" not in css      # цветная рельса исхода снята
     assert "inset 3px 0 0" in css          # полоса «это окно открыто» осталась

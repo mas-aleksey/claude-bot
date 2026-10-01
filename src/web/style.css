@@ -66,7 +66,7 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #list { overflow:auto; flex:1; margin-top:8px }
 #list button, #tree button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
   border-bottom:1px solid #8882; background:none; color:inherit; font:inherit; cursor:pointer }
-#list button:hover, #tree button:hover { background:#8882 }
+#list button:hover, #tree button:hover { background-color:#8882 }
 /* Открытая сессия залита цветом своей панели ровно как её заголовок и теми же числами.
    Строка слева и заголовок наверху — одно и то же окно, разный цвет заливки развёл бы их
    по ощущению. Мигание из этой пары ушло в 2026-09-29 и осталось только в окне.
@@ -77,13 +77,28 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
    самым заметным пятном сайдбара: она спорила с зелёным кружком готовности, а строка с
    красноватым окном читалась как ошибка, хотя это просто тон её окна. Полоса опознаёт
    окно не хуже, а фон в списке теперь значит одно — «тут что-то произошло». */
-#list button.open { background:oklch(0.62 0.18 var(--hue,250) / .12);
+#list button.open { background-color:oklch(0.62 0.18 var(--hue,250) / .12);
   box-shadow:inset 3px 0 0 oklch(0.62 0.20 var(--hue,250)) }
-#list button.open:hover { background:oklch(0.62 0.18 var(--hue,250) / .22) }
+#list button.open:hover { background-color:oklch(0.62 0.18 var(--hue,250) / .22) }
 /* Занятая сессия подсвечена слабо. Сначала она мигала, потом горела в полную силу — и
    то и другое тянуло взгляд на себя, хотя «идёт прогон» смотрят в окне, где рядом таймер.
    В списке эта строка нужна лишь чтобы не искать, какая сессия работает. */
-#list button.busy { background:oklch(0.68 0.21 var(--hue,250) / .28) }
+#list button.busy { background-color:oklch(0.68 0.21 var(--hue,250) / .28) }
+/* Занятость контекста строки — та же заливка слева направо, что и в заголовке окна, и
+   из того же источника: `--ctx` ставит `markList` по доле, которую панель получила со
+   своим потоком событий. Поэтому полоска есть только у открытых строк — закрытой сессии
+   контекст пришлось бы считать чтением всего транскрипта, а это весь список на каждое
+   обновление.
+   Слоем поверх, а не градиентом по фону: градиент держался ровно до штриховки занятости.
+   Её нельзя обрезать по `--ctx` вторым слоем — `background-size` ужал бы вместе с краем
+   и сами полоски, а их шаг обязан быть один на все строки. Текст строки ради этого
+   завёрнут в `.tt`: голый текстовый узел не положить поверх слоя, позиционировать его
+   не за что. */
+#list button { position:relative }
+#list button > :not(.ctx) { position:relative }
+#list .ctx { position:absolute; inset:0 auto 0 0; width:var(--ctx,0); pointer-events:none;
+  background-color:color-mix(in oklch, CanvasText 12%, transparent) }
+#list button[data-full] .ctx { background-color:oklch(0.58 0.22 25 / .28) }
 /* «Ответ пришёл в закрытое окно» помечается тем же зелёным квадратом, что и законченный
    прогон в открытом: смысл один — «тут ответ, ты его не видел», — и двух знаков на него
    не нужно. Точка в цвет сессии стояла тут до 2026-09-27 и рядом с квадратом выглядела
@@ -231,8 +246,12 @@ header .dl:hover { opacity:1 }
 /* Цвет панели: рамка в полную силу, фон бледной заливкой. Заливка идёт градиентом
    поверх Canvas, а не цветом с альфой: панели перекрываются, и полупрозрачный фон
    просвечивал бы соседнюю. Градиент — верхний слой, Canvas — нижний непрозрачный. */
-section { position:relative; display:flex; flex-direction:column; overflow:hidden;
-  min-width:0; min-height:0; border-radius:6px;
+/* `isolation` замыкает слои окна внутри него. Без него `position:relative` со своим
+   `z-index:auto` контекста наложения не создаёт, и знак готовности (`z-index:5`) всплывал
+   в корневой слой — вровень с активным окном (`.act`, тоже 5). При равном z-index решает
+   порядок в DOM, и галочка нижнего окна ложилась поверх того, в котором работают. */
+section { position:relative; isolation:isolate; display:flex; flex-direction:column;
+  overflow:hidden; min-width:0; min-height:0; border-radius:6px;
   border:2px solid oklch(0.62 0.16 var(--hue,250) / .6);
   background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .12),
                              oklch(0.62 0.16 var(--hue,250) / .12)), Canvas;
@@ -328,13 +347,38 @@ header .timer { font-size:11px; opacity:.75; font-variant-numeric:tabular-nums; 
    Насыщенность умеренная: в заголовке лежит текст, и заливка в полную силу его утопит.
    `prefers-reduced-motion` после этого стало нечего обслуживать — блок снят. */
 section.busy header { background:oklch(0.68 0.21 var(--hue,250) / .70) }
-/* Занятый контекст — полоска в нижней кромке заголовка: места не занимает, а через всю
+/* Занятый контекст — заливка заголовка слева направо: места не занимает, а через всю
    сетку видно, какая панель подошла к пределу. Без чисел и подсказки: текст в узкой
-   панели вытеснил бы название сессии, а title на полоске в два пикселя недостижим —
-   имя сессии растянуто на всю ширину и перекрывает его своим, даже пустым. */
-header .ctx { position:absolute; left:0; bottom:0; height:2px; width:0;
-  background:oklch(0.62 0.18 var(--hue,250)) }
-header .ctx.full { background:#e55 }
+   панели вытеснил бы название сессии, а title тут недостижим — имя сессии растянуто на
+   всю ширину и перекрывает его своим, даже пустым.
+   Цвет нейтральный, а не тон панели: тон совпадает и с фоном заголовка, и с заливкой
+   занятости — полоска в нём растворялась, ради чего её с двух пикселей и растили.
+   12% — потолок по читаемости: заливка идёт под текстом заголовка, и плотнее она его
+   топит ровно так же, как топила заливка занятости в полную силу. */
+header .ctx { position:absolute; inset:0 auto 0 0; width:0;
+  background-color:color-mix(in oklch, CanvasText 12%, transparent) }
+header .ctx.full { background-color:oklch(0.58 0.22 25 / .28) }
+/* Идёт прогон — залитая часть штрихуется косыми полосами, бегущими слева направо. Это
+   единственная анимация в файле, и взята она обратно с оглядкой: мигание занятости сняли
+   2026-09-29 именно потому, что при нескольких открытых панелях от него уставали глаза.
+   Разница в том, что движется не весь заголовок, а узор внутри уже нарисованной заливки,
+   и плотность у него 6% — вдвое тише самой заливки. Под ним лежит имя сессии.
+   `135deg` даёт наклон вправо. Шаг тайла 16px и сдвиг ровно на тайл — узор замыкается
+   сам на себя, и шва на стыке периода не видно. */
+@keyframes ctxrun { to { background-position:16px 0 } }
+section.busy header .ctx, #list button.busy .ctx {
+  background-image:linear-gradient(135deg,
+    var(--stripe) 25%, transparent 25% 50%, var(--stripe) 50% 75%, transparent 75%);
+  --stripe:color-mix(in oklch, CanvasText 6%, transparent);
+  background-size:16px 16px; animation:ctxrun 1.2s linear infinite }
+/* Движение выключаем, а штриховку оставляем: «идёт прогон» она показывает и статично,
+   а снимать её целиком значило бы отнимать признак у того, кому движение противопоказано. */
+@media (prefers-reduced-motion: reduce) {
+  section.busy header .ctx, #list button.busy .ctx { animation:none }
+}
+/* Текст и кнопки — поверх заливки. `.ctx` позиционирован, остальные дети заголовка нет,
+   и на высоте в два пикселя это не мешало. Во всю высоту она накрыла бы имя сессии. */
+header > :not(.ctx) { position:relative }
 header button { padding:1px 6px; line-height:1.2 }
 /* Пальцем в кнопку высотой 21 пиксель не попасть — растим сами кнопки, заголовок
    поднимается следом. Признак — `pointer: coarse`, а не ширина экрана: на планшете в

@@ -79,6 +79,7 @@ const copy = async (text) => {
   try { await navigator.clipboard.writeText(text); return true; }
   catch (e) { return false; }
 };
+
 const esc = (s) => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const uid = () => (crypto.randomUUID ? crypto.randomUUID() : String(Math.random()).slice(2));
 
@@ -307,12 +308,16 @@ async function loadTree() {
 // Строка сессии. `data-project` на самой строке, а не в замыкании: те же строки рисует
 // поиск, а у него каждая может быть из своего проекта.
 const rowHTML = (s, project, withName) =>
-  `<button data-id="${s.id}" data-project="${esc(project)}" data-title="${esc(s.title)}">` +
+  `<button data-id="${s.id}" data-project="${esc(project)}" data-title="${esc(s.title)}"` +
+  ` data-ago="${esc(s.ago)}">` +
+  // Заливка контекста — слоем под текстом, поэтому и заголовок строки завёрнут в `.tt`:
+  // голый текстовый узел поверх слоя не положить, позиционировать его не за что.
+  `<i class=ctx></i>` +
   `<span class=meta>` +
     `<span class=rename title="переименовать">\u270e\ufe0e</span>` +
     `<span class=rm title="удалить сессию">\u2715</span>` +
     `<span class=ago>${esc(s.ago)}</span></span>` +
-  `${esc(s.title.length > 42 ? s.title.slice(0, 42) + '\u2026' : s.title)}` +
+  `<span class=tt>${esc(s.title.length > 42 ? s.title.slice(0, 42) + '\u2026' : s.title)}</span>` +
   (withName ? `<span class=pj>${esc(project.split('/').pop())}</span>` : '') +
   (s.snippet ? `<span class=snip>${esc(s.snippet)}</span>` : '') + '</button>';
 
@@ -423,8 +428,14 @@ function notifyClosed(session) {
 
 // Живые запуски сервер отдаёт целиком, с id сессии у каждого. Панели тут не при чём:
 // сопоставление с ними ничего не даёт, а мигать должна любая занятая сессия.
+// Сколько идёт прогон каждой занятой сессии. Та же секунда, что в таймере окна, и из
+// того же `st.runs` — отдельного источника у списка нет, а окно бывает закрыто.
+const runSecs = new Map();
+
 function trackRuns(runs) {
   const live = new Set(runs.map(r => r.session).filter(Boolean));
+  runSecs.clear();
+  for (const r of runs) if (r.session) runSecs.set(r.session, r.secs);
   for (const id of live) {
     done.delete(id);                       // снова работает — прошлый ответ уже неважен
     if (!(id in hues)) hues[id] = freeHue();
@@ -454,7 +465,20 @@ function markList() {
     const ready = !!el && el.classList.contains('ready');
     const bad = ready && el.classList.contains('bad');
     b.classList.toggle('open', !!p);
+    // Контекст показываем только у открытых: у закрытой сессии его взять неоткуда,
+    // кроме как перечитав её транскрипт, а полоска — не повод для такого прохода.
+    if (p?.ctx === undefined) { b.style.removeProperty('--ctx'); delete b.dataset.full; }
+    else {
+      b.style.setProperty('--ctx', (p.ctx * 100).toFixed(1) + '%');
+      if (p.ctx >= 0.9) b.dataset.full = '1'; else delete b.dataset.full;
+    }
     b.classList.toggle('busy', busySessions.has(id));
+    // Пока идёт прогон, на месте возраста тикает его время: место у правого края одно,
+    // и два числа подряд в узком сайдбаре не помещаются. Возраст занятой строки и так
+    // всегда «0с» — транскрипт пишется прямо сейчас. Исходное значение лежит в
+    // `data-ago`, иначе после прогона строка осталась бы с застывшим таймером.
+    const ago = b.querySelector('.ago');
+    if (ago) ago.textContent = runSecs.has(id) ? fmt(runSecs.get(id)) : b.dataset.ago;
     b.classList.toggle('done', done.has(id));
     b.classList.toggle('ok', ready && !bad);
     b.classList.toggle('bad', bad);
@@ -610,14 +634,22 @@ function drawZoom(p) {
 
 // --- raise:begin ---
 function raise(el) {
-  // Развёрнутое во весь экран окно сворачивается, когда поднимают другое. Иначе оно
-  // остаётся во всю область, а поверх него ложатся окна в клетках — каша, в которой
-  // непонятно, что развёрнуто и почему соседи выглядят обрезками. Само развёрнутое от
-  // касания не сворачивается: сравниваем элементы, а не панели.
+  // Разворот переезжает на поднятое окно, а не отменяется. Развёрнута всегда ровно одна
+  // панель — то, с чем работаешь сейчас: кликнул сессию в сайдбаре, она открылась во
+  // весь экран поверх прежней, а прежняя вернулась в свою клетку под ней. Стопку
+  // развёрнутых не держим: её не видно, и сколько их под верхним окном — не узнать.
+  // Само развёрнутое от касания не сворачивается: сравниваем элементы, а не панели.
+  // Свёрнутому в заголовок разворот не отдаём — эти состояния взаимоисключающие.
+  let moved = false;
   for (const x of panes) {
     if (!x.prev) continue;
     const other = document.getElementById('pane-' + x.pane);
-    if (other && other !== el) { zoom(x); save(); }
+    if (other && other !== el) { zoom(x); moved = true; }
+  }
+  if (moved) {
+    const to = panes.find(x => 'pane-' + x.pane === el.id);
+    if (to && !to.prev && !to.roll) zoom(to);
+    save();
   }
   document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
   el.classList.add('act');
@@ -716,7 +748,10 @@ function addPane(p) {
   // тут раньше, оставлял пустоты и всё равно кончался общей раскладкой на пятом окне.
   // Цена известна: расставленное руками новое окно сбрасывает. Восстановленные из
   // localStorage панели уже несут свои клетки и сюда не попадают.
-  if (!p.c) retile();
+  // Пока что-то развёрнуто, раскладывать нечего: новое окно сейчас заберёт разворот
+  // себе в `raise`, а `retile` стёр бы `prev` у всех и вернул сетку вместо полного
+  // экрана. Клетки новой панели раздаст `fit` — в них она и вернётся из разворота.
+  if (!p.c && !panes.some(x => x.prev)) retile();
   save();
   drawPane(p);
   markList();
@@ -1456,6 +1491,11 @@ function setCtx(p, ctx) {
   const share = Math.min(1, ctx.used / ctx.window);
   bar.style.width = (share * 100).toFixed(1) + '%';
   bar.classList.toggle('full', share >= 0.9);
+  // Доля живёт в панели — её же заливку повторяет строка списка. Источник один: сервер
+  // присылает контекст только тем сессиям, что открыты, и считать его закрытым значило
+  // бы читать транскрипты всего списка ради полоски, на которую никто не смотрит.
+  p.ctx = share;
+  markList();
 }
 
 // Лимиты подписки. Место — низ списка, а не шапка панели: лимит общий на аккаунт,
@@ -2125,7 +2165,14 @@ const term = $('term');
 const showTerm = (on) => {
   document.body.classList.toggle('term', on);
   localStorage.setItem('term', on ? '1' : '0');
-  if (on && !term.firstChild) term.innerHTML = '<iframe src="term/" title="терминал"></iframe>';
+  // Кадр создаём один раз и держим: пересоздание рвало бы websocket и мигало экраном.
+  // `prepend`, а не `innerHTML`, — кнопка копирования живёт в этом же блоке.
+  if (on && !term.querySelector('iframe')) {
+    const frame = document.createElement('iframe');
+    frame.src = 'term/';
+    frame.title = 'терминал';
+    term.prepend(frame);
+  }
 };
 term.style.setProperty('--th', (localStorage.getItem('termh') || Math.round(innerHeight * 0.4)) + 'px');
 if (localStorage.getItem('term') === '1') showTerm(true);

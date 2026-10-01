@@ -114,8 +114,20 @@ fi
 # without a second login; -b tells ttyd to build its own urls from that prefix. The shell
 # lives in a tmux session with a fixed name, which is what makes a page reload return the
 # same screen instead of a fresh shell. No binary — the panel simply has no terminal.
+#
+# macOptionClickForcesSelection is what makes text selectable at all on a Mac. tmux has
+# mouse mode on, so a drag is reported to tmux instead of selecting; xterm.js hands the
+# drag back to the browser only under a modifier, and its rule is platform-split:
+#
+#   shouldForceSelection(e) { return isMac ? e.altKey && <this option> : e.shiftKey }
+#
+# So Shift — the advice everyone repeats — does nothing on macOS, and Option does nothing
+# either until this flag is on. Without it the drag reaches tmux, tmux starts its own
+# selection, and it vanishes on mouse-up: "I can't select more than one word".
 if command -v ttyd >/dev/null 2>&1; then
-    ttyd -W -p 7681 -b /term -w /projects -d 3 tmux new -A -s web &
+    ttyd -W -p 7681 -b /term -w /projects -d 3 \
+        -t macOptionClickForcesSelection=true \
+        tmux new -A -s web &
 else
     echo "entrypoint: ttyd not found — web terminal not started" >&2
 fi
