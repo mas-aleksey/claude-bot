@@ -413,12 +413,33 @@ section.zoomed header .max::before { content:'\2921' }
   line-height:1; opacity:.75; background:oklch(0.62 0.18 var(--hue,250) / .35) }
 .down:hover { opacity:1; background:oklch(0.62 0.18 var(--hue,250) / .55) }
 .down[hidden] { display:none }
+/* Полоска сверху лога — чей это ход: промпт, уехавший за верхний край, остаётся здесь,
+   пока читаешь ответ на него. Две строки максимум: сам промпт бывает на пол-экрана, и
+   закреплённый целиком он не оставлял места ответу — ради чего полоску и завели.
+   Текст, а не копия пузыря: закреплять нечего, кроме «о чём речь».
+   `pointer-events:none` обязателен — полоска лежит поверх лога, и выделение текста под
+   ней не должно упираться в неё. */
+.pin { position:absolute; left:0; right:0; top:0; z-index:2; pointer-events:none;
+  padding:4px 14px; font-size:12px; opacity:.85; white-space:pre-wrap;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+  border-bottom:1px solid #8883;
+  background:linear-gradient(oklch(0.62 0.10 165 / .20), oklch(0.62 0.10 165 / .20)), Canvas }
+.pin[hidden] { display:none }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
 /* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
-   «где я говорил» первым делом. Полупрозрачный oklch читается и в тёмной теме, и в
-   светлой — страница живёт под color-scheme: dark light. */
+   «где я говорил» первым делом. Тон oklch читается и в тёмной теме, и в светлой —
+   страница живёт под color-scheme: dark light. */
 .user { background:oklch(0.62 0.10 165 / .20); padding:8px 10px; border-radius:6px }
+/* Отправленный, но ещё не дошедший до транскрипта промпт держится у нижнего края: пока
+   он ждёт очереди, видно, что именно отправлено, даже если лог отлистан вверх. Фон тут
+   непрозрачный — пузырь лежит поверх текста, и сквозь прежние .20 читались обе строки
+   разом. `bottom:-12px` закрывает отступ лога, иначе снизу оставалась полоска, в
+   которую было видно прокрутку.
+   Класс снимается вместе с узлом: `absorb` убирает локальную копию, когда тот же текст
+   приезжает из транскрипта на своё место. */
+.user.pending { position:sticky; bottom:-12px; z-index:1;
+  background:linear-gradient(oklch(0.62 0.10 165 / .20), oklch(0.62 0.10 165 / .20)), Canvas }
 .body p { margin:.5em 0 }
 .body > :first-child { margin-top:0 }
 .body > :last-child { margin-bottom:0 }

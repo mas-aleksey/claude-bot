@@ -1202,3 +1202,58 @@ console.log(JSON.stringify([
     js = slice_out("script")
     assert js.index("const saved = localStorage.getItem('front')") \
         < js.index("panes.forEach(p => { p.next = 0; drawPane(p); })")
+
+
+def test_prompts_stick_to_the_edges_of_the_log():
+    """Чей это ход — отдельной полоской сверху, а ждущий очереди промпт — у нижнего края.
+
+    Сам промпт закреплять нельзя: в логе он лежит полным текстом, бывает на пол-экрана,
+    и закреплённый целиком не оставлял места ответу. Обрезать его на месте тоже нельзя —
+    это меняет высоту строки в потоке и дёргает прокрутку.
+    """
+    css = slice_out("style")
+    pin = css.split(".pin { ", 1)[1].split("}", 1)[0]
+    assert "position:absolute" in pin and "top:0" in pin
+    assert "-webkit-line-clamp:2" in pin, "полоска обязана быть в две строки"
+    assert "pointer-events:none" in pin, "выделение текста под полоской не должно упираться в неё"
+
+    assert "position:sticky" not in css.split(".user { ", 1)[1].split("}", 1)[0], \
+        "сам промпт в потоке не закрепляем"
+    pending = css.split(".user.pending { ", 1)[1].split("}", 1)[0]
+    assert "position:sticky" in pending and "bottom:-12px" in pending
+    assert "Canvas" in pending, "закреплённому пузырю нужна непрозрачная подложка"
+
+    # Класс вешается на локальную копию промпта. Снимать его не нужно: `absorb` убирает
+    # весь узел, когда тот же текст приезжает из транскрипта на своё место.
+    assert '"msg user pending"' in slice_out("script")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_pin_shows_the_prompt_of_the_turn_being_read(tmp_path):
+    """В полоске — последний промпт, чей верх уже ушёл за край: ниже него идёт ответ,
+    который и читают. Промотал выше — встаёт предыдущий, выше всех — полоска прячется.
+    """
+    body = slice_out("script").split("// --- pin:begin ---")[1].split("// --- pin:end ---")[0]
+    js = tmp_path / "pin.js"
+    js.write_text("""
+const mk = (text, top) => ({ textContent: 'ты' + text,
+  querySelector: () => ({ textContent: 'ты' }),   // метка роли внутри пузыря
+  getBoundingClientRect: () => ({ top }) });
+const run = (tops) => {
+  const box = { getBoundingClientRect: () => ({ top: 100 }),
+                querySelectorAll: () => tops.map(([t, y]) => mk(t, y)) };
+  const pin = {};
+""" + body + """
+  showPin(box, pin);
+  return pin.hidden ? null : pin.textContent;
+};
+console.log(JSON.stringify([
+  run([['первый', 20], ['второй', 60], ['третий', 300]]),   // третий ещё ниже края
+  run([['первый', 20], ['второй', 300]]),                   // промотали выше
+  run([['первый', 300]]),                                   // всё ниже края
+]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+    assert json.loads(done.stdout) == ["второй", "первый", None]

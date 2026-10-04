@@ -186,6 +186,31 @@ const hints = new Map();
 // ниже по блоку накрывал бы обращение отсюда мёртвой зоной.
 const answers = new Map();
 
+// --- pin:begin ---
+// Полоска сверху лога: чей это ход. Промпт, уехавший за верхний край, остаётся здесь,
+// пока читаешь ответ на него, и сменяется предыдущим, когда проматываешь выше.
+//
+// Сам промпт `position:sticky` не делаем — так было сделано сначала, и длинный промпт,
+// закрепившись, занимал всё окно: он же не обрезан, в логе лежит полный текст. Обрезать
+// его на месте нельзя, это меняет высоту строки в потоке и дёргает прокрутку под рукой.
+// Поэтому закреплена отдельная строка поверх лога, а сам текст в потоке не трогаем.
+function showPin(box, pin) {
+  const top = box.getBoundingClientRect().top;
+  let cur = null;
+  // Последний промпт, чей верх уже выше края: ниже него идёт ответ, который и читают.
+  // Идём по всем — в длинном логе их десятки, не тысячи, и считаем только по прокрутке.
+  for (const b of box.querySelectorAll('.user')) {
+    if (b.getBoundingClientRect().top > top + 1) break;
+    cur = b;
+  }
+  // Метку роли («ты») снимаем по длине самой метки, а не по её тексту: он тут может
+  // смениться, а строка молча показывала бы его началом промпта.
+  const role = cur?.querySelector('.role')?.textContent.length || 0;
+  pin.textContent = cur ? cur.textContent.slice(role).trim() : '';
+  pin.hidden = !cur;
+}
+// --- pin:end ---
+
 // --- echo:begin ---
 // Сравниваем по схлопнутым пробелам: слеш-команда возвращается из транскрипта собранной
 // заново из `<command-name>` и `<command-args>`, и лишний пробел или перенос между
@@ -830,6 +855,7 @@ function drawPane(p) {
       <i class=ctx></i>
     </header>
     <div class=logbox>
+      <div class=pin hidden></div>
       <div class=log></div>
       <button class=down type=button hidden title="к последнему ответу">↓</button>
     </div>
@@ -882,7 +908,13 @@ function drawPane(p) {
   // Признак считаем на прокрутке, а не внутри наблюдателя: там размер уже новый, и
   // «был ли внизу» по нему не узнать. Допуск в atEnd — те самые «очень близко к низу».
   let stick = true;   // новое окно открывается у низа
-  box.onscroll = () => { if (box.clientHeight) { stick = atEnd(box); down.hidden = stick; } };
+  const pin = el.querySelector('.pin');
+  box.onscroll = () => {
+    if (!box.clientHeight) return;
+    stick = atEnd(box);
+    down.hidden = stick;
+    showPin(box, pin);
+  };
   // Свёрнутое окно прячет лог целиком (`display:none`), и размер обнуляется. Нулевую
   // высоту пропускаем в обе стороны, иначе сворачивание считалось бы уходом вверх и
   // разворот открывал бы начало истории.
@@ -1694,7 +1726,11 @@ async function send(p, ta) {
   // Пузырь печатаем до запроса: ответ на отправку ждёт id сессии до полутора минут, и
   // без него панель всё это время выглядела бы проглотившей промпт. Узлы кладём в запись
   // эха — снимет их `absorb`, когда тот же промпт приедет из транскрипта на своё место.
-  const line = log(p, `<div class="msg user"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
+  // Класс `pending` держит пузырь у нижнего края, пока промпт ждёт своей очереди: с ним
+  // видно, что именно отправлено, даже если лог отлистан вверх. Снимать его не нужно —
+  // `absorb` убирает весь узел, когда тот же промпт приезжает из транскрипта на своё
+  // место, и дальше он живёт обычной строкой лога.
+  const line = log(p, `<div class="msg user pending"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
   const echo = { text: norm(prompt), at: Date.now(), nodes: [line] };
   echoes.set(p.pane, [...(echoes.get(p.pane) || []), echo]);
   try {
@@ -1988,6 +2024,10 @@ function absorb(p, data) {
   // уехал даже у того, кто не трогал колесо.
   const down = document.querySelector('#pane-' + p.pane + ' .down');
   if (down) down.hidden = atEnd(box);
+  // Полоска «чей ход» живёт прокруткой, а вставка её не вызывает: лог вырос, и промпт
+  // над верхним краем мог смениться, пока строка показывает прежний.
+  const pin = document.querySelector('#pane-' + p.pane + ' .pin');
+  if (pin) showPin(box, pin);
 }
 
 // Сравниваем с последними ответами, а не со всей панелью: тот же текст мог быть в
