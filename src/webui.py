@@ -416,7 +416,7 @@ async def api_search(req: web.Request) -> web.Response:
     lists = await asyncio.gather(*(asyncio.to_thread(sessions.search, c, q, 20)
                                    for c in cwds))
     rows = [(age, sid, title, snip, cwd)
-            for cwd, found in zip(cwds, lists) for sid, title, age, snip in found]
+            for cwd, found in zip(cwds, lists, strict=True) for sid, title, age, snip in found]
     rows.sort()   # по возрасту: свежее сверху, как и в дереве
     return web.json_response([_row(sid, title, age, snippet=snip, project=cwd)
                               for age, sid, title, snip, cwd in rows[:20]])

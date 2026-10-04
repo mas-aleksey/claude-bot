@@ -692,6 +692,7 @@ const COLS = 12, ROWS = 8;
 const applyGeom = () => {};
 const drawZoom = () => {};
 const save = () => {};
+const rememberFront = () => {};   // запись в localStorage тут ни при чём, см. соседний тест
 function zoom(p) {
   if (p.prev) { Object.assign(p, p.prev); p.prev = null; }
   else { p.prev = { c: p.c, r: p.r, w: p.w, h: p.h }; p.c = p.r = 1; p.w = COLS; p.h = ROWS; }
@@ -826,13 +827,19 @@ const lim = { email: 'me@x.dev', plan: 'max 5x', at: NOW / 1000,
                      { name: 'неделя', percent: 95, resets: NOW + 3 * 3600e3 },
                      { name: 'месяц', percent: 100, resets: NOW - 3600e3 }] };
 const alive = { ok: true, fresh: true, renewable: true, until: (NOW + 4 * DAY) / 1000 };
-const soon = { ok: true, fresh: true, renewable: true, until: (NOW + DAY) / 1000 };
+// Двое суток — спокойное состояние с 2026-10-02: прогон продлевает только доступ, и
+// жёлтое двое суток подряд перестаёт читаться как срочное.
+const far = { ok: true, fresh: true, renewable: true, until: (NOW + 2 * DAY) / 1000 };
+// Порог жёлтого — сутки. Берём половину, чтобы проверка не зависела от того, сколько
+// миллисекунд прошло между построением фикстуры и сравнением с `Date.now()`.
+const soon = { ok: true, fresh: true, renewable: true, until: (NOW + DAY / 2) / 1000 };
 const dead = { ok: true, fresh: false, renewable: false, until: null };
 const none = { ok: false, fresh: false, renewable: false };
 
 console.log(JSON.stringify({
   alive: draw(lim, alive),
   soon: draw(lim, soon),
+  far: draw(lim, far),
   dead: draw(lim, dead),
   none: draw(lim, none),
   nolim: draw(null, alive),
@@ -858,8 +865,12 @@ console.log(JSON.stringify({
     assert got["alive"]["bars"][2] == ["сброс уже прошёл, цифры сейчас обновятся",
                                        "месяц", "100%"]
     # Ключ: состояние словами, срок в подсказке, кнопка только когда она нужна.
-    assert got["alive"]["key"] == ["", "рефреш через 4д 0ч", "ключ активен", False]
-    assert got["soon"]["key"] == ["warn", "рефреш через 1д 0ч", "ключ скоро кончится", True]
+    assert got["alive"]["key"] == ["", "новый вход понадобится через 4д 0ч", "ключ активен", False]
+    assert got["soon"]["key"] == ["warn", "новый вход понадобится через 12ч 0м",
+                                  "ключ скоро кончится", True]
+    # Двое суток — ещё спокойное: порог опущен до суток 2026-10-02, потому что прогон
+    # продлевает только доступ, а жёлтое двое суток подряд перестаёт читаться как срочное.
+    assert got["far"]["key"] == ["", "новый вход понадобится через 2д 0ч", "ключ активен", False]
     assert got["dead"]["key"] == ["hot", "обновить ключ нечем — нужен новый вход",
                                   "нужен вход", True]
     assert got["none"]["key"][0::2] == ["hot", "не авторизован"]
@@ -1156,3 +1167,38 @@ def test_context_fill_does_not_eat_clicks():
     for sel in ("header .ctx {", "#list .ctx {"):
         rule = css.split(sel, 1)[1].split("}", 1)[0]
         assert "pointer-events:none" in rule, f"{sel} ловит клики"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_front_pane_survives_a_reload(tmp_path):
+    """После F5 впереди то же окно, что было поднято до неё.
+
+    `act` держит слой, но живёт только в DOM: раньше передним назначалось `panes[0]`,
+    то есть последнее открытое — новые окна кладутся `unshift`. Поднял окно постарше,
+    перезагрузил — вперёд выходило чужое.
+    """
+    body = slice_out("script").split("// --- front:begin ---")[1].split("// --- front:end ---")[0]
+    js = tmp_path / "front.js"
+    js.write_text("""
+const localStorage = { setItem: () => {} };
+""" + body + """
+const list = [{ pane: 'new' }, { pane: 'old' }, { pane: 'big', prev: { c: 1 } }];
+console.log(JSON.stringify([
+  frontPane(list, 'old').pane,      // запомненное окно
+  frontPane(list, 'gone').pane,     // его закрыли — остаётся развёрнутое
+  frontPane(list, null).pane,       // ключа нет вовсе
+  frontPane([{ pane: 'one' }], 'gone').pane,   // развёрнутых нет — первое в списке
+  frontPane([], 'gone'),            // окон нет вовсе
+]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+
+    assert json.loads(done.stdout) == ["old", "big", "big", "one", None]
+
+    # Ключ обязан читаться до отрисовки: `drawPane` поднимает каждое окно и каждым
+    # подъёмом перезаписывает `front` собой. Прочитанный после цикла, он указывал на
+    # последнее нарисованное окно — и разворот после F5 доставался чужому.
+    js = slice_out("script")
+    assert js.index("const saved = localStorage.getItem('front')") \
+        < js.index("panes.forEach(p => { p.next = 0; drawPane(p); })")

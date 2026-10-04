@@ -29,6 +29,9 @@ let dead = false;
 // признак. Серии ждать незачем: html вместо json — это точно вход, а не помеха связи.
 // Заголовок вкладки приходит из шаблона со стороны сервера — это имя инстанса. Держим
 // его здесь, чтобы плашка обрыва могла вернуть имя на место.
+// Порог «контекст на исходе»: заливка краснеет, и в окне, и в строке списка. 80% —
+// чтобы успеть закончить мысль или сжать сессию, а не узнать об этом на пределе.
+const CTX_FULL = 0.8;
 const TITLE = document.title;
 
 const payload = (r) => {
@@ -483,7 +486,7 @@ function markList() {
     if (p?.ctx === undefined) { b.style.removeProperty('--ctx'); delete b.dataset.full; }
     else {
       b.style.setProperty('--ctx', (p.ctx * 100).toFixed(1) + '%');
-      if (p.ctx >= 0.9) b.dataset.full = '1'; else delete b.dataset.full;
+      if (p.ctx >= CTX_FULL) b.dataset.full = '1'; else delete b.dataset.full;
     }
     b.classList.toggle('busy', busySessions.has(id));
     // Пока идёт прогон, на месте возраста тикает его время: место у правого края одно,
@@ -655,6 +658,19 @@ function drawZoom(p) {
   btn.title = p.prev ? 'вернуть прежний размер' : 'во весь экран';
 }
 
+// --- front:begin ---
+// Какое окно впереди — переживает F5. Класс `act` даёт слой поверх соседей, но живёт
+// только в DOM: после перезагрузки его не оставалось ни у кого, и передним назначалось
+// `panes[0]`, то есть последнее открытое (новое окно кладётся `unshift`). Поднял мышью
+// окно постарше, нажал F5 — вперёд выходило чужое.
+const rememberFront = (pane) => localStorage.setItem('front', pane || '');
+// Фолбэки по убыванию: запомненное окно, развёрнутое, первое в списке. Запомненное
+// могли закрыть, а ключа может не быть вовсе — оба случая обычные, не ошибка.
+function frontPane(list, saved) {
+  return list.find(x => x.pane === saved) || list.find(x => x.prev) || list[0] || null;
+}
+// --- front:end ---
+
 // --- raise:begin ---
 function raise(el) {
   // Разворот переезжает на поднятое окно, а не отменяется. Развёрнута всегда ровно одна
@@ -676,6 +692,7 @@ function raise(el) {
   }
   document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
   el.classList.add('act');
+  rememberFront(panes.find(x => 'pane-' + x.pane === el.id)?.pane);
   // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
   // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
   el.classList.remove('ready', 'bad');
@@ -1513,7 +1530,7 @@ function setCtx(p, ctx) {
   if (!bar || !ctx) return;
   const share = Math.min(1, ctx.used / ctx.window);
   bar.style.width = (share * 100).toFixed(1) + '%';
-  bar.classList.toggle('full', share >= 0.9);
+  bar.classList.toggle('full', share >= CTX_FULL);
   // Доля живёт в панели — её же заливку повторяет строка списка. Источник один: сервер
   // присылает контекст только тем сессиям, что открыты, и считать его закрытым значило
   // бы читать транскрипты всего списка ради полоски, на которую никто не смотрит.
@@ -2272,12 +2289,16 @@ loadTree().then(() => {
   // Оттенки панелей из localStorage: раздаём отсутствующие и разводим совпавшие.
   spreadHues();
   save();
+  // Ключ читаем до отрисовки, а не в строке ниже: `drawPane` поднимает каждое окно
+  // («новое окно — сверху»), и каждый такой подъём перезаписывает `front` собой. К концу
+  // цикла там лежало последнее нарисованное окно, а не то, что подняли до F5.
+  const saved = localStorage.getItem('front');
   panes.forEach(p => { p.next = 0; drawPane(p); });
-  // Кто впереди после F5. `act` держит z-index, и достаётся он последнему нарисованному,
-  // то есть последнему в массиве — а там с переходом на `unshift` лежит самое старое
-  // окно. Развёрнутое при этом уезжало за спину соседей: своего z-index у него нет,
-  // на весь экран его растягивает геометрия, а не слой.
-  const front = panes.find(x => x.prev) || panes[0];
+  // Кто впереди после F5 — то же окно, что было поднято до неё. `act` держит z-index,
+  // но живёт только в DOM, поэтому поднятое запоминается отдельно (`front` выше).
+  // Развёрнутое за время цикла успело переехать на последнее нарисованное окно: подъём
+  // забирает разворот себе. Этот `raise` возвращает его назад — вместе со слоем.
+  const front = frontPane(panes, saved);
   if (front) raise(document.getElementById('pane-' + front.pane));
   tick();
 });
