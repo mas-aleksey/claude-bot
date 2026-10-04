@@ -1257,3 +1257,38 @@ console.log(JSON.stringify([
     assert done.returncode == 0, done.stderr
 
     assert json.loads(done.stdout) == ["второй", "первый", None]
+
+
+def test_zoomed_pane_on_a_phone_stays_in_the_flow():
+    """На телефоне развёрнутое окно занимает всю область окон рядом, а не выходит из потока.
+
+    `position:fixed; inset:0` стояло тут до 2026-10-04 и переживало только до
+    перезагрузки: Safari на iOS считает `fixed` внутри прокручиваемого `#panes` по
+    самому `#panes`, и после F5 окно получалось ростом со свою прежнюю клетку —
+    состояние целое, а на вид разворот пропал.
+    """
+    phone = slice_out("style").split("@media (max-width: 700px) {", 1)[1]
+    rule = phone.split("section.zoomed { ", 1)[1].split("}", 1)[0]
+    assert "position:fixed" not in rule, "из потока окно выводить нельзя — см. выше"
+    # Высота от экрана, а не от содержимого: при `auto` ряд рос по логу, и окно
+    # становилось выше экрана телефона — прокручивалась вся страница вместо лога.
+    assert "height:100dvh" in rule and "height:auto" not in rule
+
+    box = phone.split("#panes:has(> section.zoomed) { ", 1)[1].split("}", 1)[0]
+    assert "overflow:hidden" in box, "прокручивать нечего — окно ровно в экран"
+
+    # Прежний `fixed` накрывал и полоску терминала. Без этого «во весь экран» на телефоне
+    # перестало бы быть во весь экран.
+    assert "body:has(#panes > section.zoomed) #term { display:none }" in phone
+
+
+def test_page_is_exactly_as_tall_as_the_visible_screen():
+    """Страница ростом в видимую часть экрана, иначе ей есть куда прокручиваться.
+
+    `100vh` на iOS больше видимой высоты на съезжающие панели Safari. Клавиатура
+    прокручивала страницу к полю ввода и, спрятавшись, оставляла её там — окно
+    выглядело уехавшим вверх.
+    """
+    css = slice_out("style")
+    rule = css.split("body { margin:0", 1)[1].split("}", 1)[0]
+    assert "height:100dvh" in rule and "overflow:hidden" in rule
