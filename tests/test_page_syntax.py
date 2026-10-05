@@ -1183,11 +1183,16 @@ console.log(JSON.stringify([
 
 
 def test_prompts_stick_to_the_edges_of_the_log():
-    """Чей это ход — отдельной полоской сверху, а ждущий очереди промпт — у нижнего края.
+    """Чей это ход — полоской поверх лога сверху, а ждущие очереди — полосой под ним.
 
     Сам промпт закреплять нельзя: в логе он лежит полным текстом, бывает на пол-экрана,
     и закреплённый целиком не оставлял места ответу. Обрезать его на месте тоже нельзя —
     это меняет высоту строки в потоке и дёргает прокрутку.
+
+    Очередь — наоборот, не поверх лога, а под ним, обычным блоком в колонке окна. Внутри
+    лога её приходилось делать липкой и возвращать в конец на каждом тике (ответы
+    дописываются после неё) — она скакала и ломала группировку инструментов; поверх лога
+    она закрывала последние строки и спорила с кнопкой «вниз» за тот же край.
     """
     css = slice_out("style")
     # Обе полоски — одно и то же по смыслу, поэтому вид у них общий и лежит в одном
@@ -1203,18 +1208,17 @@ def test_prompts_stick_to_the_edges_of_the_log():
 
     assert "position:sticky" not in css.split(".user { ", 1)[1].split("}", 1)[0], \
         "сам промпт в потоке не закрепляем"
-    # Липкий блок, а не каждая полоска: у липких соседей одно смещение, и прижатые к
-    # низу они совпадают — видно только последнюю, то есть не ту, что пойдёт следующей.
+    # Блок очереди в потоке: ни липкий, ни абсолютный, ни со своим слоем. Всё это он уже
+    # пробовал, и каждый раз спорил с логом за один и тот же нижний край.
     queue = css.split(".queue { ", 1)[1].split("}", 1)[0]
-    assert "position:sticky" in queue and "bottom:-12px" in queue
-    assert "position:sticky" not in css.split(".user.pending { ", 1)[1].split("}", 1)[0]
-    # Кнопка «вниз» живёт у того же нижнего края и обязана быть выше блока: иначе
-    # промпт, отправленный во время прогона, накрывает её целиком.
-    down = css.split(".down { ", 1)[1].split("}", 1)[0]
-    assert int(re.search(r"z-index:(\d+)", down)[1]) > \
-           int(re.search(r"z-index:(\d+)", queue)[1])
-    # Нижний блок кликабелен: в ждущем промпте бывают ссылки. Верхняя полоска — справка.
-    assert "pointer-events" not in queue
+    for bad in ("position:", "z-index", "bottom:"):
+        assert bad not in queue, f"блок очереди в потоке, {bad} ему не нужен"
+    # Он сосед лога, а не его содержимое: внутри `.log` ответы дописываются после него.
+    script = slice_out("script")
+    assert "</div>\n    <div class=queue hidden></div>\n    <form>" in script
+    # Кнопка «вниз» остаётся в логе и ни с чем не пересекается — свой слой ей больше не
+    # нужен, но и мешать он не может: блок очереди теперь вне её родителя.
+    assert "position:absolute" in css.split(".down { ", 1)[1].split("}", 1)[0]
     assert ".user.pending .role { display:none }" in css, "подписи на полоске нет"
 
     # Тот же класс и у локальной копии, и у строк блока очереди: выглядят они одинаково,
@@ -1298,36 +1302,52 @@ def test_queue_block_follows_the_server_list(tmp_path):
     js = tmp_path / "queue.js"
     js.write_text("""
 const esc = (s) => s, linkify = (s) => s;
-const node = (cls) => ({ className: cls, dataset: {}, innerHTML: '',
-  remove() { box.kids = box.kids.filter(x => x !== this); } });
-const box = { kids: [],
-  querySelector: () => box.kids.find(k => k.className === 'queue') ?? null,
-  append(n) { box.kids = box.kids.filter(x => x !== n); box.kids.push(n); },
-  get lastElementChild() { return box.kids[box.kids.length - 1] ?? null; } };
-const document = { querySelector: () => box, createElement: () => node('') };
+const q = { hidden: false, dataset: {}, innerHTML: '' };
+const document = { querySelector: () => q };
 const p = { pane: 'x' };
 const seen = [];
-const shot = () => seen.push(box.kids.map(k => k.className + ':' + k.innerHTML));
+const shot = () => seen.push([q.hidden, q.innerHTML]);
 """ + body + """
-drawQueue(p, []);                       shot();   // пусто — блока нет
-drawQueue(p, ['раз']);                  shot();
-const first = box.kids[0];
-drawQueue(p, ['раз']);                              // тот же состав — не пересобираем
-const same = box.kids[0] === first && box.kids[0].dataset.j === JSON.stringify(['раз']);
-drawQueue(p, ['раз', 'два']);           shot();
-box.append(node('msg'));                            // в лог дописали ответ
-drawQueue(p, ['раз', 'два']);           shot();      // блок возвращается в конец
-drawQueue(p, []);                       shot();   // очередь ушла — блок снят
-console.log(JSON.stringify([seen, same]));
+drawQueue(p, []);                shot();   // пусто — блок спрятан
+drawQueue(p, ['раз']);           shot();
+const was = q.innerHTML;
+q.innerHTML = 'ТРОНУЛИ';                   // тот же состав — не пересобираем
+drawQueue(p, ['раз']);
+const kept = q.innerHTML === 'ТРОНУЛИ';
+q.innerHTML = was;
+drawQueue(p, ['раз', 'два']);    shot();
+drawQueue(p, []);                shot();   // очередь ушла — блок спрятан и пуст
+console.log(JSON.stringify([seen, kept]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    seen, same = json.loads(done.stdout)
+    seen, kept = json.loads(done.stdout)
 
     strip = '<div class="msg user pending">%s</div>'
-    assert seen[0] == []                                  # пустая очередь блока не рисует
-    assert seen[1] == ["queue:" + strip % "раз"]
-    assert same, "тот же состав не должен пересобирать узлы — внутри выделяют текст"
-    assert seen[2] == ["queue:" + (strip % "раз") + (strip % "два")]   # порядок исполнения
-    assert seen[3] == ["msg:", "queue:" + (strip % "раз") + (strip % "два")]
-    assert seen[4] == ["msg:"]                            # очередь кончилась — блока нет
+    assert seen[0] == [True, ""]                          # пустая очередь — блок спрятан
+    assert seen[1] == [False, strip % "раз"]
+    assert kept, "тот же состав не должен пересобирать узлы — внутри выделяют текст"
+    assert seen[2] == [False, (strip % "раз") + (strip % "два")]   # порядок исполнения
+    assert seen[3] == [True, ""]                          # очередь ушла — блок пуст и скрыт
+
+
+def test_style_comments_do_not_leak_prose_into_rules():
+    """Комментарий, закрывшийся раньше текста, уносит с собой следующее правило.
+
+    Так пропала кнопка «вниз» (2026-10-05): четыре строки пояснения оказались снаружи
+    `*/`, браузер прочитал их как селектор и съел весь блок `.down` — кнопка потеряла
+    `position:absolute` и уехала во флексбоксе вбок, а лог поделил с ней ширину.
+    Ни `node --check`, ни тесты этого не видели: CSS никто не разбирал.
+
+    Проверяем два следствия разом — баланс комментариев и отсутствие прозы в селекторах.
+    Кириллица в заголовке правила бывает только одним способом: текст вытек наружу.
+    """
+    css = slice_out("style")
+    assert "/*" in css and css.count("/*") == css.count("*/"), "комментарии не сошлись"
+
+    naked = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    assert "*/" not in naked and "/*" not in naked, "комментарий закрыт не там, где открыт"
+
+    for chunk in naked.split("}"):
+        head = chunk.rsplit("{", 1)[0] if "{" in chunk else chunk
+        assert not re.search(r"[а-яА-ЯёЁ]", head), f"проза в селекторе: {head.strip()[:80]}"
