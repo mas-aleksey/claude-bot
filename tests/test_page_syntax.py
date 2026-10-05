@@ -879,10 +879,9 @@ console.log(JSON.stringify({
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_hint_comes_from_the_answer(tmp_path):
-    """Следующий промпт claude называет сам, в «ёлочках» последней строки — так требует
-    стиль ответа. Оттуда подсказка и берётся, без вызова модели. Tab кладёт её в поле,
-    отправку оставляет за Enter, а живёт она до самой отправки."""
+def test_hint_is_taken_by_tab_and_survives_a_draft(tmp_path):
+    """Подсказку присылает бот (`st.suggest`), а поле только показывает её серым.
+    Tab кладёт её в поле, отправку оставляет за Enter, а живёт она до самой отправки."""
     body = slice_out("script").split("// --- slash:begin ---")[1].split("// --- slash:end ---")[0]
     js = tmp_path / "hint.js"
     js.write_text("""
@@ -907,19 +906,6 @@ const put = (text) => { ta.value = text; ta.selectionStart = ta.selectionEnd = t
 const p = { pane: 'p1', project: '/projects/rp' };
 wireSlash(p, el, ta);
 const out = {};
-
-// Обычный ответ: действие последней строкой, формулировка дословно.
-out.plain = fromAnswer('Собрано, контейнер пересоздастся.\\n\\nСкажи «собери» — соберу образ.');
-// Цитаты в начале ответа не в счёт: берём ту, что в хвосте.
-out.tail = fromAnswer('Имя «claude-bot» это тег.\\nТут про «сети».\\nПусто.\\nПусто.\\n' +
-                      'Скажи «раскатай на песочницы», и соберу оба.');
-// Две в одной строке — берём последнюю, она и есть промпт.
-out.two = fromAnswer('Вместо «wip» напиши «sync-repo».');
-out.none = fromAnswer('Готово, ничего не нужно.');
-out.empty = fromAnswer('');
-out.missing = fromAnswer(undefined);
-// Кавычка на пол-ответа промптом не бывает: потолок 200 символов.
-out.huge = fromAnswer('скажи «' + 'я'.repeat(201) + '»');
 
 // Tab на пустом поле подставляет подсказку. Отправки нет, подсказка живёт дальше.
 hints.set('p1', 'собери');
@@ -982,12 +968,6 @@ console.log(JSON.stringify(out));
     assert done.returncode == 0, done.stderr
     out = json.loads(done.stdout)
 
-    assert out["plain"] == "собери"
-    assert out["tail"] == "раскатай на песочницы"      # цитаты из начала ответа не взяты
-    assert out["two"] == "sync-repo"                   # в строке две — промпт последняя
-    assert [out["none"], out["empty"], out["missing"]] == [None, None, None]
-    assert out["huge"] is None                         # длинную кавычку не берём
-
     assert out["grey"] == "собери"                     # серым в пустом поле
     assert out["filled"] == ["собери", "собери", 0]    # подставлено, не отправлено
     assert out["draft"] == "черновик"                  # набранное Tab не трогает
@@ -1012,18 +992,16 @@ def test_hint_runs_after_the_pane_is_marked_free():
 
     Всё, что в цикле панелей стоит до них, при исключении оставляет окно навсегда
     занятым: кнопка «стоп» нажата, отправка погашена, в консоли пусто. Так и было
-    2026-09-29 — имя `answers` звалось `said`, одноимённый `const` ниже по блоку накрывал
-    обращение мёртвой зоной, и ReferenceError вешал панель после каждого прогона.
+    2026-09-29, когда подсказку доставали из ответа и обращение попадало в мёртвую зону.
     """
     js = slice_out("script")
     free = js.index("classList.toggle('busy', busy)")
-    hint = js.index("fromAnswer(answers.get(p.pane))")
+    hint = js.index("(st.suggest || {})[scope]")
     assert free < hint, "подсказка не должна стоять до снятия занятости"
 
-    # Имя хранилища ответов не должно объявляться второй раз: внутри цикла панелей это
-    # и создало мёртвую зону. Проверяем по всему скрипту, а не по одному блоку.
-    assert js.count("const answers") == 1
-    assert "answers" not in js.split("const answers")[0]
+    # Ставится на каждом тике, а не на переходе «занята → свободна»: после F5 перехода
+    # не случится, а подсказка у бота уже есть.
+    assert "wasBusy" not in js, "переход для подсказки больше не нужен"
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")

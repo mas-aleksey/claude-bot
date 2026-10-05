@@ -463,6 +463,7 @@ async def api_status(_: web.Request) -> web.Response:
     return web.json_response({"runs": runner.active(), "errors": _errors,
                               "local": _local, "stats": _stats,
                               "queued": runner.waiting(),
+                              "suggest": runner.suggestions(),
                               "auth": runner.auth(),
                               "limits": await runner.limits(),
                               "model": await runner.resolve_model(

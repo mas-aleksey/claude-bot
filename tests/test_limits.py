@@ -346,3 +346,38 @@ async def test_limits_ttl_follows_the_load(monkeypatch):
     monkeypatch.setattr(runner, "_limits", (age, fresh))
     await runner.limits()
     assert calls == 1, "под прогоном тот же кеш уже протух"
+
+
+def test_suggestion_lives_in_the_base_and_dies_with_the_next_prompt(tmp_path, monkeypatch):
+    """Подсказку следующего промпта присылает CLI событием `prompt_suggestion`.
+
+    Держим её в базе по скоупу, а не в памяти процесса: панель читает её статусом, и так
+    она переживает и перезагрузку страницы, и рестарт бота — а тот случается по десять
+    раз на дню. Снимается она при новом прогоне в том же скоупе: подсказка прошлого хода
+    больше не про то, что сейчас происходит.
+    """
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store._local, "conn", None, raising=False)
+
+    runner.suggest("web:1", "раскатай на песочницы")
+    runner.suggest("tg:42", "запушь")
+    assert runner.suggestions() == {"web:1": "раскатай на песочницы", "tg:42": "запушь"}
+
+    # Новый прогон в скоупе стирает ключ, соседний скоуп не трогает.
+    runner.suggest("web:1", None)
+    assert runner.suggestions() == {"tg:42": "запушь"}
+
+    # Пустую строку CLI отдать может, показывать её нечего — ключа быть не должно.
+    runner.suggest("tg:42", None)
+    assert runner.suggestions() == {}
+
+    # Протухшая подсказка не показывается и стирается на том же проходе. Иначе ключи
+    # копились бы по одному на каждое когда-либо открытое окно: закрытие окна случается
+    # в браузере, и сказать об этом боту некому.
+    runner.suggest("web:2", "давно забытое")
+    old_at = json.loads(store.get("suggest:web:2"))
+    old_at["at"] -= runner.SUGGEST_TTL + 1
+    store.put("suggest:web:2", json.dumps(old_at))
+
+    assert runner.suggestions() == {}
+    assert store.get("suggest:web:2") is None, "протухший ключ обязан исчезнуть"

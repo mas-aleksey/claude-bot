@@ -260,6 +260,42 @@ class Drain:
         self.awaited = False
 
 
+SUGGEST_KEY = "suggest:"
+# Сколько живёт подсказка. Скоуп панели — это её `pane`, новый на каждое открытое окно,
+# и закрытие окна происходит в браузере: сказать об этом боту некому. Без срока ключи
+# копились бы по одному на каждое когда-либо открытое окно и уезжали бы в статус все
+# разом, каждые три секунды. Сутки — потому что подсказка старше суток уже не про то,
+# что человек собирался сделать.
+SUGGEST_TTL = 86400
+
+
+def suggest(scope: str, text: str | None) -> None:
+    """Запомнить или забыть подсказку скоупа. `None` стирает ключ."""
+    store.put(f"{SUGGEST_KEY}{scope}",
+              json.dumps({"at": time.time(), "text": text}) if text else None)
+
+
+def suggestions() -> dict[str, str]:
+    """Подсказки по скоупам — панели, чтобы показать их серым после перезагрузки.
+
+    Протухшие стираем здесь же: другого места, где по ним проходят, нет, а ходят сюда
+    раз в три секунды на каждую открытую вкладку.
+    """
+    rows = store.conn().execute(
+        "SELECT key, value FROM state WHERE key LIKE ?", (SUGGEST_KEY + "%",)).fetchall()
+    live, now = {}, time.time()
+    for key, value in rows:
+        try:
+            saved = json.loads(value or "")
+        except ValueError:
+            saved = {}
+        if saved.get("text") and now - saved.get("at", 0) < SUGGEST_TTL:
+            live[key[len(SUGGEST_KEY):]] = saved["text"]
+        else:
+            store.put(key, None)
+    return live
+
+
 def busy(scope: str) -> bool:
     entry = _runs.get(scope)
     return entry is not None and entry[0].returncode is None
@@ -402,7 +438,12 @@ async def run(
     # Промпт уходит в stdin, а не в argv: см. `Drain` — только в этом режиме процесс
     # переживает конец хода и доносит фоновые задачи до конца.
     argv = [*BASE, "-p", "--input-format", "stream-json",
-            "--output-format", "stream-json", "--verbose"]
+            "--output-format", "stream-json", "--verbose",
+            # Следующий промпт предсказывает сам CLI отдельным запросом после хода:
+            # событие `prompt_suggestion`, 2–12 слов, в транскрипт не попадает.
+            # Запрос идёт по тёплому кэшу и подавляется самим CLI, если некэшированный
+            # хвост хода больше 10k токенов, — платить прогревом ради строки незачем.
+            "--prompt-suggestions"]
     if session_id:
         argv += ["--resume", session_id]
     if model:
@@ -425,6 +466,8 @@ async def run(
         limit=16 * 1024 * 1024,
     )
     _runs[scope] = (proc, time.monotonic(), session_id)
+    # Подсказка прошлого хода больше не про то, что сейчас происходит.
+    suggest(scope, None)
     proc.stdin.write(json.dumps(
         {"type": "user", "message": {"role": "user", "content": prompt}}).encode() + b"\n")
     await proc.stdin.drain()
@@ -462,6 +505,11 @@ async def run(
                 for name, info in (ev.get("modelUsage") or {}).items():
                     if window := info.get("contextWindow"):
                         store.put(f"ctxwin:{name}", str(window))
+            # Предсказанный следующий промпт. В базу, а не в память процесса: панель
+            # читает его из `/api/status`, и так он переживает и F5, и рестарт бота —
+            # а тот случается по десять раз на дню.
+            if ev.get("type") == "prompt_suggestion":
+                suggest(scope, (ev.get("suggestion") or "").strip() or None)
             # Закрываем до `yield`: вызывающий рисует ответ в Telegram, а процесс
             # столько ждать не должен.
             drain.feed(ev)

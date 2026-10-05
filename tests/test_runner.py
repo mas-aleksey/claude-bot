@@ -4,6 +4,7 @@ import json
 import pytest
 
 import runner
+import store
 
 
 @pytest.fixture
@@ -308,3 +309,40 @@ async def test_resolve_model_matches_a_catalog_row(monkeypatch):
     assert (await runner.resolve_model("opus"))["id"] == "claude-opus-5"   # алиас — свежая
     # Семейства нет: отдаём как есть, панель покажет сырую строку отдельным пунктом.
     assert await runner.resolve_model("default") == {"id": "default", "name": "default"}
+
+
+async def test_run_asks_for_a_prompt_suggestion_and_keeps_it(monkeypatch, tmp_path):
+    """Подсказка следующего промпта приезжает отдельным событием и ложится в базу.
+
+    В транскрипт CLI её не пишет, поэтому панель взять её оттуда не может — ключ по
+    скоупу и есть единственное место, где она живёт. Прошлая подсказка снимается в
+    момент запуска: она была про предыдущий ход.
+    """
+    monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
+    monkeypatch.setattr(store._local, "conn", None, raising=False)
+    runner.suggest("s", "подсказка прошлого хода")
+
+    proc = _Proc([json.dumps(e).encode() + b"\n" for e in (
+        {"type": "system", "subtype": "init"},
+        {"type": "prompt_suggestion", "suggestion": "раскатай на песочницы"},
+        {"type": "result"},
+    )])
+    seen = {}
+
+    async def fake_exec(*argv, **kw):
+        seen["argv"] = argv
+        return proc
+
+    monkeypatch.setattr(runner.asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(runner, "trust", lambda cwd: None)
+    monkeypatch.setattr(runner, "_runs", {})
+
+    gen = runner.run("промпт", str(tmp_path), scope="s")
+    await asyncio.wait_for(anext(gen), 1)
+    assert "--prompt-suggestions" in seen["argv"], "без флага CLI событие не пришлёт"
+    assert runner.suggestions() == {}, "подсказку прошлого хода снимает запуск"
+
+    for _ in range(2):
+        await asyncio.wait_for(anext(gen), 1)
+    assert runner.suggestions() == {"s": "раскатай на песочницы"}
+    await gen.aclose()
