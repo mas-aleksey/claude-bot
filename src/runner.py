@@ -182,6 +182,10 @@ class _Queue:
     lock: asyncio.Lock = dataclasses.field(default_factory=asyncio.Lock)
     waiting: int = 0
     epoch: int = 0
+    # Тексты ждущих, в порядке очереди. Нужны панели: до 2026-10-05 наружу уходило одно
+    # число, а сам промпт лежал в приостановленной корутине и достать его было нечем —
+    # после перезагрузки вкладки от очереди оставалось «+2» рядом с таймером.
+    texts: list[str] = dataclasses.field(default_factory=list)
 
 
 _queues: dict[str, _Queue] = {}
@@ -319,9 +323,13 @@ def ahead(scope: str) -> int:
     return 0 if q is None else (1 if q.lock.locked() else 0) + q.waiting
 
 
-def waiting() -> dict[str, int]:
-    """Непустые очереди по скоупам — панели, чтобы показать глубину после перезагрузки."""
-    return {scope: q.waiting for scope, q in _queues.items() if q.waiting}
+def waiting() -> dict[str, list[str]]:
+    """Непустые очереди по скоупам: тексты ждущих промптов, в порядке выполнения.
+
+    Текстами, а не числом: панель рисует из этого полоски внизу лога, и после F5 это
+    единственный источник — своих копий у вкладки не остаётся.
+    """
+    return {scope: list(q.texts) for scope, q in _queues.items() if q.texts}
 
 
 def last_session(scope: str) -> str | None:
@@ -329,21 +337,29 @@ def last_session(scope: str) -> str | None:
 
 
 @contextlib.asynccontextmanager
-async def slot(scope: str) -> AsyncIterator[None]:
+async def slot(scope: str, text: str = "") -> AsyncIterator[None]:
     """Место в очереди скоупа: под `async with` внутри одновременно только один прогон.
 
     Счётчик ждущих растёт до `acquire`, поэтому вызывающий должен спросить `ahead`
     ДО входа сюда — иначе он посчитает в очереди сам себя.
+
+    `text` — промпт, который ждёт. Лежит рядом со счётчиком и снимается там же: пока
+    не дошла очередь, это единственное место, где он вообще есть в читаемом виде.
     """
     # Запись держим ссылкой, а не перечитываем из словаря: пока мы числимся ждущими,
     # выкинуть её некому, а после `acquire` это ровно та очередь, в которую мы встали.
     q = _queues.setdefault(scope, _Queue())
     epoch = q.epoch
     q.waiting += 1
+    q.texts.append(text)
     try:
         await q.lock.acquire()
     finally:
         q.waiting -= 1
+        # По значению, а не по индексу: отменённые уходят из середины, и позиция наша
+        # к этому моменту уже не та, с которой мы вставали.
+        with contextlib.suppress(ValueError):
+            q.texts.remove(text)
     try:
         if q.epoch != epoch:
             raise Dropped

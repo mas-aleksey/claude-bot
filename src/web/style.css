@@ -414,7 +414,11 @@ section.zoomed header .max::before { content:'\2921' }
    поверх текста. Полупрозрачная нарочно — сквозь неё видно последнюю строку, поэтому
    низ лога не читается как обрыв, а промахнуться по ней нельзя даже пальцем.
    Видна, только пока лог отлистан от низа. */
-.down { position:absolute; left:0; right:0; bottom:0; height:25px; padding:0;
+   `z-index` выше полоски ждущего промпта (1): та липнет к тому же нижнему краю и
+   накрывала кнопку целиком, стоило отправить промпт во время прогона и отлистать лог.
+   Кнопка побеждает намеренно — по ней жмут, а полоска только сообщает. Текст полоски
+   из-под неё виден: заливка тут полупрозрачная ровно для этого. */
+.down { position:absolute; left:0; right:0; bottom:0; height:25px; padding:0; z-index:2;
   display:grid; place-items:center; border:0; border-radius:0; font-size:11px;
   line-height:1; opacity:.75; background:oklch(0.62 0.18 var(--hue,250) / .35) }
 .down:hover { opacity:1; background:oklch(0.62 0.18 var(--hue,250) / .55) }
@@ -425,11 +429,15 @@ section.zoomed header .max::before { content:'\2921' }
    Текст, а не копия пузыря: закреплять нечего, кроме «о чём речь».
    `pointer-events:none` обязателен — полоска лежит поверх лога, и выделение текста под
    ней не должно упираться в неё. */
-.pin { position:absolute; left:0; right:0; top:0; z-index:2; pointer-events:none;
-  padding:4px 14px; font-size:12px; opacity:.85; white-space:pre-wrap;
+/* Две полоски, верхняя и нижняя, — одно и то же по смыслу: «вот о чём сейчас речь».
+   Поэтому и общий набор чисел: шрифт, отступы, обрезка и непрозрачный фон. Разъехаться
+   им нельзя, иначе одна правка меняет половину пары. */
+.pin, .user.pending {
+  padding:4px 14px; font-size:12px; opacity:.85; white-space:pre-wrap; border-radius:0;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
-  border-bottom:1px solid #8883;
   background:linear-gradient(oklch(0.62 0.10 165 / .20), oklch(0.62 0.10 165 / .20)), Canvas }
+.pin { position:absolute; left:0; right:0; top:0; z-index:2; pointer-events:none;
+  border-bottom:1px solid #8883 }
 .pin[hidden] { display:none }
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
@@ -438,14 +446,22 @@ section.zoomed header .max::before { content:'\2921' }
    страница живёт под color-scheme: dark light. */
 .user { background:oklch(0.62 0.10 165 / .20); padding:8px 10px; border-radius:6px }
 /* Отправленный, но ещё не дошедший до транскрипта промпт держится у нижнего края: пока
-   он ждёт очереди, видно, что именно отправлено, даже если лог отлистан вверх. Фон тут
-   непрозрачный — пузырь лежит поверх текста, и сквозь прежние .20 читались обе строки
-   разом. `bottom:-12px` закрывает отступ лога, иначе снизу оставалась полоска, в
-   которую было видно прокрутку.
-   Класс снимается вместе с узлом: `absorb` убирает локальную копию, когда тот же текст
-   приезжает из транскрипта на своё место. */
-.user.pending { position:sticky; bottom:-12px; z-index:1;
-  background:linear-gradient(oklch(0.62 0.10 165 / .20), oklch(0.62 0.10 165 / .20)), Canvas }
+   он ждёт очереди, видно, что именно отправлено, даже если лог отлистан вверх. Фон
+   непрозрачный — полоска лежит поверх текста, и сквозь прежние .20 читались обе строки
+   разом. `bottom:-12px` закрывает отступ лога, иначе снизу оставалась щель, в которую
+   было видно прокрутку.
+   `pointer-events` с верхней полоски сюда не переносим: в ожидающем промпте бывают
+   ссылки, и нажимать их надо. Верхняя — справка, её не трогают.
+   Липкий тут блок, а не сами полоски: у липких соседей одно и то же смещение, и пока
+   оба прижаты к низу, они совпадают — видно только последнего. Внутри блока они просто
+   лежат стопкой, в порядке выполнения, и граница сверху делит их между собой.
+   Блок исчезает вместе с очередью: его содержимое приходит с сервера, и промпт, до
+   которого дошла очередь, уходит оттуда сам. */
+.queue { position:sticky; bottom:-12px; z-index:1 }
+.user.pending { margin-bottom:0; border-top:1px solid #8883 }
+/* Подпись только в логе: на полоске её нет и вверху, а зелёный тон и так говорит, чья
+   это строка. В логе сообщений много, и без подписи непонятно, чья реплика. */
+.user.pending .role { display:none }
 .body p { margin:.5em 0 }
 .body > :first-child { margin-top:0 }
 .body > :last-child { margin-bottom:0 }

@@ -589,7 +589,7 @@ async def handle(msg: Message, prompt: str) -> None:
         # ponytail: ключ один на скоуп, из нескольких ждущих пометку получит последний.
         store.put(f"{sc}:live", f"{live.chat.id}:{live.message_id}")
     try:
-        async with runner.slot(sc):
+        async with runner.slot(sc, prompt):
             await _run(msg, prompt, sc, live)
     except runner.Dropped:
         store.put(f"{sc}:live", None)

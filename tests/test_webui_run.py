@@ -121,18 +121,23 @@ async def test_second_prompt_queues_and_continues_first_session(client, monkeypa
     assert second.status == 200
     assert (await second.json())["queued"] == 1  # не 409: промпт принят и ждёт
     assert [c["prompt"] for c in calls] == ["первый"]  # пока идёт первый
+    # Текст ждущего виден снаружи: панель рисует из него полоску внизу лога, и после F5
+    # это единственный источник — своих копий у вкладки не остаётся.
+    assert runner.waiting() == {"web:pane-1": ["второй"]}
 
     release.set()
     for _ in range(20):  # дать очереди дойти до второго
         await asyncio.sleep(0)
     assert [c["prompt"] for c in calls] == ["первый", "второй"]
+    assert runner.waiting() == {}       # дошла очередь — из списка ждущих ушёл
     # Сессии у второго в момент постановки не было — подобрал у первого, а не завёл свою.
     assert calls[1]["session_id"] == sid
 
 
-async def test_status_reports_queue_depth(client, monkeypatch):
-    monkeypatch.setattr(runner, "waiting", lambda: {"web:pane-1": 2})
-    assert (await (await client.get("/api/status")).json())["queued"] == {"web:pane-1": 2}
+async def test_status_reports_the_queued_prompts(client, monkeypatch):
+    monkeypatch.setattr(runner, "waiting", lambda: {"web:pane-1": ["раз", "два"]})
+    assert (await (await client.get("/api/status")).json())["queued"] == \
+        {"web:pane-1": ["раз", "два"]}
 
 
 async def test_status_lists_runs(client, monkeypatch):

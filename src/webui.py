@@ -226,7 +226,7 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     _stats.pop(scope, None)
     seen_model = None
     try:
-        async with runner.slot(scope):
+        async with runner.slot(scope, prompt):
             if adopt:
                 sid = session_id = runner.last_session(scope) or session_id
             # Модель панели, а иначе глобальная из бота: две панели на разных моделях —

@@ -1691,6 +1691,37 @@ function log(p, html) {
   return box.lastElementChild;
 }
 
+// --- queue:begin ---
+// Ждущие промпты — одним блоком у нижнего края лога, в порядке выполнения. Блоком, а не
+// россыпью липких строк: у липких соседей одно и то же смещение, и пока оба прижаты к
+// низу, они совпадают — видно было только последний, то есть как раз не тот, который
+// пойдёт следующим.
+// Содержимое целиком с сервера: до 2026-10-05 его рисовала вкладка из своей памяти, и
+// перезагрузка стирала очередь с экрана, хотя промпты оставались в работе.
+function drawQueue(p, texts) {
+  const box = document.querySelector('#pane-' + p.pane + ' .log');
+  if (!box) return;
+  let q = box.querySelector(':scope > .queue');
+  if (!texts.length) { q?.remove(); return; }
+  if (!q) {
+    q = document.createElement('div');
+    q.className = 'queue';
+    box.append(q);
+  }
+  // Перерисовываем только по смене состава: блок липкий, и замена узлов на каждом тике
+  // сбрасывала бы выделение текста внутри него.
+  const key = JSON.stringify(texts);
+  if (q.dataset.j !== key) {
+    q.dataset.j = key;
+    q.innerHTML = texts.map(t => `<div class="msg user pending">${linkify(esc(t))}</div>`)
+      .join('');
+  }
+  // В конец лога: между тиками туда дописываются ответы, и блок оказывался бы в
+  // середине. Липкость спасает вид, но не порядок — следующий промпт встал бы выше.
+  if (box.lastElementChild !== q) box.append(q);
+}
+// --- queue:end ---
+
 async function send(p, ta) {
   const prompt = ta.value.trim();
   if (!prompt) return;
@@ -1719,10 +1750,17 @@ async function send(p, ta) {
       effort: p.effort || null });
     // Панель занята: промпт принят и ждёт. Сессию, если она ещё не заведена, панель
     // подберёт в tick() из /api/status — к ответу на отправку её просто нет.
-    // Строка про ожидание живёт ровно столько же, сколько локальный пузырь: промпт
-    // пошёл — ждать больше нечего, и висеть ей в логе незачем.
+    //
+    // Локальную копию снимаем: ждущие промпты рисует блок очереди, а он берёт их с
+    // сервера. Один источник на всё — иначе после F5 строки исчезали, а до F5 их было
+    // две. Запись в `echoes` остаётся без узлов: она ещё нужна, чтобы снять дубль,
+    // когда тот же текст приедет из транскрипта.
+    // `tick()` тут же, не дожидаясь своих трёх секунд: без него промпт пропадал бы с
+    // экрана на этот промежуток.
     if (r.queued) {
-      echo.nodes.push(log(p, `<div class="msg note">в очереди: впереди ${r.queued}</div>`));
+      echo.nodes.forEach(n => n?.remove());
+      echo.nodes = [];
+      tick();
       return;
     }
     if (!r.session) { log(p, '<div class="msg err">claude не отдал id сессии</div>'); return; }
@@ -2123,8 +2161,8 @@ async function tick() {
     if (timer) {
       const foreign = busy && mine.scope !== scope;
       // «+2» рядом с таймером: сколько промптов ждут своей очереди в этой панели.
-      // Строка в логе о них тоже есть, но она не переживает перезагрузку страницы.
-      const queued = (st.queued || {})[scope] || 0;
+      // Сами они видны полосками внизу лога, и то и другое — из одного списка.
+      const queued = ((st.queued || {})[scope] || []).length;
       timer.textContent = (busy ? (foreign ? '↗ ' : '') + fmt(mine.secs) : '')
                         + (queued ? ` +${queued}` : '');
       timer.title = foreign ? 'запуск начат не из этой панели' : '';
@@ -2132,7 +2170,8 @@ async function tick() {
 
     // Застрявшее эхо: панель свободна, очередь пуста — значит всё, что могло приехать
     // из транскрипта, приехало, и оставшиеся записи уже не встретятся никогда.
-    sweepEchoes(p.pane, !busy && !((st.queued || {})[scope] || 0), Date.now());
+    sweepEchoes(p.pane, !busy && !((st.queued || {})[scope] || []).length, Date.now());
+    drawQueue(p, (st.queued || {})[scope] || []);
 
     // Переход «занята → свободна» — единственный момент, когда есть что сообщить.
     if (busy) {

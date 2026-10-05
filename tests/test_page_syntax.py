@@ -1190,19 +1190,35 @@ def test_prompts_stick_to_the_edges_of_the_log():
     это меняет высоту строки в потоке и дёргает прокрутку.
     """
     css = slice_out("style")
+    # Обе полоски — одно и то же по смыслу, поэтому вид у них общий и лежит в одном
+    # правиле. Разъедутся — одна правка поменяет половину пары.
+    both = css.split(".pin, .user.pending {", 1)[1].split("}", 1)[0]
+    assert "-webkit-line-clamp:2" in both, "полоска обязана быть в две строки"
+    assert "Canvas" in both, "закреплённой полоске нужна непрозрачная подложка"
+    assert "border-radius:0" in both, "полоска идёт от края до края, а не пузырём"
+
     pin = css.split(".pin { ", 1)[1].split("}", 1)[0]
     assert "position:absolute" in pin and "top:0" in pin
-    assert "-webkit-line-clamp:2" in pin, "полоска обязана быть в две строки"
     assert "pointer-events:none" in pin, "выделение текста под полоской не должно упираться в неё"
 
     assert "position:sticky" not in css.split(".user { ", 1)[1].split("}", 1)[0], \
         "сам промпт в потоке не закрепляем"
-    pending = css.split(".user.pending { ", 1)[1].split("}", 1)[0]
-    assert "position:sticky" in pending and "bottom:-12px" in pending
-    assert "Canvas" in pending, "закреплённому пузырю нужна непрозрачная подложка"
+    # Липкий блок, а не каждая полоска: у липких соседей одно смещение, и прижатые к
+    # низу они совпадают — видно только последнюю, то есть не ту, что пойдёт следующей.
+    queue = css.split(".queue { ", 1)[1].split("}", 1)[0]
+    assert "position:sticky" in queue and "bottom:-12px" in queue
+    assert "position:sticky" not in css.split(".user.pending { ", 1)[1].split("}", 1)[0]
+    # Кнопка «вниз» живёт у того же нижнего края и обязана быть выше блока: иначе
+    # промпт, отправленный во время прогона, накрывает её целиком.
+    down = css.split(".down { ", 1)[1].split("}", 1)[0]
+    assert int(re.search(r"z-index:(\d+)", down)[1]) > \
+           int(re.search(r"z-index:(\d+)", queue)[1])
+    # Нижний блок кликабелен: в ждущем промпте бывают ссылки. Верхняя полоска — справка.
+    assert "pointer-events" not in queue
+    assert ".user.pending .role { display:none }" in css, "подписи на полоске нет"
 
-    # Класс вешается на локальную копию промпта. Снимать его не нужно: `absorb` убирает
-    # весь узел, когда тот же текст приезжает из транскрипта на своё место.
+    # Тот же класс и у локальной копии, и у строк блока очереди: выглядят они одинаково,
+    # отличается только то, кто их рисует.
     assert '"msg user pending"' in slice_out("script")
 
 
@@ -1270,3 +1286,48 @@ def test_page_is_exactly_as_tall_as_the_visible_screen():
     css = slice_out("style")
     rule = css.split("body { margin:0", 1)[1].split("}", 1)[0]
     assert "height:100dvh" in rule and "overflow:hidden" in rule
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_queue_block_follows_the_server_list(tmp_path):
+    """Блок ждущих промптов целиком производный от статуса: появился, пересобрался по
+    смене состава, исчез вместе с очередью. Своей памяти у вкладки тут нет — ради этого
+    он и переехал на сервер, иначе перезагрузка стирала очередь с экрана.
+    """
+    body = slice_out("script").split("// --- queue:begin ---")[1].split("// --- queue:end ---")[0]
+    js = tmp_path / "queue.js"
+    js.write_text("""
+const esc = (s) => s, linkify = (s) => s;
+const node = (cls) => ({ className: cls, dataset: {}, innerHTML: '',
+  remove() { box.kids = box.kids.filter(x => x !== this); } });
+const box = { kids: [],
+  querySelector: () => box.kids.find(k => k.className === 'queue') ?? null,
+  append(n) { box.kids = box.kids.filter(x => x !== n); box.kids.push(n); },
+  get lastElementChild() { return box.kids[box.kids.length - 1] ?? null; } };
+const document = { querySelector: () => box, createElement: () => node('') };
+const p = { pane: 'x' };
+const seen = [];
+const shot = () => seen.push(box.kids.map(k => k.className + ':' + k.innerHTML));
+""" + body + """
+drawQueue(p, []);                       shot();   // пусто — блока нет
+drawQueue(p, ['раз']);                  shot();
+const first = box.kids[0];
+drawQueue(p, ['раз']);                              // тот же состав — не пересобираем
+const same = box.kids[0] === first && box.kids[0].dataset.j === JSON.stringify(['раз']);
+drawQueue(p, ['раз', 'два']);           shot();
+box.append(node('msg'));                            // в лог дописали ответ
+drawQueue(p, ['раз', 'два']);           shot();      // блок возвращается в конец
+drawQueue(p, []);                       shot();   // очередь ушла — блок снят
+console.log(JSON.stringify([seen, same]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    seen, same = json.loads(done.stdout)
+
+    strip = '<div class="msg user pending">%s</div>'
+    assert seen[0] == []                                  # пустая очередь блока не рисует
+    assert seen[1] == ["queue:" + strip % "раз"]
+    assert same, "тот же состав не должен пересобирать узлы — внутри выделяют текст"
+    assert seen[2] == ["queue:" + (strip % "раз") + (strip % "два")]   # порядок исполнения
+    assert seen[3] == ["msg:", "queue:" + (strip % "раз") + (strip % "два")]
+    assert seen[4] == ["msg:"]                            # очередь кончилась — блока нет
