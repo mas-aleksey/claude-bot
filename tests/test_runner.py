@@ -348,3 +348,42 @@ async def test_run_asks_for_a_prompt_suggestion_and_keeps_it(monkeypatch, tmp_pa
         await asyncio.wait_for(anext(gen), 1)
     assert runner.suggestions() == {"s": "раскатай на песочницы"}
     await gen.aclose()
+
+
+async def test_login_is_one_per_instance(monkeypatch):
+    """Вход один на инстанс: второй старт, откуда бы он ни пришёл, снимает первый.
+
+    До 2026-10-13 своя переменная была у Telegram и у панели, и два `claude auth login`
+    шли параллельно. `owner` нужен Telegram: вход, начатый в панели, не должен съедать
+    текст из чата как код.
+    """
+    closed = []
+
+    class FakeLogin:
+        def __init__(self):
+            self.buf = ""
+
+        async def start(self):
+            return "https://claude.com/cai/oauth/authorize?x"
+
+        async def submit(self, code):
+            return True, code
+
+        def close(self):
+            closed.append(self)
+
+    monkeypatch.setattr(runner, "Login", FakeLogin)
+    monkeypatch.setattr(runner, "_login", None)
+
+    assert await runner.login_start("tg") == ("https://claude.com/cai/oauth/authorize?x", "")
+    first = runner._login
+    assert runner.login_owner() == "tg"
+
+    await runner.login_start("web")
+    assert closed == [first], "второй старт снимает первый вход"
+    assert runner.login_owner() == "web", "чат не должен принимать код за панель"
+
+    assert await runner.login_submit("123") == (True, "123")
+    assert runner.login_owner() == "", "код отдан — входа больше нет"
+    assert await runner.login_submit("123") is None
+    assert runner.login_cancel() is False

@@ -533,6 +533,54 @@ class Login:
             os.close(self.master)
 
 
+# Идущий вход по подписке — один на инстанс, как и сам ключ: OAuth-ключ общий для бота,
+# всех панелей и всех сессий контейнера. До 2026-10-13 своя переменная была у Telegram и
+# у панели, и `/login` с кнопкой в панели поднимали два `claude auth login` разом, не
+# зная друг о друге. Теперь второй старт отменяет первый, откуда бы ни пришёл.
+#
+# `owner` — кто начал. Telegram по нему решает, считать ли текст из чата кодом: вход,
+# начатый в панели, не должен съедать промпты, пришедшие в чат в ту же минуту.
+_login: Login | None = None
+_login_owner = ""
+
+
+async def login_start(owner: str) -> tuple[str | None, str]:
+    """Начать вход, отменив идущий. (ссылка, None) или (None, хвост вывода claude)."""
+    global _login, _login_owner
+    login_cancel()
+    flow = _login = Login()
+    _login_owner = owner
+    url = await flow.start()
+    if url:
+        return url, ""
+    flow.close()
+    # Не `_login`: пока ждали ссылку, вход могли отменить или начать заново.
+    if _login is flow:
+        _login = None
+    return None, strip_ansi(flow.buf)[-500:]
+
+
+def login_owner() -> str:
+    """Кто начал идущий вход; пусто, если входа нет."""
+    return _login_owner if _login else ""
+
+
+async def login_submit(code: str) -> tuple[bool, str] | None:
+    """Отдать код идущему входу. None — входа нет."""
+    global _login
+    flow, _login = _login, None
+    return await flow.submit(code) if flow else None
+
+
+def login_cancel() -> bool:
+    """Снять идущий вход. Возвращает, было ли что снимать."""
+    global _login
+    flow, _login = _login, None
+    if flow:
+        flow.close()
+    return flow is not None
+
+
 async def auth_status() -> dict:
     rc, out = await cli("auth", "status", "--json", timeout=20)
     try:

@@ -38,7 +38,7 @@ class FakeMessage:
 @pytest.fixture
 def inbox(tmp_path, monkeypatch):
     monkeypatch.setattr(app, "INBOX", tmp_path / "inbox")
-    monkeypatch.setattr(app, "login", None)
+    monkeypatch.setattr(app.runner, "_login", None)
     sent = []
     # handle() — весь путь промпта до claude; тут проверяем только его вход.
     monkeypatch.setattr(app, "handle", lambda msg, prompt: sent.append(prompt) or _noop())
@@ -84,7 +84,8 @@ async def test_path_traversal_in_file_name_stays_in_inbox(inbox):
 
 async def test_file_during_login_is_refused(inbox, monkeypatch):
     _, sent = inbox
-    monkeypatch.setattr(app, "login", object())
+    monkeypatch.setattr(app.runner, "_login", object())
+    monkeypatch.setattr(app.runner, "_login_owner", "tg")
     msg = FakeMessage(document=FakeFile("a.txt"))
     await app.on_file(msg)
     assert not sent

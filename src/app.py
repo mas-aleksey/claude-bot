@@ -300,10 +300,7 @@ async def cmd_name(msg: Message) -> None:
 
 @dp.message(Command("cancel"))
 async def cmd_cancel(msg: Message) -> None:
-    global login
-    if login:
-        login.close()
-        login = None
+    if runner.login_cancel():
         await msg.answer("логин отменён")
         return
     stopped, dropped = await runner.cancel(scope(msg))
@@ -408,23 +405,12 @@ async def cmd_clone(msg: Message) -> None:
     await msg.answer(f"✅ проект: {path}")
 
 
-login: runner.Login | None = None  # активный OAuth-флоу; текст в чате = код, не промпт
-
-
 @dp.message(Command("login"))
 async def cmd_login(msg: Message) -> None:
-    global login
-    if login:
-        login.close()
-    login = flow = runner.Login()
     await msg.answer("запускаю логин…")
-    url = await flow.start()
+    url, tail = await runner.login_start("tg")
     if not url:
-        # Не `login`: пока ждали URL, /cancel или код могли обнулить глобалку.
-        flow.close()
-        if login is flow:
-            login = None
-        await msg.answer(f"URL не появился за 60с:\n{render.strip_ansi(flow.buf)[-500:]}")
+        await msg.answer(f"URL не появился за 60с:\n{tail}")
         return
     await msg.answer(f"открой и авторизуйся, потом пришли код сюда:\n{url}")
 
@@ -488,10 +474,10 @@ async def edit(live: Message, text: str) -> None:
 
 @dp.message(F.text)
 async def on_prompt(msg: Message) -> None:
-    global login
-    if login:  # режим ожидания кода: текст — это код, а не промпт
-        ok, detail = await login.submit((msg.text or "").strip())
-        login = None
+    # Режим ожидания кода: текст — это код, а не промпт. Только для входа из чата —
+    # начатый в панели ждёт код в панели.
+    if runner.login_owner() == "tg":
+        ok, detail = await runner.login_submit((msg.text or "").strip())
         await msg.answer(f"{'✅' if ok else '❌'} {detail}")
         return
     await handle(msg, (msg.text or "").strip())
@@ -533,7 +519,7 @@ async def on_file(msg: Message) -> None:
     ровно на одном из них. Копим такие и отдаём одним промптом: иначе три файла дают
     три прогона подряд в очереди скоупа, а контекст достаётся одному из них.
     """
-    if login:  # ждём код из чата — файл сейчас не к месту
+    if runner.login_owner() == "tg":  # ждём код из чата — файл сейчас не к месту
         await msg.answer("идёт логин: пришли код или /cancel")
         return
     dest = await _save(msg)
