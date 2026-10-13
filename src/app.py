@@ -23,6 +23,7 @@ from aiogram.types import (
     TelegramObject,
 )
 
+import account
 import files
 import render
 import runner
@@ -147,7 +148,7 @@ async def cmd_status(msg: Message) -> None:
         f"сессия: {sid or 'новая'}\n"
         f"контекст: {await _context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"
-        f"{_plan_lines(await runner.limits())}\n"
+        f"{_plan_lines(await account.limits(busy=bool(runner.active())))}\n"
         f"занят: {runner.busy(sc)}{f', в очереди {queued}' if queued else ''}\n"
         f"\n/help — команды"
     )
@@ -348,7 +349,7 @@ async def cmd_model(msg: Message) -> None:
     # Опечатка молча оседала в БД и роняла КАЖДЫЙ следующий промпт 404-й,
     # причём ошибка приходила от claude, а не от бота. Свой список алиасов не ведём —
     # он протухает с каждой новой моделью; спрашиваем сам cli.
-    if arg and (err := await runner.check_model(arg)):
+    if arg and (err := await account.check_model(arg)):
         await msg.answer(err)
         return
     store.put("model", arg or None)

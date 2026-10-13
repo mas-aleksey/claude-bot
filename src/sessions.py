@@ -115,11 +115,6 @@ def stale(older_than: float) -> list[dict]:
     return sorted(out, key=lambda r: r["age"])
 
 
-def purge(older_than: float) -> dict:
-    """Удалить старые сессии со всеми следами. Возвращает отчёт о том, что снесено."""
-    return drop(stale(older_than), older_than)
-
-
 def drop(doomed: list[dict], orphans_older: float = float("inf")) -> dict:
     """Снести перечисленные сессии со всеми следами. Строки — как отдаёт `stale`:
     нужны `id`, `project` (слаг каталога) и `bytes`.

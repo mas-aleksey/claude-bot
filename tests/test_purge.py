@@ -74,7 +74,7 @@ def test_running_session_is_out_of_reach(home):
 
 
 def test_purge_removes_every_trace(home):
-    killed = sessions.purge(2 * DAY)
+    killed = sessions.drop(sessions.stale(2 * DAY), 2 * DAY)
 
     assert killed["sessions"] == 1
     assert killed["env"] == 1
@@ -91,7 +91,7 @@ def test_purge_removes_every_trace(home):
 
 
 def test_purge_keeps_the_young_and_the_unknown(home):
-    sessions.purge(2 * DAY)
+    sessions.drop(sessions.stale(2 * DAY), 2 * DAY)
 
     assert (home / "projects" / "-projects-rp" / f"{SID_NEW}.jsonl").exists()
     assert (home / "session-env" / SID_NEW).exists()
@@ -101,7 +101,7 @@ def test_purge_keeps_the_young_and_the_unknown(home):
 
 
 def test_history_keeps_live_lines_and_survives_broken_json(home):
-    sessions.purge(2 * DAY)
+    sessions.drop(sessions.stale(2 * DAY), 2 * DAY)
 
     lines = (home / "history.jsonl").read_text().splitlines()
     assert any("живой промпт" in line for line in lines)
@@ -112,7 +112,7 @@ def test_history_keeps_live_lines_and_survives_broken_json(home):
 def test_purge_on_empty_home_is_a_noop(tmp_path, monkeypatch):
     monkeypatch.setattr(sessions, "TRANSCRIPTS", tmp_path / "projects")
     (tmp_path / "projects").mkdir()
-    assert sessions.purge(DAY) == {"sessions": 0, "bytes": 0, "env": 0, "ids": [],
+    assert sessions.drop(sessions.stale(DAY), DAY) == {"sessions": 0, "bytes": 0, "env": 0, "ids": [],
                                    "file_history": 0, "history_lines": 0, "orphans": 0}
 
 
@@ -147,7 +147,7 @@ def test_subagents_are_not_sessions_and_go_with_the_parent(home, tmp_path):
     doomed = sessions.stale(2 * DAY)
     assert [r["id"] for r in doomed] == [SID_OLD], "субагент попал в список сессий"
 
-    sessions.purge(2 * DAY)
+    sessions.drop(sessions.stale(2 * DAY), 2 * DAY)
     assert not agent.exists(), "субагент пережил удаление родителя"
     assert not (proj / SID_OLD).exists()
     assert (proj / f"{SID_NEW}.jsonl").exists(), "снесли свежую сессию"

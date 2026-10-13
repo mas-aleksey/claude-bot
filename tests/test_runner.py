@@ -3,6 +3,7 @@ import json
 
 import pytest
 
+import account
 import runner
 import store
 
@@ -271,18 +272,18 @@ async def test_check_model_asks_the_catalog(monkeypatch):
     """Проверка модели идёт по каталогу, а не по тексту жалобы CLI: формулировка уже
     менялась, и `/model фигня` сохранялся молча, ломая следующий прогон."""
     catalog = [{"id": "claude-opus-5", "name": "Opus 5"}]
-    monkeypatch.setattr(runner, "models", lambda: asyncio.sleep(0, catalog))
+    monkeypatch.setattr(account, "models", lambda: asyncio.sleep(0, catalog))
 
-    assert await runner.check_model("claude-opus-5") is None
-    assert await runner.check_model("opus") is None          # алиас каталог не перечисляет
-    assert "не знаю модель" in await runner.check_model("sonnet-5")
+    assert await account.check_model("claude-opus-5") is None
+    assert await account.check_model("opus") is None          # алиас каталог не перечисляет
+    assert "не знаю модель" in await account.check_model("sonnet-5")
 
 
 @pytest.mark.asyncio
 async def test_check_model_allows_everything_without_a_catalog(monkeypatch):
     """Каталога нет — значит нет и интернета. Запрещать смену модели из-за этого нечем."""
-    monkeypatch.setattr(runner, "models", lambda: asyncio.sleep(0, []))
-    assert await runner.check_model("что угодно") is None
+    monkeypatch.setattr(account, "models", lambda: asyncio.sleep(0, []))
+    assert await account.check_model("что угодно") is None
 
 
 def test_default_model_comes_from_settings(tmp_path, monkeypatch):
@@ -303,12 +304,12 @@ async def test_resolve_model_matches_a_catalog_row(monkeypatch):
     отсортирован по свежести."""
     catalog = [{"id": "claude-opus-5", "name": "Opus 5"},
                {"id": "claude-opus-4-8", "name": "Opus 4.8"}]
-    monkeypatch.setattr(runner, "models", lambda: asyncio.sleep(0, catalog))
+    monkeypatch.setattr(account, "models", lambda: asyncio.sleep(0, catalog))
 
-    assert (await runner.resolve_model("claude-opus-4-8"))["name"] == "Opus 4.8"
-    assert (await runner.resolve_model("opus"))["id"] == "claude-opus-5"   # алиас — свежая
+    assert (await account.resolve_model("claude-opus-4-8"))["name"] == "Opus 4.8"
+    assert (await account.resolve_model("opus"))["id"] == "claude-opus-5"   # алиас — свежая
     # Семейства нет: отдаём как есть, панель покажет сырую строку отдельным пунктом.
-    assert await runner.resolve_model("default") == {"id": "default", "name": "default"}
+    assert await account.resolve_model("default") == {"id": "default", "name": "default"}
 
 
 async def test_run_asks_for_a_prompt_suggestion_and_keeps_it(monkeypatch, tmp_path):

@@ -843,24 +843,37 @@ function closePane(p) {
   $('empty').hidden = panes.length > 0;
 }
 
-function drawPane(p) {
-  // Окно файла — другое тело при той же обвязке. Ветка здесь, потому что через drawPane
-  // проходят оба пути: и открытие, и восстановление панелей после F5.
-  if (p.file) return drawFile(p);
+// Обвязка окна, общая у сессии и файла: секция, шапка с кнопками раскладки и закрытия,
+// тап по заголовку. Слева в шапке и само тело у них свои. `onTitle` — что делает
+// заголовок: у сессии переименование, у файла копирование пути. Обработчики кнопок
+// раскладки вешает `wirePane`, закрытие — вызывающий: у файла оно спрашивает о правках.
+function paneShell(p, left, right, body, onTitle) {
   $('empty').hidden = true;
   const el = document.createElement('section');
   el.id = 'pane-' + p.pane;
   el.innerHTML = `
-    <header>
-      <button class=ren title="переименовать сессию">\u270e\ufe0e</button>
-      <span class=who></span>
-      <span class=timer></span>
+    <header>${left}
       <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
       <button class=max title="во весь экран"></button>
       <button class=foldbar title="свернуть окно в заголовок">▾</button>
-      <button class=close title="закрыть панель">×</button>
-      <i class=ctx></i>
-    </header>
+      <button class=close title="закрыть окно">×</button>
+      ${right}
+    </header>${body}`;
+  $('panes').append(el);
+  el.addEventListener('titletap', onTitle);
+  el.querySelector('.ren').onclick = onTitle;
+  el.querySelector('.who').onclick = () => { if (NARROW.matches) onTitle(); };
+  return el;
+}
+
+function drawPane(p) {
+  // Окно файла — другое тело при той же обвязке. Ветка здесь, потому что через drawPane
+  // проходят оба пути: и открытие, и восстановление панелей после F5.
+  if (p.file) return drawFile(p);
+  const el = paneShell(p, `
+      <button class=ren title="переименовать сессию">\u270e\ufe0e</button>
+      <span class=who></span>
+      <span class=timer></span>`, '<i class=ctx></i>', `
     <div class=logbox>
       <div class=pin hidden></div>
       <div class=log></div>
@@ -891,8 +904,7 @@ function drawPane(p) {
         <button class=send title="отправить; во время прогона — в очередь">↑</button>
         <button class=stop type=button title="остановить">■</button>
       </div>
-    </form>`;
-  $('panes').append(el);
+    </form>`, () => rename());
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
   // Заголовок окна — то же переименование, что карандаш в списке слева: имя сессии
@@ -907,9 +919,6 @@ function drawPane(p) {
     save();
     runFind();
   };
-  el.addEventListener('titletap', rename);
-  el.querySelector('.ren').onclick = rename;
-  el.querySelector('.who').onclick = () => { if (NARROW.matches) rename(); };
   // Лог доводит себя до низа, только пока ты у низа (absorb ниже). Отлистал вверх —
   // и ответ дописывается молча, вернуться было нечем. Кнопку показываем по прокрутке,
   // а после вставки её обновляет absorb: прокрутки там не случается.
@@ -1074,19 +1083,10 @@ function wirePane(p, el) {
 // остаётся в правом сайдбаре: править код в полосе 280px негде, а окон с файлами нужно
 // столько же, сколько с сессиями.
 function drawFile(p) {
-  $('empty').hidden = true;
-  const el = document.createElement('section');
-  el.id = 'pane-' + p.pane;
-  el.innerHTML = `
-    <header>
+  const el = paneShell(p, `
       <button class=ren title="копировать путь">\u2750\ufe0e</button>
       <span class=who></span>
-      <a class=dl title="скачать файл" download>\u2913</a>
-      <button class=tile title="разложить окна поровну, без перекрытий">\u25eb\ufe0e</button>
-      <button class=max title="во весь экран"></button>
-      <button class=foldbar title="свернуть окно в заголовок">▾</button>
-      <button class=close title="закрыть окно">×</button>
-    </header>
+      <a class=dl title="скачать файл" download>\u2913</a>`, '', `
     <textarea class=edit spellcheck=false wrap=off></textarea>
     <img class=view hidden alt="">
     <div class="look body" hidden></div>
@@ -1095,8 +1095,7 @@ function drawFile(p) {
       <button class=save>сохранить</button>
       <button class=reread title="перечитать с диска">↻</button>
       <span class=state></span>
-    </div>`;
-  $('panes').append(el);
+    </div>`, () => copyPath());
   const who = el.querySelector('.who');
   const ta = el.querySelector('.edit');
   const state = el.querySelector('.state');
@@ -1112,9 +1111,6 @@ function drawFile(p) {
     say(ok ? 'путь скопирован' : 'буфер недоступен', !ok);
     setTimeout(() => say(was), 1200);
   };
-  el.addEventListener('titletap', copyPath);
-  el.querySelector('.ren').onclick = copyPath;
-  who.onclick = () => { if (NARROW.matches) copyPath(); };
 
   const view = el.querySelector('.view');
   // `<embed>` создаётся под конкретный PDF и снимается при смене файла. Держать его в
@@ -1738,7 +1734,7 @@ function setPlan(lim, auth) {
   const soon = auth?.until ? auth.until * 1000 - Date.now() : 0;
   const need = !!auth && (!auth.ok || !auth.renewable);
   // Сутки, а не двое: прогон обновляет только доступ, срок обновления стоит на месте
-  // (проверено 2026-10-02, см. `runner.auth`). Жёлтое двое суток подряд перестаёт
+  // (проверено 2026-10-02, см. `account.auth`). Жёлтое двое суток подряд перестаёт
   // читаться как срочное, а на вход хватает и одного вечера.
   const warn = !!auth && auth.ok && auth.renewable && soon > 0 && soon < 86400e3;
   // Блок остаётся на экране и без полосок: без ключа лимитов не бывает вовсе, а кнопка

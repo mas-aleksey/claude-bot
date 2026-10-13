@@ -13,6 +13,7 @@ import pytest
 
 os.environ.setdefault("TG_BOT_TOKEN", "x")  # app читает env на импорте
 
+import account
 import app
 import runner
 import sessions
@@ -38,7 +39,7 @@ PROFILE = {
 
 
 def test_bars_from_real_response():
-    bars = runner._bars(USAGE)
+    bars = account._bars(USAGE)
     assert [(b["name"], b["percent"]) for b in bars] == [
         ("сессия", 0), ("неделя", 26), ("неделя, Fable", 0)]
     assert bars[1]["resets"] == "2026-09-16T17:00:00.238475+00:00"
@@ -46,19 +47,19 @@ def test_bars_from_real_response():
 
 def test_bars_survive_unknown_shape():
     # Ни одного процента — панель гасит полоски, а не рисует пустые.
-    assert runner._bars({}) == []
-    assert runner._bars({"limits": [{"kind": "session"}, {"percent": None}]}) == []
+    assert account._bars({}) == []
+    assert account._bars({"limits": [{"kind": "session"}, {"percent": None}]}) == []
     # Незнакомый лимит показываем его же ключом, а не прячем.
-    assert runner._bars({"limits": [{"kind": "monthly_x", "percent": 7}]})[0]["name"] == "monthly_x"
+    assert account._bars({"limits": [{"kind": "monthly_x", "percent": 7}]})[0]["name"] == "monthly_x"
 
 
 def test_plan_short():
-    assert runner._plan(PROFILE) == "max 5x"
-    assert runner._plan({}) == ""
+    assert account._plan(PROFILE) == "max 5x"
+    assert account._plan({}) == ""
 
 
 def test_status_lines():
-    lim = {"email": "someone@example.com", "plan": "max 5x", "bars": runner._bars(USAGE)}
+    lim = {"email": "someone@example.com", "plan": "max 5x", "bars": account._bars(USAGE)}
     lines = app._plan_lines(lim)
     assert lines.startswith("подписка: someone@example.com · max 5x\n")
     assert "неделя 26%" in lines
@@ -83,13 +84,13 @@ async def test_limits_cached(monkeypatch):
         calls += 1
         raise FileNotFoundError("нет токена")
 
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
     # Пустой кеш — это холодный старт, и он лезет в базу за прошлым ответом. База тут
     # настоящая, с настоящими процентами живого бота: без заглушки тест сверял бы их.
-    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
+    monkeypatch.setattr(account, "_remembered", lambda key, default: default)
     monkeypatch.setattr("builtins.open", creds)
-    assert await runner.limits() == {}
-    assert await runner.limits() == {}
+    assert await account.limits() == {}
+    assert await account.limits() == {}
     assert calls == 1
 
 
@@ -97,20 +98,20 @@ async def test_limits_keep_last_good_answer(monkeypatch):
     """Промах запроса не должен гасить полоски: проценты известны, а насколько они
     стары — видно по отметке времени в самих числах. Ошибку ловим на нечитаемом CREDS,
     сети в тестах нет и не надо."""
-    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(account, "CREDS", "/несуществующий/файл")
     known = {"email": "", "plan": "max 5x", "at": time.time() - 86400,
              "bars": [{"name": "сессия", "percent": 12}]}
 
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), known))
-    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)   # база настоящая, см. выше
+    monkeypatch.setattr(account, "_limits", (float("-inf"), known))
+    monkeypatch.setattr(account, "_remembered", lambda key, default: default)   # база настоящая, см. выше
     # Даже суточной давности: панель подпишет возраст, а пустота не сообщает ничего.
-    assert await runner.limits() == known
+    assert await account.limits() == known
 
 
 async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
     """Промах при пустом кеше должен повториться быстро: первый запрос после рестарта
     попадает в rate_limit, и с общим TTL панель осталась бы без полосок пять минут."""
-    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(account, "CREDS", "/несуществующий/файл")
     calls = []
     real_open = open
 
@@ -120,16 +121,16 @@ async def test_limits_retry_sooner_when_there_is_nothing_to_show(monkeypatch):
 
     monkeypatch.setattr("builtins.open", counting_open)
     # Кеш пуст и промах случился LIMITS_RETRY назад — пора пробовать снова.
-    monkeypatch.setattr(runner, "_limits_wait", runner.LIMITS_RETRY)
-    monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, {}))
-    assert await runner.limits() == {}
+    monkeypatch.setattr(account, "_limits_wait", account.LIMITS_RETRY)
+    monkeypatch.setattr(account, "_limits", (time.monotonic() - account.LIMITS_RETRY - 1, {}))
+    assert await account.limits() == {}
     assert calls, "запрос не повторился"
 
     # Удачный ответ той же давности ещё живёт: TTL у него в десять раз длиннее.
     calls.clear()
     known = {"email": "", "plan": "max 5x", "bars": [{"name": "сессия", "percent": 1}]}
-    monkeypatch.setattr(runner, "_limits", (time.monotonic() - runner.LIMITS_RETRY - 1, known))
-    assert await runner.limits() == known
+    monkeypatch.setattr(account, "_limits", (time.monotonic() - account.LIMITS_RETRY - 1, known))
+    assert await account.limits() == known
     assert not calls, "сходили в сеть, хотя кеш свежий"
 
 
@@ -140,26 +141,26 @@ async def test_expired_token_never_reaches_the_api(tmp_path, monkeypatch):
     creds = tmp_path / "creds.json"
     creds.write_text(json.dumps({"claudeAiOauth": {
         "accessToken": "t", "expiresAt": (time.time() - 60) * 1000}}), encoding="utf-8")
-    monkeypatch.setattr(runner, "CREDS", str(creds))
+    monkeypatch.setattr(account, "CREDS", str(creds))
 
     def no_network(*a, **kw):
         raise AssertionError("пошли в сеть с протухшим токеном")
 
-    monkeypatch.setattr(runner.aiohttp, "ClientSession", no_network)
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
-    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
-    assert await runner.limits() == {}
+    monkeypatch.setattr(account.aiohttp, "ClientSession", no_network)
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+    monkeypatch.setattr(account, "_remembered", lambda key, default: default)
+    assert await account.limits() == {}
 
 
 async def test_failures_back_off(tmp_path, monkeypatch):
     """Пауза после неудачи удваивается: сбой бывает общим на аккаунт, и три инстанса,
     долбящие раз в полминуты, сами держат эндпоинт в отказе."""
-    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
-    monkeypatch.setattr(runner, "_limits_wait", runner.LIMITS_RETRY)
-    for expected in (runner.LIMITS_RETRY * 2, runner.LIMITS_RETRY * 4):
-        monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
-        await runner.limits()
-        assert runner._limits_wait == expected
+    monkeypatch.setattr(account, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(account, "_limits_wait", account.LIMITS_RETRY)
+    for expected in (account.LIMITS_RETRY * 2, account.LIMITS_RETRY * 4):
+        monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+        await account.limits()
+        assert account._limits_wait == expected
 
 
 async def test_limits_survive_a_restart(tmp_path, monkeypatch):
@@ -168,18 +169,18 @@ async def test_limits_survive_a_restart(tmp_path, monkeypatch):
     запустят claude."""
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
     monkeypatch.setattr(store._local, "conn", None, raising=False)
-    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(account, "CREDS", "/несуществующий/файл")
     known = {"email": "", "plan": "max 5x", "at": time.time() - 60,
              "bars": [{"name": "сессия", "percent": 7}]}
-    store.put(runner.LIMITS_KEY, json.dumps(known))
+    store.put(account.LIMITS_KEY, json.dumps(known))
 
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
-    assert await runner.limits() == known
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+    assert await account.limits() == known
 
     # Мусор в базе не должен ронять статус — просто нечего вспоминать.
-    store.put(runner.LIMITS_KEY, "не json")
-    monkeypatch.setattr(runner, "_limits", (float("-inf"), {}))
-    assert await runner.limits() == {}
+    store.put(account.LIMITS_KEY, "не json")
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+    assert await account.limits() == {}
 
 
 async def test_model_catalog_survives_a_failed_fetch(tmp_path, monkeypatch):
@@ -187,18 +188,18 @@ async def test_model_catalog_survives_a_failed_fetch(tmp_path, monkeypatch):
     токене — оставлял выпадашку с запасной тройкой на шесть часов."""
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
     monkeypatch.setattr(store._local, "conn", None, raising=False)
-    monkeypatch.setattr(runner, "CREDS", "/несуществующий/файл")
+    monkeypatch.setattr(account, "CREDS", "/несуществующий/файл")
     catalog = [{"id": "claude-opus-5", "name": "Opus 5"}]
-    store.put(runner.MODELS_KEY, json.dumps(catalog))
+    store.put(account.MODELS_KEY, json.dumps(catalog))
 
-    monkeypatch.setattr(runner, "_models", (float("-inf"), []))
-    assert await runner.models() == catalog        # запомненное отдаётся сразу
-    assert await runner.models() == catalog        # промах не стёр его
+    monkeypatch.setattr(account, "_models", (float("-inf"), []))
+    assert await account.models() == catalog        # запомненное отдаётся сразу
+    assert await account.models() == catalog        # промах не стёр его
 
     # Пустая база и неудачный запрос — честно пусто, панель покажет запасную тройку.
-    store.put(runner.MODELS_KEY, None)
-    monkeypatch.setattr(runner, "_models", (float("-inf"), []))
-    assert await runner.models() == []
+    store.put(account.MODELS_KEY, None)
+    monkeypatch.setattr(account, "_models", (float("-inf"), []))
+    assert await account.models() == []
 
 
 async def test_context_line(tmp_path, monkeypatch):
@@ -227,7 +228,7 @@ async def test_api_get_shares_one_session(tmp_path, monkeypatch):
     creds = tmp_path / "creds.json"
     creds.write_text(json.dumps({"claudeAiOauth": {
         "accessToken": "тк", "expiresAt": (time.time() + 600) * 1000}}), encoding="utf-8")
-    monkeypatch.setattr(runner, "CREDS", str(creds))
+    monkeypatch.setattr(account, "CREDS", str(creds))
 
     seen = {"sessions": 0, "urls": [], "headers": None}
 
@@ -253,8 +254,8 @@ async def test_api_get_shares_one_session(tmp_path, monkeypatch):
             seen["urls"].append(url)
             return FakeReply(url)
 
-    monkeypatch.setattr(runner.aiohttp, "ClientSession", FakeSession)
-    got = await runner._api_get("https://a/one", "https://a/two",
+    monkeypatch.setattr(account.aiohttp, "ClientSession", FakeSession)
+    got = await account._api_get("https://a/one", "https://a/two",
                                 extra={"anthropic-version": "2023-06-01"})
 
     assert got == [{"откуда": "https://a/one"}, {"откуда": "https://a/two"}]
@@ -293,15 +294,15 @@ def test_reset_passed_spots_stale_numbers():
     future = datetime.fromtimestamp(time.time() + 3600, UTC).isoformat()
     past = datetime.fromtimestamp(time.time() - 3600, UTC).isoformat()
 
-    assert runner._reset_passed({"bars": [{"resets": future}]}) is False
-    assert runner._reset_passed({"bars": [{"resets": future}, {"resets": past}]}) is True
+    assert account._reset_passed({"bars": [{"resets": future}]}) is False
+    assert account._reset_passed({"bars": [{"resets": future}, {"resets": past}]}) is True
     # Запас в минуту: часы сервера и наши расходятся, и секундная разница не повод
     # ходить в API на каждый вызов.
     just = datetime.fromtimestamp(time.time() - 5, UTC).isoformat()
-    assert runner._reset_passed({"bars": [{"resets": just}]}) is False
+    assert account._reset_passed({"bars": [{"resets": just}]}) is False
     # Мусор и пустота — не повод перезапрашивать: это другой случай, и он не наш.
-    assert runner._reset_passed({}) is False
-    assert runner._reset_passed({"bars": [{"resets": ""}, {}, {"resets": "не дата"}]}) is False
+    assert account._reset_passed({}) is False
+    assert account._reset_passed({"bars": [{"resets": ""}, {}, {"resets": "не дата"}]}) is False
 
 
 async def test_limits_refetch_when_the_reset_is_behind(monkeypatch):
@@ -313,12 +314,12 @@ async def test_limits_refetch_when_the_reset_is_behind(monkeypatch):
         calls += 1
         raise FileNotFoundError("нет токена")
 
-    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
+    monkeypatch.setattr(account, "_remembered", lambda key, default: default)
     monkeypatch.setattr("builtins.open", creds)
     stale = {"bars": [{"resets": datetime.fromtimestamp(time.time() - 3600, UTC).isoformat()}]}
-    monkeypatch.setattr(runner, "_limits", (time.monotonic(), stale))
+    monkeypatch.setattr(account, "_limits", (time.monotonic(), stale))
 
-    await runner.limits()
+    await account.limits()
     assert calls == 1, "прошедший сброс обязан пробить кеш"
 
 
@@ -331,20 +332,18 @@ async def test_limits_ttl_follows_the_load(monkeypatch):
         calls += 1
         raise FileNotFoundError("нет токена")
 
-    monkeypatch.setattr(runner, "_remembered", lambda key, default: default)
+    monkeypatch.setattr(account, "_remembered", lambda key, default: default)
     monkeypatch.setattr("builtins.open", creds)
     fresh = {"bars": [{"resets": datetime.fromtimestamp(time.time() + 3600, UTC).isoformat()}]}
 
     # Возраст между двумя порогами: в простое ещё свеж, под прогоном уже протух.
-    age = time.monotonic() - (runner.LIMITS_TTL_BUSY + runner.LIMITS_JITTER + 1)
-    monkeypatch.setattr(runner, "_runs", {})
-    monkeypatch.setattr(runner, "_limits", (age, fresh))
-    await runner.limits()
+    age = time.monotonic() - (account.LIMITS_TTL_BUSY + account.LIMITS_JITTER + 1)
+    monkeypatch.setattr(account, "_limits", (age, fresh))
+    await account.limits(busy=False)
     assert calls == 0, "в простое кеш живёт пять минут"
 
-    monkeypatch.setattr(runner, "_runs", {"web:1": object()})
-    monkeypatch.setattr(runner, "_limits", (age, fresh))
-    await runner.limits()
+    monkeypatch.setattr(account, "_limits", (age, fresh))
+    await account.limits(busy=True)
     assert calls == 1, "под прогоном тот же кеш уже протух"
 
 

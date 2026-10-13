@@ -31,6 +31,7 @@ from urllib.parse import urlsplit
 
 from aiohttp import web
 
+import account
 import files
 import runner
 import sessions
@@ -288,7 +289,7 @@ async def index(_: web.Request) -> web.Response:
 
 
 async def api_models(_: web.Request) -> web.Response:
-    return web.json_response(await runner.models())
+    return web.json_response(await account.models())
 
 
 async def api_projects(_: web.Request) -> web.Response:
@@ -456,16 +457,16 @@ async def api_status(_: web.Request) -> web.Response:
     из панели было не видно.
 
     Лимиты подписки едут тем же ответом, а не своим роутом: он уже опрашивается
-    раз в три секунды, а `runner.limits` держит свой минутный кеш — выходит один
+    раз в три секунды, а `account.limits` держит свой минутный кеш — выходит один
     запрос в API на минуту на все открытые вкладки.
     """
     return web.json_response({"runs": runner.active(), "errors": _errors,
                               "local": _local, "stats": _stats,
                               "queued": runner.waiting(),
                               "suggest": runner.suggestions(),
-                              "auth": runner.auth(),
-                              "limits": await runner.limits(),
-                              "model": await runner.resolve_model(
+                              "auth": account.auth(),
+                              "limits": await account.limits(busy=bool(runner.active())),
+                              "model": await account.resolve_model(
                                   store.get("model") or runner.default_model())})
 
 

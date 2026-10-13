@@ -16,6 +16,7 @@ from aiohttp.test_utils import TestClient, TestServer
 
 os.environ.setdefault("TG_BOT_TOKEN", "x")  # app читает env на импорте
 
+import account
 import files
 import runner
 import sessions
@@ -693,28 +694,28 @@ def test_auth_tells_refreshable_from_dead(tmp_path, monkeypatch):
     когда истекает и он, прогон отвечает «could not be refreshed», и помогает только
     новый вход. По одному `expiresAt` эти случаи неразличимы."""
     creds = tmp_path / "creds.json"
-    monkeypatch.setattr(runner, "CREDS", str(creds))
+    monkeypatch.setattr(account, "CREDS", str(creds))
     soon, later = (time.time() + 600) * 1000, (time.time() + 5 * 86400) * 1000
 
-    assert runner.auth()["ok"] is False                      # файла нет
+    assert account.auth()["ok"] is False                      # файла нет
 
     creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": soon,
                                                    "refreshTokenExpiresAt": later}}))
-    got = runner.auth()
+    got = account.auth()
     assert (got["ok"], got["fresh"], got["renewable"]) == (True, True, True)
 
     creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 0,
                                                    "refreshTokenExpiresAt": later}}))
-    got = runner.auth()
+    got = account.auth()
     assert (got["fresh"], got["renewable"]) == (False, True)   # обновится прогоном
 
     creds.write_text(json.dumps({"claudeAiOauth": {"expiresAt": 0,
                                                    "refreshTokenExpiresAt": 0}}))
-    got = runner.auth()
+    got = account.auth()
     assert (got["fresh"], got["renewable"]) == (False, False)  # только вход руками
 
     creds.write_text("не json")
-    assert runner.auth()["ok"] is False
+    assert account.auth()["ok"] is False
 
 
 async def test_login_code_without_a_started_flow_is_409(client):
