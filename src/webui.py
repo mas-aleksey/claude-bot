@@ -412,12 +412,8 @@ async def api_search(req: web.Request) -> web.Response:
     только зная, в каком каталоге её продолжать.
     """
     q = req.query.get("q", "")
-    if project := req.query.get("project", ""):
-        found = await asyncio.to_thread(sessions.search, project, q, 20)
-        return web.json_response([_row(sid, title, age, snippet=snip, project=project)
-                                  for sid, title, age, snip in found])
-
-    cwds = [str(x) for x in sessions.projects()]
+    project = req.query.get("project", "")
+    cwds = [project] if project else [str(x) for x in sessions.projects()]
     lists = await asyncio.gather(*(asyncio.to_thread(sessions.search, c, q, 20)
                                    for c in cwds))
     rows = [(age, sid, title, snip, cwd)
@@ -439,8 +435,6 @@ async def api_drop(req: web.Request) -> web.Response:
     """
     data = await req.json()
     sid = data.get("session") or ""
-    if not transcript.SESSION_RE.match(sid):
-        return web.json_response({"error": "bad session"}, status=400)
     path = _path(data.get("project", ""), sid)
     if not path.is_file():
         return web.json_response({"error": "нет такой сессии"}, status=404)

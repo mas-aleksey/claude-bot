@@ -67,7 +67,7 @@ aside .row button.new + button.new { margin-left:0 }
 aside .row button.rescan { flex:none; width:32px; margin-left:8px }
 aside input { background:none; color:inherit; border:1px solid #8884; border-radius:4px;
   font:inherit }
-#list .snip { display:block; font-size:11px; opacity:.6; margin-top:2px;
+#list .snip { font-size:11px; opacity:.6; margin-top:2px;
   overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical }
 #list { overflow:auto; flex:1; margin-top:8px }
 #list button, #tree button { display:block; width:100%; text-align:left; padding:8px 10px; border:0;
@@ -691,16 +691,13 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 }
 .bar { display:flex; gap:4px; align-items:center }
 /* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
-.bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
+.bar .clip, .bar .model, .bar .effort { border:0; background:none; opacity:.65; padding:3px 6px;
   border-radius:8px; font:inherit; font-size:12px; color:inherit; cursor:pointer }
 .bar .model, .bar .effort { appearance:none; width:auto }
-.bar .effort { border:0; background:none; opacity:.65; padding:3px 6px; border-radius:8px;
-  font:inherit; font-size:12px; color:inherit; cursor:pointer }
-.bar .effort:hover { background:#8882; opacity:1 }
 /* Круг под плюсом ровно того же размера, что кнопка отправки напротив. */
 .bar .clip { display:grid; place-items:center; width:26px; height:26px; padding:0;
   border-radius:50%; font-size:18px; line-height:1 }
-.bar .clip:hover, .bar .model:hover { background:#8882; opacity:1 }
+.bar .clip:hover, .bar .model:hover, .bar .effort:hover { background:#8882; opacity:1 }
 .bar .clip input { display:none }
 /* Правый угол ряда: пока запуск идёт, вместо «отправить» стоит «стоп». Переключает
    класс `busy` на секции, его же ставит tick() — своего состояния в JS не нужно. */

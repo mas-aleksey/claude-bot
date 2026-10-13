@@ -57,8 +57,9 @@ function offline() {
   $('dead').hidden = false;
 }
 // --- dead:end ---
-const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(body) }).then(payload);
+const postJSON = (u, body) => fetch(u, { method: 'POST',
+  headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+const post = (u, body) => postJSON(u, body).then(payload);
 
 // POST, который сам объясняет отказ. Ручки дерева и списка пишут причину словами —
 // «папка не пуста», «такое имя уже занято», «над сессией идёт прогон», — и показать
@@ -68,9 +69,7 @@ const post = (u, body) => fetch(u, { method: 'POST', headers: { 'Content-Type': 
 // Неудача возвращает null и уже сказала человеку; вызывающему остаётся один `if`. До
 // 2026-09-25 это были четыре копии, и все четыре разошлись в мелочах.
 async function ask(url, body, what) {
-  const r = await fetch(url, { method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body) });
+  const r = await postJSON(url, body);
   const text = await r.text();
   if (!r.ok) { alert(text || (what + ': ' + r.status)); return null; }
   try { return JSON.parse(text); } catch (e) { return {}; }
@@ -565,9 +564,7 @@ async function runFind() {
     // обратно по веткам значит прятать половину найденного под свёрнутыми узлами.
     $('list').innerHTML = found.map(s => rowHTML(s, s.project, true)).join('') ||
       '<div class=none>ничего не нашлось</div>';
-    wireRows();
-    markList();
-    syncTitles();
+    wireRows();   // сам зовёт markList и syncTitles
   } catch (e) { /* следующий ввод попробует снова */ }
 }
 
@@ -581,7 +578,7 @@ async function runFind() {
 // Зазор между окнами перенесён из `gap` сетки в `margin` самих окон. При 60 колонках
 // `gap:8px` съедал бы 59 промежутков, то есть 472 пикселя ширины области; у margin
 // промежуток один на пару соседей, сколько бы колонок ни было.
-const COLS = 60, ROWS = 24, W = COLS / 2, H = ROWS / 2, GAP = 0, PAD = 4;
+const COLS = 60, ROWS = 24, W = COLS / 2, H = ROWS / 2, PAD = 4;
 // Нижний предел размера — прежняя клетка 12x8. Без него окно тянется до 1/60 ширины,
 // а это полоска в тридцать пикселей, из которой уже не выбраться мышью.
 const MINW = COLS / 12, MINH = ROWS / 8;
@@ -589,8 +586,8 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // Шаг клетки меряем по факту, а не считаем от константы: окно могли изменить, а grid
 // пересчитал доли сам. Поэтому перетаскивание точно и до, и после ресайза окна.
-const colStep = () => ($('panes').clientWidth - PAD * 2 - GAP * (COLS - 1)) / COLS + GAP;
-const rowStep = () => ($('panes').clientHeight - PAD * 2 - GAP * (ROWS - 1)) / ROWS + GAP;
+const colStep = () => ($('panes').clientWidth - PAD * 2) / COLS;
+const rowStep = () => ($('panes').clientHeight - PAD * 2) / ROWS;
 
 // Прямоугольник обязан лежать внутри сетки: за её краем grid добавил бы неявные ряды,
 // и панель уехала бы за границу области.
@@ -976,7 +973,7 @@ function drawPane(p) {
   // выбор того же файла тоже дал событие. Он же очищает `pick.files`, поэтому `attach`
   // копирует список первой строкой — иначе доедет только первый файл.
   const pick = el.querySelector('.clip input');
-  pick.onchange = () => { attach(p, ta, pick.files); pick.value = ''; };
+  pick.onchange = () => { attach(p, pick.files); pick.value = ''; };
   wireClips(p, el);
   drawClips(p);   // после F5 список пуст, но панель могла быть перерисована на лету
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
@@ -1002,10 +999,10 @@ function drawPane(p) {
   el.ondrop = (e) => {
     e.preventDefault();
     el.classList.remove('drop');
-    attach(p, ta, e.dataTransfer?.files);
+    attach(p, e.dataTransfer?.files);
   };
   ta.onpaste = (e) => {
-    if (e.clipboardData?.files?.length) attach(p, ta, e.clipboardData.files);
+    if (e.clipboardData?.files?.length) attach(p, e.clipboardData.files);
   };
   wirePane(p, el);
   // Панель нарисована — можно подписываться. Отсюда, а не из addPane: после F5 панели
@@ -1147,11 +1144,12 @@ function drawFile(p) {
   let version = null, dirty = false;
   const load = () => get('api/file?path=' + encodeURIComponent(p.file)).then(f => {
     version = f.version;
-    dl.href = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+    const raw = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+    dl.href = raw;
     // Картинку сервер не читает — отдаёт тип и оставляет тег `<img>` тянуть байты самому.
     // Редактора у неё нет: править png в textarea нечем, и «сохранить» тут только вредит.
     if (f.image) {
-      view.src = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+      view.src = raw;
       view.hidden = false; ta.hidden = true; save_.hidden = true; dirty = false;
       return say(f.image.replace('image/', '') + ', ' + kb(f.size));
     }
@@ -1161,7 +1159,7 @@ function drawFile(p) {
       doc = document.createElement('embed');
       doc.className = 'doc';
       doc.type = 'application/pdf';
-      doc.src = 'api/raw?path=' + encodeURIComponent(p.file) + '&v=' + f.version;
+      doc.src = raw;
       look.before(doc);
       ta.hidden = true; save_.hidden = true; dirty = false;
       return say('pdf, ' + kb(f.size));
@@ -1185,9 +1183,7 @@ function drawFile(p) {
   // `:ro`-монтирование отвечает «Read-only file system», и это единственное, что
   // объясняет отказ — например у /root/.claude/CLAUDE.md, он примонтирован на чтение.
   const put = async () => {
-    const r = await fetch('api/file', { method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ path: p.file, text: ta.value, version }) });
+    const r = await postJSON('api/file', { path: p.file, text: ta.value, version });
     const body = await r.text();
     if (!r.ok) throw new Error(r.status === 409 ? 'файл изменился на диске, перечитайте' : body);
     version = JSON.parse(body).version;
@@ -1599,7 +1595,7 @@ function wireClips(p, el) {
 
 // Копия списка, а не сам FileList: он живой, и `pick.value = ''` в обработчике выбора
 // очищает его у нас под руками.
-function attach(p, _ta, files) {
+function attach(p, files) {
   const add = [...(files || [])];
   if (!add.length) return;
   clips.set(p.pane, [...(clips.get(p.pane) || []), ...add]);
@@ -1898,7 +1894,7 @@ async function send(p, ta) {
       save();
       watch(p);
       setWho(p);
-      loadTree();
+      loadTree().catch(() => {});
     }
   } catch (code) {
     // Промпт до claude не доехал, значит из транскрипта он не вернётся. Оставленная
@@ -1906,10 +1902,12 @@ async function send(p, ta) {
     // этой панели печатался бы дважды — локально и из транскрипта.
     // Снимаем одну запись, а не все совпадения: тот же текст мог быть отправлен и
     // раньше, успешно, и его эхо в очереди законное.
+    // Свою запись знаем в лицо: сравнение по тексту снимало бы и чужую с тем же текстом,
+    // а прежняя внутренняя `text = norm(prompt)` затеняла набранное — в поле возвращался
+    // промпт с путями вложений и склеенными в одну строку переносами.
     const queue = echoes.get(p.pane) || [];
-    const text = norm(prompt);
-    for (let i = queue.length - 1; i >= 0; i--)
-      if (queue[i].text === text) { queue.splice(i, 1); break; }
+    const at = queue.indexOf(echo);
+    if (at >= 0) queue.splice(at, 1);
     if (!queue.length) echoes.delete(p.pane);
     // Текст возвращаем только в пустое поле: за время запроса (до 90 секунд ожидания
     // id сессии) человек мог начать набирать следующий, и затирать его нельзя. Тогда

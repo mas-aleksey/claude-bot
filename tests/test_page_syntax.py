@@ -819,12 +819,12 @@ const upload = async (file) => mode === 'ok'
   const out = {};
 
   const list = fileList(['a.txt', 'b.txt', 'c.txt']);
-  attach(p, null, list);
+  attach(p, list);
   list.clear();                          // ровно то, что делает `pick.value = ''`
   out.picked = (clips.get('x') || []).map(f => f.name);
 
-  attach(p, null, fileList([]));         // пустой выбор и отсутствие списка не роняют
-  attach(p, null, undefined);
+  attach(p, fileList([]));         // пустой выбор и отсутствие списка не роняют
+  attach(p, undefined);
   out.afterEmpty = (clips.get('x') || []).length;
 
   clips.get('x').splice(1, 1);           // то же, что делает крестик на второй карточке

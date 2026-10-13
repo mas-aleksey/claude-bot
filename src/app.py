@@ -143,7 +143,7 @@ async def cmd_status(msg: Message) -> None:
     queued = runner.waiting().get(sc, 0)
     await msg.answer(
         f"проект: {Path(here).name} ({here})\n"
-        f"модель: {store.get('model', 'default')}\n"
+        f"модель: {store.get('model') or runner.default_model()}\n"
         f"сессия: {sid or 'новая'}\n"
         f"контекст: {await _context_line(here, sid)}\n"
         f"claude: {'вошёл' if auth.get('loggedIn') else 'НЕ вошёл'}\n"

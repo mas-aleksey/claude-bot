@@ -106,8 +106,7 @@ def auth() -> dict:
     обычный ответ, а не сбой.
     """
     try:
-        with open(CREDS, encoding="utf-8") as f:
-            oauth = json.load(f)["claudeAiOauth"]
+        oauth = _oauth()
     except (OSError, ValueError, KeyError, TypeError):
         return {"ok": False, "fresh": False, "renewable": False}
     now = time.time()
@@ -117,6 +116,12 @@ def auth() -> dict:
             "until": oauth.get("refreshTokenExpiresAt", 0) / 1000 or None}
 
 
+def _oauth() -> dict:
+    """Блок подписки из CREDS как есть — его читают и `auth`, и `_oauth_token`."""
+    with open(CREDS, encoding="utf-8") as f:
+        return json.load(f)["claudeAiOauth"]
+
+
 def _oauth_token() -> str:
     """Токен подписки из CREDS. Протухший не отдаём вовсе.
 
@@ -124,8 +129,7 @@ def _oauth_token() -> str:
     на surf такие запросы раз в полминуты сначала получали `authentication_error`, а
     потом утянули аккаунт в `rate_limit_error` самого эндпоинта.
     """
-    with open(CREDS, encoding="utf-8") as f:
-        oauth = json.load(f)["claudeAiOauth"]
+    oauth = _oauth()
     if oauth.get("expiresAt", 0) / 1000 < time.time():
         raise RuntimeError("токен протух, обновится на ближайшем прогоне claude")
     return oauth["accessToken"]
@@ -404,14 +408,16 @@ def trust(cwd: str) -> None:
     и просит принять диалог интерактивно — в headless это тупик. Диалог тут не нужен:
     в /projects попадает только то, что смонтировал владелец бота."""
 
-    def mutate(cfg: dict) -> bool:
-        proj = cfg.setdefault("projects", {}).setdefault(cwd, {})
-        if proj.get("hasTrustDialogAccepted"):
-            return False
-        proj["hasTrustDialogAccepted"] = True
-        return True
+    _patch_config(lambda cfg: _trust(cfg, cwd))
 
-    _patch_config(mutate)
+
+def _trust(cfg: dict, cwd: str) -> bool:
+    """Отметить доверие к каталогу в конфиге. Возвращает, поменялось ли что-то."""
+    proj = cfg.setdefault("projects", {}).setdefault(cwd, {})
+    if proj.get("hasTrustDialogAccepted"):
+        return False
+    proj["hasTrustDialogAccepted"] = True
+    return True
 
 
 def skip_onboarding() -> None:
@@ -430,11 +436,7 @@ def skip_onboarding() -> None:
             cfg["hasCompletedOnboarding"] = True
             changed = True
         # ssh-сессия стартует в /root, а не в проекте — свой trust нужен и ему.
-        root = cfg.setdefault("projects", {}).setdefault("/root", {})
-        if not root.get("hasTrustDialogAccepted"):
-            root["hasTrustDialogAccepted"] = True
-            changed = True
-        return changed
+        return _trust(cfg, "/root") or changed
 
     _patch_config(mutate)
 

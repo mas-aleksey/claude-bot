@@ -81,7 +81,11 @@ def _leaf(raw: str) -> Path:
     а «переименовать» переименовывало бы чужой файл в другом корне.
 
     Граница та же: каталог обязан лежать в корнях, а имя — быть именем, без `.` и `..`.
+    Сам корень сюда не проходит: удалённый или переименованный, он оставлял бы панели
+    пустое дерево без способа вернуть его из браузера.
     """
+    if Path(raw).resolve() in [r.resolve() for r in roots()]:
+        raise web.HTTPBadRequest(text="корень дерева не трогаем")
     path = Path(raw or "")
     where = inside(str(path.parent))
     if path.name in {"", ".", ".."}:
@@ -196,8 +200,6 @@ async def api_mv(req: web.Request) -> web.Response:
     """
     data = await req.json()
     raw = data.get("path") or ""
-    if Path(raw).resolve() in [r.resolve() for r in roots()]:
-        raise web.HTTPBadRequest(text="корень дерева не переименовать")
     path = _leaf(raw)
     if not path.exists() and not path.is_symlink():
         raise web.HTTPBadRequest(text="нет такого файла")
@@ -296,8 +298,6 @@ async def api_rm(req: web.Request) -> web.Response:
     в `/opt/skills`, спасая его лишь тем, что каталог не пуст.
     """
     raw = (await req.json()).get("path") or ""
-    if Path(raw).resolve() in [r.resolve() for r in roots()]:
-        raise web.HTTPBadRequest(text="корень дерева не удаляется")
     path = _leaf(raw)
     if path.is_symlink():
         await asyncio.to_thread(path.unlink)
