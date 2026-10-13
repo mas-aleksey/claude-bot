@@ -428,17 +428,26 @@ section.zoomed header .max::before { content:'\2921' }
    закреплённый целиком он не оставлял места ответу — ради чего полоску и завели.
    Текст, а не копия пузыря: закреплять нечего, кроме «о чём речь».
    `pointer-events:none` обязателен — полоска лежит поверх лога, и выделение текста под
-   ней не должно упираться в неё. */
+   ней не должно упираться в неё.
+   Без `opacity`, в отличие от нижней: полоска лежит поверх текста, и полупрозрачная
+   пропускала строки лога сквозь себя — читались обе разом. */
 /* Две полоски, верхняя и нижняя, — одно и то же по смыслу: «вот о чём сейчас речь».
    Поэтому и общий набор чисел: шрифт, отступы, обрезка и непрозрачный фон. Разъехаться
-   им нельзя, иначе одна правка меняет половину пары. */
+   им нельзя, иначе одна правка меняет половину пары. Кроме `opacity` — её у верхней нет. */
 .pin, .user.pending {
-  padding:4px 14px; font-size:12px; opacity:.85; white-space:pre-wrap; border-radius:0;
+  padding:4px 14px; font-size:12px; white-space:pre-wrap; border-radius:0;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
   background:linear-gradient(oklch(0.62 0.10 165 / .20), oklch(0.62 0.10 165 / .20)), Canvas }
 .pin { position:absolute; left:0; right:0; top:0; z-index:2; pointer-events:none;
   border-bottom:1px solid #8883 }
 .pin[hidden] { display:none }
+/* Без `content-visibility`, и это проверено на живой панели 2026-10-11: с ним прокрутка
+   вверх тряслась. Сообщения разной высоты, у неразмеченного браузер берёт оценку
+   `contain-intrinsic-size`, при входе в экран подставляет настоящую — и общая высота
+   лога меняется под пальцем, вместе с положением прокрутки. `auto` в оценке это чинит
+   только для того, что уже один раз размечалось, а вверх уходит как раз неразмеченное.
+   Ради чего он ставился, уже сделано дешевле: высоту поля ввода держит `field-sizing`
+   (скрипт перестал читать `scrollHeight` на каждую букву), а длину лога — `LOG_MAX`. */
 .msg { margin:0 0 12px; overflow-wrap:anywhere }
 .user, .tool { white-space:pre-wrap }
 /* Своё сообщение залито целиком, а не отмечено полоской: в четырёх панелях глаз ищет
@@ -458,7 +467,7 @@ section.zoomed header .max::before { content:'\2921' }
 .queue[hidden] { display:none }
 /* Полосы делит между собой та же граница, что отделяет блок от лога. У верхней она уже
    есть от самого блока, поэтому только между соседями. */
-.user.pending { margin-bottom:0 }
+.user.pending { margin-bottom:0; opacity:.85 }
 .user.pending + .user.pending { border-top:1px solid #8883 }
 /* Подпись только в логе: на полоске её нет и вверху, а зелёный тон и так говорит, чья
    это строка. В логе сообщений много, и без подписи непонятно, чья реплика. */
@@ -489,17 +498,91 @@ section.zoomed header .max::before { content:'\2921' }
 .body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
 .assistant { border-left:3px solid #88f; padding-left:10px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
-/* Раскрытый шаг: аргумент столбиком, как он и был набран. Маркер остаётся штатный —
-   свой треугольник рисовать незачем. */
-details.tool summary { cursor:pointer }
+/* Шаг внутри пачки: имя, под ним окошки IN и OUT в общей рамке. Подпись слева узкой
+   колонкой, текст рядом — так длинная команда переносится под себя, а не под подпись.
+   Прозрачность снята с шага целиком: вывод читают, и в 65% он был бы серым по серому.
+   Бледным остаётся только имя.
+   До 2026-10-13 окошки стояли сплошной серой плитой, заголовок был одного веса с
+   текстом, и пачка читалась как одна каша моноширинного текста. Ритм дают три вещи:
+   воздух между шагами, рамка вместо заливки и заголовок другим шрифтом. */
+.tool.step { opacity:1 }
+/* Заголовок шага: имя и подпись (описание у Bash, путь у правок) одной строкой. Подпись
+   режется многоточием — шаг не должен расти в высоту из-за длинного описания. */
+.sh { display:flex; gap:8px; align-items:baseline; min-width:0;
+  font:12px/1.5 system-ui,sans-serif }
+.sh b { flex:none; font-weight:600; opacity:.6 }
+.sh span { opacity:.75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+
+/* Шкала слева через всю пачку: точка у каждого шага и линия до следующего. Точка
+   зелёная, как галочка готовности, у упавшего шага — красная (класс ставит `pour`). */
+.tools > .step { position:relative; margin:12px 0 0 1.2em; padding-left:16px }
+.tools > .step::before { content:''; position:absolute; left:0; top:6px; width:7px;
+  height:7px; border-radius:50%; background:oklch(0.68 0.17 145) }
+.tools > .step.bad::before { background:#e55 }
+.tools > .step::after { content:''; position:absolute; left:3px; top:17px; bottom:-14px;
+  width:1px; background:#8884 }
+.tools > .step:last-child::after { display:none }
+
+/* Колонка текста `minmax(0, 1fr)`, а не `1fr`: у голого `1fr` нижняя граница — самое
+   длинное слово, и неразрывный путь распирал окошко вправо за край пачки. */
+.io { display:grid; grid-template-columns:3.2em minmax(0, 1fr); margin-top:4px;
+  border:1px solid #8884; border-radius:6px; background:#8881 }
+/* OUT прижат к IN общей границей: две рамки по пикселю рядом читались бы двойной линией. */
+.io + .io { margin-top:-1px; border-radius:0 0 6px 6px }
+.io:has(+ .io:not([hidden])) { border-radius:6px 6px 0 0 }
+.io[hidden] { display:none }
+/* Подпись стоит на первой строке текста, а не над ней: та же высота строки, тот же
+   верхний отступ, что у `pre`. Раньше она висела на свои пиксели выше. */
+.io i { font:10px/calc(12px * 1.45) system-ui,sans-serif; letter-spacing:.06em;
+  opacity:.45; padding:6px 0 0 10px }
+/* Поджатое окошко: IN — одна строка, OUT — три, на обрезе многоточие.
+   Отступ вокруг текста — `margin`, не `padding`, и это главное здесь. `line-clamp` не
+   прячет следующие строки, а только задаёт высоту блока, а `overflow:hidden` режет по
+   краю отступа, не текста. Пока отступ был внутренним, в его нижние пиксели заглядывала
+   верхушка следующей строки. Внешний отступ лежит за краем обреза, и заглядывать некуда.
+   Раскрытое — целиком, без своей прокрутки: OUT и так обрезан сервером до десяти строк,
+   а IN бывает heredoc, который раскрывают как раз затем, чтобы прочесть.
+   Перенос по словам, а не где угодно: `anywhere` рвал строку посреди пути, даже когда
+   рядом был пробел. `tab-size` — от вывода git и `grep` с табуляцией. */
+.io pre { margin:6px 10px; padding:0; font-size:12px; line-height:1.45; tab-size:4;
+  white-space:pre-wrap; overflow-wrap:break-word; overflow:hidden;
+  display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:1 }
+/* OUT на полтона тише IN: взгляд сначала находит команду, потом её результат. */
+.io.out pre { -webkit-line-clamp:3; opacity:.85 }
+.io.open pre { display:block; -webkit-line-clamp:none; cursor:text }
+/* Обрезанное окошко зовёт кликнуть стрелкой под подписью; раскрытое — стрелкой вверх.
+   У окошка, где всё влезло, стрелки нет, и клик по нему ничего не делает. */
+.io.more, .io.open { cursor:pointer }
+.io.more i::after { content:'\25BE'; display:block; margin-top:2px }
+.io.open i::after { content:'\25B4'; display:block; margin-top:2px }
+.io.err pre { color:#e55 }
+
+/* Diff правки: таблица на четыре колонки — номер и текст было, номер и текст стало.
+   `fixed`, чтобы половины были равными при любой длине строк, а не по содержимому.
+   Поджат, как OUT: восемь строк, клик раскрывает целиком. Ровно по строке тут не
+   обрезать — строки переносятся, высота у них разная, — поэтому низ гаснет градиентом,
+   и недорезанная строка читается как «дальше есть». */
+.dv { font:12px/1.45 ui-monospace,monospace; max-height:calc(8 * 1.45em + 8px);
+  overflow:hidden; padding:4px 0;
+  -webkit-mask-image:linear-gradient(#000 70%, transparent);
+  mask-image:linear-gradient(#000 70%, transparent) }
+.io.open .dv { max-height:none; -webkit-mask-image:none; mask-image:none; cursor:text }
+.dv table { width:100%; border-collapse:collapse; table-layout:fixed }
+.dv td { padding:0 6px; vertical-align:top; white-space:pre-wrap; overflow-wrap:anywhere }
+.dv .ln { width:3.2em; text-align:right; opacity:.4; user-select:none }
+.dv .del { background:oklch(0.63 0.20 25 / .18) }
+.dv .add { background:oklch(0.70 0.17 145 / .20) }
+.dv .none { background:#8881 }
+/* Граница половин: без неё контекст двух колонок сливался в одну строку текста. */
+.dv:not(.one) td:nth-child(3) { border-left:1px solid #8883 }
+.dv .gap td { text-align:center; opacity:.4 }
+.dv .more { padding:2px 6px; opacity:.5 }
 /* Пачка вызовов: одна строка со счётчиком и последним вызовом. Заголовок не переносим —
    иначе свёрнутая группа занимает столько же места, сколько развёрнутая. */
 .tools > summary { cursor:pointer; opacity:.65; font-size:13px;
   font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden;
   text-overflow:ellipsis }
 .tools > :not(summary) { margin:2px 0 0 1.2em }
-details.tool pre { margin:4px 0 0 1.2em; padding:6px; background:#8881; border-radius:4px;
-  overflow:auto; white-space:pre-wrap }
 .note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
 .role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
@@ -544,13 +627,22 @@ div.look { flex:1; min-height:0; overflow:auto; margin:8px; padding:4px 10px;
 .filebar .state { flex:1; font-size:12px; opacity:.6; white-space:nowrap;
   overflow:hidden; text-overflow:ellipsis }
 .filebar .state.bad { color:#e55; opacity:1 }
+/* `field-sizing` растит поле по содержимому силами браузера. Где он его понимает,
+   скрипт высоту не трогает вовсе (`grow` в app.js выходит сразу) — а значит, не читает
+   `scrollHeight` на каждую букву и не заставляет пересчитывать раскладку панели.
+   Где не понимает (сейчас это Safari и Firefox), свойство игнорируется, и высоту
+   по-прежнему ставит скрипт. */
 textarea { position:relative; resize:none; min-height:40px; max-height:240px;
+  field-sizing:content;
   padding:4px 4px 0; font:inherit; background:none; color:inherit; border:0; outline:none }
 /* Подсветка слеш-команды: залить текст внутри textarea нельзя, поэтому под полем лежит
    слой с той же геометрией, и в нём — одна метка на первое слово. Остального текста в
    слое нет специально: метка стоит в начале, её место не зависит от того, что дальше,
    и переносы повторять не нужно. Прокрутку поля слой повторяет за скриптом. */
-.ghost { position:absolute; left:6px; right:6px; top:6px; max-height:240px;
+/* Обёртка поля: подложка подсветки меряется от неё, а не от формы. Иначе строка
+   карточек сдвигала бы поле вниз, а метку команды оставляла на прежнем месте. */
+.field { position:relative; display:flex; flex-direction:column }
+.ghost { position:absolute; left:0; right:0; top:0; max-height:240px;
   overflow:hidden; padding:4px 4px 0; font:inherit; color:transparent;
   white-space:pre-wrap; pointer-events:none }
 .ghost mark { color:transparent; border-radius:4px;
@@ -566,6 +658,37 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 .menu div[aria-selected=true] { background:oklch(0.62 0.16 var(--hue,250) / .25) }
 .menu b { font-weight:600 }
 .menu i { opacity:.55; font-style:normal; font-size:12px }
+/* Выбранные файлы — карточками над полем, до загрузки. Имя режется многоточием, а не
+   переносится: карточек бывает с десяток, и каждая должна остаться одной строкой. */
+.clips { display:flex; flex-wrap:wrap; gap:4px }
+.clips[hidden] { display:none }
+.chip { display:flex; align-items:center; gap:4px; max-width:220px;
+  padding:2px 4px 2px 6px; border:1px solid #8886; border-radius:8px;
+  background:#8881; font-size:12px }
+.chip b { font-weight:400; overflow:hidden; text-overflow:ellipsis; white-space:nowrap }
+.chip i { font-style:normal; opacity:.6 }
+/* Только ход отправки. Пока файл ждёт, узел пуст и не занимает места. */
+.chip u { text-decoration:none; opacity:.55; white-space:nowrap }
+.chip u:empty { display:none }
+.chip button { border:0; padding:0 2px; opacity:.55; line-height:1 }
+.chip button:hover { opacity:1; background:none }
+.chip.bad { border-color:#e55; color:#e55 }
+/* Крестик — по наведению и поверх конца имени, места под себя не держит. Пока он
+   занимал своё место в строке, хоть и невидимый, после многоточия оставалась пустая
+   полоса в его ширину — карточка выглядела недорезанной.
+   Подложка — градиент в цвет страницы, а не сплошная плашка: буквы под крестиком
+   гаснут постепенно, а не обрываются краем.
+   Только там, где наводить есть чем. На телефоне `hover` нет, и спрятанный крестик значил
+   бы карточку, которую нельзя снять, — там он остаётся в строке и виден всегда.
+   `focus-within` — для клавиатуры: Tab на крестик должен его показывать. */
+@media (hover:hover) {
+  .chip { position:relative }
+  .chip button { position:absolute; right:1px; top:1px; bottom:1px; padding:0 4px 0 14px;
+    border-radius:0 7px 7px 0; visibility:hidden;
+    background:linear-gradient(to right, transparent, Canvas 12px) }
+  .chip button:hover { background:linear-gradient(to right, transparent, Canvas 12px) }
+  .chip:hover button, .chip:focus-within button { visibility:visible }
+}
 .bar { display:flex; gap:4px; align-items:center }
 /* «Плюс» и модель — призраки: рамка тут уже есть, своя каждой кнопке дробила бы ряд. */
 .bar .clip, .bar .model { border:0; background:none; opacity:.65; padding:3px 6px;
@@ -586,7 +709,9 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 .bar .send { display:grid; background:oklch(0.62 0.16 var(--hue,250)); color:#fff }
 .bar .send:hover { background:oklch(0.68 0.20 var(--hue,250)) }
 /* Пустое поле — бледная кнопка, без JS: `:placeholder-shown` и есть признак пустоты. */
-textarea:placeholder-shown ~ .bar .send { opacity:.35 }
+/* Через `.field`, а не прямым соседством: поле с 2026-10-13 лежит в обёртке вместе с
+   подложкой подсветки, и соседом панели кнопок быть перестало. */
+.field:has(textarea:placeholder-shown) ~ .bar .send { opacity:.35 }
 /* «Стоп» появляется рядом с «отправить», а не вместо неё. Пряталась она зря: с
    телефона Enter-а нет, и поставить промпт в очередь к идущему прогону было нечем. */
 .bar .stop { display:none }
@@ -678,6 +803,15 @@ body:not(.folded) #empty .list { display:none }
      этого «во весь экран» на телефоне перестало бы быть во весь экран. */
   body:has(#panes > section.zoomed) #termbar,
   body:has(#panes > section.zoomed) #term { display:none }
+  /* Полоски сайдбаров — туда же: по 24px с каждого края, на экране в 390px это 12%
+     ширины, и «во весь экран» выходило во весь экран минус они.
+     Условие на `folded` обязательно, а не для красоты: полоска — единственное, чем
+     открытый сайдбар закрывается (`#fold.onclick` в app.js, другого обработчика нет).
+     Спрятать её при открытом сайдбаре значит запереть человека с панелью на полэкрана
+     и без выхода. Закрытый прятать безопасно: вернуть полоски можно выходом из
+     разворота, кнопка `.max` в шапке окна остаётся на месте. */
+  body.folded:has(#panes > section.zoomed) #fold,
+  body.rfolded:has(#panes > section.zoomed) #rfold { display:none }
   header .tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
   .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
   form { margin:8px }   /* правый отступ был под ручку, а её тут нет */

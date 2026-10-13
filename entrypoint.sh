@@ -111,23 +111,47 @@ else
 fi
 
 # The browser terminal. Traefik routes /term of the same host here, so the page embeds it
-# without a second login; -b tells ttyd to build its own urls from that prefix. The shell
-# lives in a tmux session with a fixed name, which is what makes a page reload return the
-# same screen instead of a fresh shell. No binary — the panel simply has no terminal.
+# without a second login; -b tells ttyd to build its own urls from that prefix. No binary —
+# the panel simply has no terminal.
 #
-# macOptionClickForcesSelection is what makes text selectable at all on a Mac. tmux has
-# mouse mode on, so a drag is reported to tmux instead of selecting; xterm.js hands the
-# drag back to the browser only under a modifier, and its rule is platform-split:
+# dtach, not tmux (since 2026-10-13). Both keep the shell alive across a page reload, which
+# is the only reason either is here: ttyd spawns its command per connection, so without one
+# F5 would kill whatever was running. The difference is what else they do.
+#
+# tmux draws its own screen, in the terminal's alternate buffer. That buffer has no
+# scrollback of its own, so xterm.js has nothing to scroll and turns the wheel into arrow
+# keys — in bash that is readline walking previous commands, which reads as "scrolling
+# broke". Getting the wheel back means `set -g mouse on`, and then tmux takes the drag too:
+# the browser never sees it, selection stops working, and OSC 52 — the way tmux could hand
+# a copied selection back — does not reach Safari. Three days of flipping that switch
+# (2026-10-01, 10-13) ended in a `C-b m` toggle nobody wants to press.
+#
+# dtach draws nothing. It holds the pty and passes bytes through, so the shell writes
+# straight into xterm.js: its own scrollback, its own wheel, and a drag that stays the
+# browser's. Nothing to toggle. What it cannot do is windows and panes — `C-b c` and split
+# screens are gone, a second terminal is a second terminal.
+#
+#   -A   attach, or create the session if the socket has no master. One socket = one shell.
+#   -r winch  redraw on attach by sending SIGWINCH; without it a reattached screen stays
+#        blank until the first keystroke, because dtach keeps no screen of its own to repaint.
+#   -E   no detach character. `C-\` otherwise detaches and leaves an empty terminal that
+#        looks like a crash; closing the tab is the only detach anyone needs here.
+#
+# scrollback=20000 matches what tmux kept, and now it is xterm.js holding it.
+#
+# macOptionClickForcesSelection stays, even though the shell no longer asks for mouse
+# reporting: full-screen programs still do. Inside vim, htop or claude's own TUI the drag
+# goes to the program again, and on macOS xterm.js hands it back only under Option, and only
+# with this flag — its rule is platform-split:
 #
 #   shouldForceSelection(e) { return isMac ? e.altKey && <this option> : e.shiftKey }
 #
-# So Shift — the advice everyone repeats — does nothing on macOS, and Option does nothing
-# either until this flag is on. Without it the drag reaches tmux, tmux starts its own
-# selection, and it vanishes on mouse-up: "I can't select more than one word".
+# So Shift — the advice everyone repeats — does nothing on macOS.
 if command -v ttyd >/dev/null 2>&1; then
     ttyd -W -p 7681 -b /term -w /projects -d 3 \
         -t macOptionClickForcesSelection=true \
-        tmux new -A -s web &
+        -t scrollback=20000 \
+        dtach -A /tmp/ttyd.dtach -r winch -E bash -l &
 else
     echo "entrypoint: ttyd not found — web terminal not started" >&2
 fi

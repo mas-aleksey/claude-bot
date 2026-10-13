@@ -691,13 +691,30 @@ function frontPane(list, saved) {
 // --- front:end ---
 
 // --- raise:begin ---
+// Два действия, а не одно. `raise` кладёт окно поверх соседей — это нужно и человеку, и
+// отрисовке. `focus` вдобавок передаёт ему разворот — это только жест человека.
+//
+// Пока они были одной функцией, восстановление после F5 перетасовывало развёрнутое:
+// `drawPane` поднимает каждое окно, значит разворот переезжал с панели на панель и
+// оставался на последней нарисованной — на телефоне это низ стопки. Свёрнутый в
+// заголовок сосед обрывал цепочку совсем: отдать ему разворот нельзя, а снять с
+// предыдущего уже успели.
 function raise(el) {
-  // Разворот переезжает на поднятое окно, а не отменяется. Развёрнута всегда ровно одна
-  // панель — то, с чем работаешь сейчас: кликнул сессию в сайдбаре, она открылась во
-  // весь экран поверх прежней, а прежняя вернулась в свою клетку под ней. Стопку
-  // развёрнутых не держим: её не видно, и сколько их под верхним окном — не узнать.
-  // Само развёрнутое от касания не сворачивается: сравниваем элементы, а не панели.
-  // Свёрнутому в заголовок разворот не отдаём — эти состояния взаимоисключающие.
+  document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
+  el.classList.add('act');
+  rememberFront(panes.find(x => 'pane-' + x.pane === el.id)?.pane);
+  // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
+  // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
+  el.classList.remove('ready', 'bad');
+}
+
+// Разворот переезжает на то окно, с которым работают: кликнул сессию в сайдбаре — она
+// открылась во весь экран поверх прежней, а прежняя вернулась в свою клетку под ней.
+// Развёрнута всегда ровно одна панель. Стопку развёрнутых не держим: её не видно, и
+// сколько их под верхним окном — не узнать.
+// Само развёрнутое от касания не сворачивается: сравниваем элементы, а не панели.
+// Свёрнутому в заголовок разворот не отдаём — эти состояния взаимоисключающие.
+function focus(el) {
   let moved = false;
   for (const x of panes) {
     if (!x.prev) continue;
@@ -709,12 +726,7 @@ function raise(el) {
     if (to && !to.prev && !to.roll) zoom(to);
     save();
   }
-  document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
-  el.classList.add('act');
-  rememberFront(panes.find(x => 'pane-' + x.pane === el.id)?.pane);
-  // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
-  // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
-  el.classList.remove('ready', 'bad');
+  raise(el);
 }
 // --- raise:end ---
 
@@ -737,7 +749,7 @@ function wireGrab(p, el, node, edge) {
     const hit = e.target;
     e.preventDefault();
     node.setPointerCapture(e.pointerId);
-    raise(el);
+    focus(el);
     if (!edge) node.classList.add('moving');
     const from = { x: e.clientX, y: e.clientY, c: p.c, r: p.r, w: p.w, h: p.h };
     const step = { x: colStep(), y: rowStep() };
@@ -792,7 +804,7 @@ function addPane(p) {
   const open = p.session && panes.find(x => x.session === p.session);
   if (open) {
     const el = document.getElementById('pane-' + open.pane);
-    if (el) { raise(el); el.scrollIntoView({ block: 'nearest' }); }
+    if (el) { focus(el); el.scrollIntoView({ block: 'nearest' }); }
     return;
   }
   if (p.session) { done.delete(p.session); saveMarks(); }
@@ -808,11 +820,15 @@ function addPane(p) {
   // Цена известна: расставленное руками новое окно сбрасывает. Восстановленные из
   // localStorage панели уже несут свои клетки и сюда не попадают.
   // Пока что-то развёрнуто, раскладывать нечего: новое окно сейчас заберёт разворот
-  // себе в `raise`, а `retile` стёр бы `prev` у всех и вернул сетку вместо полного
-  // экрана. Клетки новой панели раздаст `fit` — в них она и вернётся из разворота.
+  // себе, а `retile` стёр бы `prev` у всех и вернул сетку вместо полного экрана.
+  // Клетки новой панели раздаст `fit` — в них она и вернётся из разворота.
   if (!p.c && !panes.some(x => x.prev)) retile();
   save();
   drawPane(p);
+  // Разворот отдаём здесь, а не в `drawPane`: открыть сессию — жест, а через `drawPane`
+  // идёт ещё и восстановление после F5, где передавать нечего и некому.
+  const el = document.getElementById('pane-' + p.pane);
+  if (el) focus(el);
   markList();
 }
 
@@ -856,9 +872,17 @@ function drawPane(p) {
     <div class=queue hidden></div>
     <form>
       <div class=menu hidden></div>
-      <div class=ghost></div>
-      <textarea placeholder=" " title="${TOUCH.matches ? 'кнопка ↑ — отправить'
-        : 'Enter — отправить, Shift+Enter — перенос строки'}"></textarea>
+      <div class=clips hidden></div>
+      <!-- Поле и подложка подсветки — в своей обёртке, а не прямо в форме. Подложка
+           стоит абсолютом, и до карточек её верх отсчитывался от формы: совпадало, пока
+           поле было первым в потоке. Строка карточек это ломает, сдвигая поле вниз, а
+           подложку оставляя на месте. Обратных кавычек тут быть не может — разметка
+           лежит в шаблонной строке JS. -->
+      <div class=field>
+        <div class=ghost></div>
+        <textarea placeholder=" " title="${TOUCH.matches ? 'кнопка ↑ — отправить'
+          : 'Enter — отправить, Shift+Enter — перенос строки'}"></textarea>
+      </div>
       <div class=bar>
         <label class=clip title="прикрепить файлы">+<input type=file multiple></label>
         <select class=model title="модель этой панели"></select>
@@ -902,6 +926,23 @@ function drawPane(p) {
   // Низ возвращаем только тому, кто у низа и был: отлистанный вверх читает историю.
   // Признак считаем на прокрутке, а не внутри наблюдателя: там размер уже новый, и
   // «был ли внизу» по нему не узнать. Допуск в atEnd — те самые «очень близко к низу».
+  // Окошки IN и OUT у шагов раскрываются кликом — делегатом на весь лог, потому что шаги
+  // дописываются потоком, и вешать обработчик на каждый пришлось бы в `pour`.
+  // Клик, который на деле был выделением текста, окно не трогает: иначе нельзя было бы
+  // скопировать кусок вывода, не схлопнув его. Ссылка в IN ведёт по ссылке.
+  // Раскрывается только то, что обрезано (`more` ставит `markMore`), и уже раскрытое —
+  // чтобы его можно было свернуть. Короткое окошко на клик не отзывается: раскрывать там
+  // нечего, а мигнувший курсор обещал бы обратное.
+  box.addEventListener('click', (e) => {
+    const io = e.target.closest('.io.more, .io.open');
+    if (!io || e.target.closest('a') || String(getSelection())) return;
+    io.classList.toggle('open');
+  });
+  // Пачка раскрылась — меряем её окошки. До этого они не размечены, высота нулевая, и
+  // понять, обрезан ли текст, нельзя. `toggle` не всплывает, поэтому перехват.
+  box.addEventListener('toggle', (e) => {
+    if (e.target.open && e.target.classList?.contains('tools')) markMore(e.target);
+  }, true);
   let stick = true;   // новое окно открывается у низа
   const pin = el.querySelector('.pin');
   box.onscroll = () => {
@@ -936,6 +977,8 @@ function drawPane(p) {
   // копирует список первой строкой — иначе доедет только первый файл.
   const pick = el.querySelector('.clip input');
   pick.onchange = () => { attach(p, ta, pick.files); pick.value = ''; };
+  wireClips(p, el);
+  drawClips(p);   // после F5 список пуст, но панель могла быть перерисована на лету
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
   wireSlash(p, el, ta);
 
@@ -993,7 +1036,7 @@ function wirePane(p, el) {
   const max = el.querySelector('header .max');
   max.onclick = () => {
     if (p.roll) { p.roll = false; drawFold(); }
-    zoom(p); save(); raise(el);
+    zoom(p); save(); focus(el);
   };
   // Флаг лежит в самой панели, а она целиком уходит в localStorage — свёрнутая
   // остаётся свёрнутой и после F5, как остаётся её место в сетке.
@@ -1009,7 +1052,7 @@ function wirePane(p, el) {
   el.style.setProperty('--hue', p.hue ?? HUE0);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
-  el.onpointerdown = () => raise(el);
+  el.onpointerdown = () => focus(el);
   // Клик по окну ставит курсор в промпт — мышью. Пальцем нет: тап по логу там нужен
   // выделению, а не фокусу, и перехват ломал бы «выделить и скопировать» ровно в том
   // месте, где текст и читают. Поле промпта на телефоне и так под пальцем внизу.
@@ -1024,7 +1067,8 @@ function wirePane(p, el) {
   applyGeom(p);
   drawZoom(p);
   // Новое окно — сверху. Без этого оно уходило под активную панель: `act` держит
-  // z-index, а порядок в DOM его не перебивает.
+  // z-index, а порядок в DOM его не перебивает. Только слой: разворот отдаёт `addPane`,
+  // потому что это жест, а сюда приходит и восстановление после F5.
   raise(el);
 }
 
@@ -1303,7 +1347,14 @@ function setWho(p, el) {
 // и placeholder, и длинная подсказка растягивала композер до потолка в 240px. Дальше
 // браузер подкручивал секцию, чтобы показать поле с фокусом, и шапка уезжала за верхний
 // край: у `section` стоит `overflow:hidden`, вернуть её колесом нельзя.
+// Где браузер умеет `field-sizing: content` (в CSS у textarea), высоту он держит сам —
+// и это не про экономию строк: ручной способ ниже читает `scrollHeight`, то есть на
+// каждую букву заставляет пересчитать раскладку всей секции вместе с логом. На длинной
+// сессии от этого залипал набор.
+const AUTOSIZE = CSS.supports('field-sizing', 'content');
+
 function grow(ta) {
+  if (AUTOSIZE) return;
   const hold = ta.placeholder;
   ta.placeholder = '';
   ta.style.height = 'auto';
@@ -1459,7 +1510,11 @@ function wireSlash(p, el, ta) {
 // иначе в буфер попало бы и её собственное слово.
 function wireCopy(box) {
   if (!navigator.clipboard) return;  // без HTTPS или в старом браузере кнопки не будет
-  for (const pre of box.querySelectorAll('pre:not([data-copy])')) {
+  // Кроме окошек IN и OUT у шагов. Там кнопка лишняя — текст выделяется мышью, а клик
+  // по выделению окошко не схлопывает, — и вредная: пустой OUT рисуется заранее, и
+  // обёртка ловила его раньше, чем приходил вывод. Кнопка запоминала пустую строку, а
+  // `pour` потом писал текст в обёртку вместо `pre` и стирал её вместе с кнопкой.
+  for (const pre of box.querySelectorAll('pre:not([data-copy]):not(.io pre)')) {
     pre.dataset.copy = '1';
     const text = (pre.querySelector('code') || pre).textContent;
     const btn = document.createElement('button');
@@ -1502,35 +1557,90 @@ function upload(file, onProgress) {
 }
 
 // --- attach:begin ---
-async function attach(p, ta, files) {
-  // Копия списка, а не сам FileList: он живой. `pick.value = ''` в обработчике выбора
-  // очищает его на первом же `await` ниже, и цикл заканчивался после первого файла —
-  // из десяти выбранных доходил один.
-  for (const file of [...(files || [])]) {
-    // Строка в логе, а не отдельная плашка: лог и так на виду, а место под панелью
-    // занято полем промпта. textContent вместо разметки — имя файла приходит от
-    // человека и экранировать его иначе пришлось бы руками.
-    const row = log(p, '<div class="msg note"></div>');
-    const size = kb(file.size);
-    const show = (part) => {
-      if (row) row.textContent = part === null
-        ? `отправляю ${file.name} (${size})…`
-        : `отправляю ${file.name} (${size}) — ${Math.round(part * 100)}%`;
-    };
-    show(0);
+// Выбранные файлы ждут отправки в памяти вкладки, не на сервере. До 2026-10-13 `attach`
+// грузил сразу и дописывал в поле путь, который вернул сервер, — передумать было уже
+// нельзя: строку из поля убрать можно, а файл оставался лежать в песочнице навсегда.
+//
+// Карта по панели, а не поле в `panes`: `panes` уезжает в localStorage через `save()`, а
+// `File` не сериализуется. Отсюда и цена решения — F5 стирает невыложенные карточки.
+// Деться от неё некуда: единственный способ пережить перезагрузку — загрузить, то есть
+// ровно то, от чего уходим.
+const clips = new Map();
+
+// Значок по типу, текстовыми символами: картинка и всё остальное. Эмодзи тут были бы
+// лотереей — на части систем они приезжают цветными и ломают высоту строки.
+const chipIcon = (f) => f.type.startsWith('image/') ? '\u25a3\ufe0e' : '\u25a4\ufe0e';
+
+function drawClips(p) {
+  const box = document.querySelector('#pane-' + p.pane + ' .clips');
+  if (!box) return;
+  const files = clips.get(p.pane) || [];
+  box.hidden = !files.length;
+  box.innerHTML = files.map((f, i) =>
+    `<span class=chip title="${esc(f.name)}"><i>${chipIcon(f)}</i>` +
+    // `<u>` пустой, пока файл ждёт: размер в карточке не нужен. Место держим под ход
+    // отправки — его туда пишет `flushClips`, а пустой узел CSS прячет.
+    `<b>${esc(f.name)}</b><u></u>` +
+    `<button type=button data-i="${i}" title="убрать">\u00d7</button></span>`).join('');
+}
+
+// Снятие делегатом на строке: карточки перерисовываются целиком на каждом изменении, и
+// свой обработчик на каждом крестике пришлось бы вешать заново после каждой отрисовки.
+function wireClips(p, el) {
+  el.querySelector('.clips').onclick = (e) => {
+    const i = e.target.closest('button')?.dataset.i;
+    if (i === undefined) return;
+    const files = clips.get(p.pane) || [];
+    files.splice(Number(i), 1);
+    if (!files.length) clips.delete(p.pane);
+    drawClips(p);
+  };
+}
+
+// Копия списка, а не сам FileList: он живой, и `pick.value = ''` в обработчике выбора
+// очищает его у нас под руками.
+function attach(p, _ta, files) {
+  const add = [...(files || [])];
+  if (!add.length) return;
+  clips.set(p.pane, [...(clips.get(p.pane) || []), ...add]);
+  drawClips(p);
+}
+
+// Загрузка перед отправкой. Возвращает пути либо null, если хоть один файл не доехал:
+// промпт со ссылками на половину файлов хуже неотправленного — разбираться в нём
+// пришлось бы уже по ответу claude.
+async function flushClips(p) {
+  const files = clips.get(p.pane) || [];
+  if (!files.length) return [];
+  const box = document.querySelector('#pane-' + p.pane + ' .clips');
+  const paths = [];
+  for (let i = 0; i < files.length; i++) {
+    const chip = box?.children[i];
+    const part = chip?.querySelector('u');
     try {
-      const { path } = await upload(file, show);
-      row?.remove();   // путь уже в поле промпта, строке в логе больше нечего сказать
-      ta.value = (ta.value ? ta.value.replace(/\s*$/, '\n') : '') + path + '\n';
-      grow(ta);
-      ta.focus();
+      const { path } = await upload(files[i], (x) => {
+        // lengthComputable бывает false — тогда процента нет, и остаётся многоточие.
+        if (part) part.textContent = x === null ? '\u2026' : Math.round(x * 100) + '%';
+      });
+      paths.push(path);
     } catch (e) {
-      const text = `файл не загрузился: ${String(e).slice(0, 200)}`;
-      if (row) { row.className = 'msg err'; row.textContent = text; }
-      else log(p, `<div class="msg err">${esc(text)}</div>`);
+      chip?.classList.add('bad');
+      if (part) part.textContent = 'не вышло';
+      log(p, `<div class="msg err">файл не загрузился: ${esc(String(e).slice(0, 200))}</div>`);
+      return null;
     }
   }
+  clips.delete(p.pane);
+  drawClips(p);
+  return paths;
 }
+// Пути вложений — в конце промпта, после текста и пустой строки, тем же видом, что у
+// подписи к файлу в Telegram (`_prompt` в app.py): у одного бота два входа, и собирать
+// промпт они должны одинаково. Claude читает файл по пути, содержимое наружу не уходит.
+// В начале пути стояли до 2026-10-13 и ломали слеш-команды: claude узнаёт `/имя` только
+// первым словом промпта, и `/refine` с прикреплённой картинкой уходил обычным текстом.
+const withPaths = (text, paths) => !paths.length ? text
+  : text ? text + '\n\n' + paths.join('\n') : paths.join('\n');
 // --- attach:end ---
 
 // Вставка мимо потока: свой промпт и красные строки. Прокрутка тут обязательна —
@@ -1725,8 +1835,18 @@ function drawQueue(p, texts) {
 // --- queue:end ---
 
 async function send(p, ta) {
-  const prompt = ta.value.trim();
-  if (!prompt) return;
+  const text = ta.value.trim();
+  const waiting = (clips.get(p.pane) || []).length;
+  if (!text && !waiting) return;
+  // Кнопку гасим на время загрузки: без этого второе нажатие отправляет промпт дважды,
+  // а файлы грузит по второму разу — `flushClips` уже идёт по тому же списку.
+  const btn = document.querySelector('#pane-' + p.pane + ' .send');
+  if (btn) btn.disabled = true;
+  const paths = await flushClips(p);
+  if (btn) btn.disabled = false;
+  if (paths === null) return;   // файл не доехал, промпт остаётся в поле целым
+  const prompt = withPaths(text, paths);
+  if (!prompt.trim()) return;
   ta.value = '';
   // Подсказку снимаем до перерисовки: она была про прошлый прогон, а начался новый.
   hints.delete(p.pane);
@@ -1794,8 +1914,10 @@ async function send(p, ta) {
     // Текст возвращаем только в пустое поле: за время запроса (до 90 секунд ожидания
     // id сессии) человек мог начать набирать следующий, и затирать его нельзя. Тогда
     // строка в логе остаётся — иначе промпт исчез бы совсем, откуда его не скопировать.
+    // В поле возвращаем набранное, без путей: файлы уже загружены и лежат в песочнице,
+    // второй отправкой их грузить незачем, а строки с путями человек не писал.
     const back = !ta.value;
-    if (back) { ta.value = prompt; ta.oninput(); line?.remove(); }
+    if (back) { ta.value = text; ta.oninput(); line?.remove(); }
     log(p, `<div class="msg err">не отправилось (${esc(code)})` +
            `${back ? ', промпт вернулся в поле' : ''}</div>`);
   }
@@ -1949,13 +2071,25 @@ function renderItem(it) {
   if (it.role === 'note') {
     return `<div class="msg note">↳ ${esc(it.text)}</div>`;
   }
+  // Шаг — имя инструмента и под ним два окошка: IN с аргументом вызова и OUT с головой
+  // результата. Окошки поджаты — IN в строку, OUT в три, — а клик раскрывает каждое
+  // целиком на месте. Так пачка из двадцати шагов читается сверху вниз одним взглядом, а
+  // полный текст — по одному клику на том окошке, которое нужно.
+  // Раскрывашкой на весь шаг это было один заход (2026-10-13): каждый шаг сворачивался в
+  // строку, и чтобы увидеть хоть начало вывода, приходилось открывать их по очереди.
+  // OUT рисуется пустым и скрытым: результат приходит позже отдельным элементом, и
+  // `pour` впишет его сюда по `data-tid`.
+  // Подпись после имени: описание у Bash, путь у правок. Совпадает с IN — значит, IN
+  // повторил бы то же самое строкой ниже (у Edit и Write аргумент и есть путь), и его
+  // не рисуем.
   if (it.role === 'tool') {
-    const head = toolHead(it, true);
-    // Длинный шаг раскрывается кликом. `details` нативный: разворот, фокус с клавиатуры
-    // и Ctrl+F браузера достаются даром, своей кнопки и состояния в JS не нужно.
-    return it.full ? `<details class="tool"><summary>${head}</summary>` +
-                     `<pre>${esc(it.full)}</pre></details>`
-                   : `<div class="tool">${head}</div>`;
+    const tid = it.id ? ` data-tid="${esc(it.id)}"` : '';
+    const arg = it.full || it.text;
+    const desc = it.desc ? `<span>${esc(it.desc)}</span>` : '';
+    const inBox = it.desc && it.desc === arg ? ''
+      : `<div class=io><i>IN</i><pre>${linkify(esc(arg))}</pre></div>`;
+    return `<div class="tool step"${tid}><div class=sh><b>${esc(it.icon)} ${esc(it.name)}</b>` +
+           `${desc}</div>${inBox}<div class="io out" hidden><i>OUT</i><pre></pre></div></div>`;
   }
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
@@ -1973,9 +2107,116 @@ function renderItem(it) {
 // Группу закрывает любое другое сообщение: следующий шаг начнёт новую. Дописываем
 // именно в последнего потомка — пачка приезжает батчами по CHUNK и живым потоком, и
 // разрыв между ними не должен рвать группу надвое.
+// Стрелка «есть ещё» только у окошка, где текст действительно не влез. Мерить можно
+// лишь размеченное: шаги свёрнутой пачки не отрисованы, и высота у них нулевая. Поэтому
+// меряем в раскрытых пачках после каждой вставки и в пачке — в момент её раскрытия.
+function markMore(root) {
+  const scope = root.matches?.('details.tools') ? root : null;
+  const list = scope ? scope.querySelectorAll('.io:not([hidden])')
+                     : root.querySelectorAll('details.tools[open] .io:not([hidden])');
+  for (const io of list) {
+    if (io.classList.contains('open')) continue;
+    const el = io.lastElementChild;
+    if (el && el.clientHeight) io.classList.toggle('more', el.scrollHeight > el.clientHeight + 1);
+  }
+}
+
+// --- diff:begin ---
+// Diff правки у Edit и Write. Куски приходят готовым unified diff с номерами строк из
+// файла (`_diff` в transcript.py), здесь их только раскладываем.
+//
+// Две колонки: слева было, справа стало. Подряд идущие `-` и следующие за ними `+`
+// встают друг напротив друга — это и есть «строку заменили». Лишние остаются с пустой
+// клеткой напротив, контекст стоит в обеих колонках. Строка `\` — «No newline at end of
+// file» от diff, строкой файла она не является и не рисуется.
+function diffRows(hunks) {
+  const rows = [];
+  for (const h of hunks) {
+    let o = h.o, n = h.n, del = [], add = [];
+    const flush = () => {
+      for (let i = 0; i < Math.max(del.length, add.length); i++)
+        rows.push([del[i] || null, add[i] || null]);
+      del = []; add = [];
+    };
+    if (rows.length) rows.push('gap');
+    for (const line of h.lines) {
+      const c = line[0], t = line.slice(1);
+      if (c === '-') { if (add.length) flush(); del.push([o++, t, 'del']); }
+      else if (c === '+') add.push([n++, t, 'add']);
+      else if (c === ' ') { flush(); rows.push([[o++, t, ''], [n++, t, '']]); }
+    }
+    flush();
+  }
+  return rows;
+}
+
+const diffCell = (x) => x
+  ? `<td class=ln>${x[0]}</td><td class="${x[2]}">${esc(x[1])}</td>`
+  : '<td class=ln></td><td class=none></td>';
+
+// Одна колонка — у нового файла (левая половина была бы пустой на всю высоту) и на узком
+// экране: две колонки кода по 180px на телефоне не читаются. Тогда строки идут подряд,
+// как в `git diff`: удалённые над добавленными.
+function diffHTML(d, narrow) {
+  const rows = diffRows(d.hunks);
+  const gap = (span) => `<tr class=gap><td colspan=${span}>\u22ef</td></tr>`;
+  let body;
+  if (d.new) {
+    body = rows.map(r => r === 'gap' ? gap(2) : `<tr>${diffCell(r[1])}</tr>`).join('');
+  } else if (narrow) {
+    body = rows.map(r => r === 'gap' ? gap(2)
+      : r[0] && r[1] && !r[0][2] ? `<tr>${diffCell(r[1])}</tr>`        // контекст — один раз
+      : (r[0] ? `<tr>${diffCell(r[0])}</tr>` : '') + (r[1] ? `<tr>${diffCell(r[1])}</tr>` : '')
+    ).join('');
+  } else {
+    body = rows.map(r => r === 'gap' ? gap(4) : `<tr>${diffCell(r[0])}${diffCell(r[1])}</tr>`)
+      .join('');
+  }
+  const more = d.more > 0 ? `<div class=more>\u2026 ещё ${d.more} строк</div>` : '';
+  const cls = d.new || narrow ? 'dv one' : 'dv';
+  return `<div class="${cls}"><table>${body}</table>${more}</div>`;
+}
+// --- diff:end ---
+
 // --- tools:begin ---
+// Сколько сообщений держим в логе панели. Транскрипт длинной сессии даёт их больше
+// тысячи, и каждое — живой узел со своей раскладкой: панель тормозит тем сильнее, чем
+// дольше сессия. История при этом никуда не девается, она в файле сессии; на экране
+// нужен хвост, и перечитывают его прокруткой, а не поиском по годовой ленте.
+const LOG_MAX = 300;
+
+// Лишнее — с головы лога, пачку инструментов целиком. Резать внутри `details` нельзя:
+// в заголовке счётчик шагов, и он стал бы врать.
+function trim(box) {
+  while (box.children.length > LOG_MAX) box.firstElementChild.remove();
+}
+
 function pour(box, items) {
   for (const it of items) {
+    // Вывод вписывается в свой шаг, а не встаёт в лог. Отдельной строкой он ломал бы
+    // дважды: закрыл бы пачку (её закрывает любой не-`tool`) и сбил бы счётчик шагов в
+    // заголовке — тот считает детей пачки. Шага нет — его срезал `LOG_MAX` или он был
+    // до начала потока, — тогда и показывать вывод не к чему.
+    if (it.role === 'out') {
+      const o = it.id && box.querySelector(`.step[data-tid="${CSS.escape(it.id)}"] .out`);
+      if (o) {
+        o.hidden = false;
+        o.classList.toggle('err', !!it.err);
+        // Упавший шаг красит свою точку на шкале — её рисует CSS по классу шага.
+        o.closest('.step')?.classList.toggle('bad', !!it.err);
+        // У правки вместо «updated successfully» — diff. Подпись своя: это уже не
+        // вывод команды, а то, что стало с файлом.
+        if (it.diff) {
+          o.classList.add('diff');
+          o.innerHTML = '<i>DIFF</i>' + diffHTML(it.diff, NARROW.matches);
+        } else {
+          // `pre` по имени, а не последним потомком: окошко не должно зависеть от того,
+          // во что его успел завернуть кто-то ещё.
+          o.querySelector('pre').textContent = it.text;
+        }
+      }
+      continue;
+    }
     if (it.role !== 'tool') { box.insertAdjacentHTML('beforeend', renderItem(it)); continue; }
     let g = box.lastElementChild;
     if (!g || !g.classList.contains('tools')) {
@@ -2037,7 +2278,9 @@ function absorb(p, data) {
   for (const e of dropEcho(data.items, queue)) e.nodes.forEach(n => n?.remove());
   if (!queue.length) echoes.delete(p.pane);
   pour(box, data.items);
+  trim(box);
   wireCopy(box);
+  markMore(box);
   if (wasEnd || first) box.scrollTop = 1e9;
   // Вставка прокрутки не вызывает, поэтому кнопку двигаем руками: лог вырос, и низ
   // уехал даже у того, кто не трогал колесо.
@@ -2154,7 +2397,10 @@ async function tick() {
     // Стоит ПОСЛЕ переключения `busy` и разблокировки «стоп» намеренно. Всё, что в этом
     // цикле стоит до них, при исключении оставляет окно навсегда занятым, с нажатой
     // кнопкой и без единой строки в консоли. Подсказка такой цены не стоит.
-    const tip = busy ? null : ((st.suggest || {})[scope] || null);
+    //
+    // Ищем по сессии, а не по скоупу: скоуп — это id окна, новый на каждое открытие, и
+    // переоткрытая из списка сессия своей подсказки не находила.
+    const tip = busy || !p.session ? null : ((st.suggest || {})[p.session] || null);
     hints.set(p.pane, tip);
     const box = el?.querySelector('textarea');
     if (box && !box.value) box.placeholder = tip || BLANK;
@@ -2358,8 +2604,8 @@ loadTree().then(() => {
   panes.forEach(p => { p.next = 0; drawPane(p); });
   // Кто впереди после F5 — то же окно, что было поднято до неё. `act` держит z-index,
   // но живёт только в DOM, поэтому поднятое запоминается отдельно (`front` выше).
-  // Развёрнутое за время цикла успело переехать на последнее нарисованное окно: подъём
-  // забирает разворот себе. Этот `raise` возвращает его назад — вместе со слоем.
+  // Именно `raise`, а не `focus`: разворот за время цикла никуда не уехал и лежит там,
+  // где его оставили, — передавать нечего.
   const front = frontPane(panes, saved);
   if (front) raise(document.getElementById('pane-' + front.pane));
   tick();

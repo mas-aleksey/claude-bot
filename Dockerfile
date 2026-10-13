@@ -39,7 +39,7 @@ ENV LANG=C.UTF-8 \
 # instance's compose file, see example/docker-compose.yml.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git openssh-client openssh-server \
-        jq postgresql-client poppler-utils vim tmux iproute2 iputils-ping dnsutils \
+        jq postgresql-client poppler-utils vim tmux dtach iproute2 iputils-ping dnsutils \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \

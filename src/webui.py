@@ -278,8 +278,13 @@ async def index(_: web.Request) -> web.Response:
     # no-store: страница целиком лежит в образе, и после раскатки вкладка обязана
     # взять новую. Валидаторов у ответа нет, поэтому без этого заголовка браузер
     # вправе отдать свою копию, и человек сидит на прошлой версии панели.
-    return web.Response(text=PAGE.replace("<title>claude</title>", f"<title>{title()}</title>"),
-                        content_type="text/html", headers={"Cache-Control": "no-store"})
+    res = web.Response(text=PAGE.replace("<title>claude</title>", f"<title>{title()}</title>"),
+                       content_type="text/html", headers={"Cache-Control": "no-store"})
+    # Страница — 225 КБ одним куском: весь CSS и весь скрипт инлайном, сборки нет.
+    # Под gzip это 70 КБ, и качается она на каждое открытие вкладки (`no-store` выше).
+    # Сжатие тут, а не в Traefik: ассистент ходит и мимо него, прямо в порт.
+    res.enable_compression()
+    return res
 
 
 async def api_models(_: web.Request) -> web.Response:

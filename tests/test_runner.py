@@ -315,16 +315,17 @@ async def test_run_asks_for_a_prompt_suggestion_and_keeps_it(monkeypatch, tmp_pa
     """Подсказка следующего промпта приезжает отдельным событием и ложится в базу.
 
     В транскрипт CLI её не пишет, поэтому панель взять её оттуда не может — ключ по
-    скоупу и есть единственное место, где она живёт. Прошлая подсказка снимается в
-    момент запуска: она была про предыдущий ход.
+    сессии и есть единственное место, где она живёт. По сессии, а не по скоупу: у
+    переоткрытого окна скоуп новый. Прошлая подсказка снимается в момент запуска: она
+    была про предыдущий ход.
     """
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
     monkeypatch.setattr(store._local, "conn", None, raising=False)
     runner.suggest("s", "подсказка прошлого хода")
 
     proc = _Proc([json.dumps(e).encode() + b"\n" for e in (
-        {"type": "system", "subtype": "init"},
-        {"type": "prompt_suggestion", "suggestion": "раскатай на песочницы"},
+        {"type": "system", "subtype": "init", "session_id": "s"},
+        {"type": "prompt_suggestion", "suggestion": "раскатай на песочницы", "session_id": "s"},
         {"type": "result"},
     )])
     seen = {}
@@ -337,7 +338,7 @@ async def test_run_asks_for_a_prompt_suggestion_and_keeps_it(monkeypatch, tmp_pa
     monkeypatch.setattr(runner, "trust", lambda cwd: None)
     monkeypatch.setattr(runner, "_runs", {})
 
-    gen = runner.run("промпт", str(tmp_path), scope="s")
+    gen = runner.run("промпт", str(tmp_path), session_id="s", scope="web:1")
     await asyncio.wait_for(anext(gen), 1)
     assert "--prompt-suggestions" in seen["argv"], "без флага CLI событие не пришлёт"
     assert runner.suggestions() == {}, "подсказку прошлого хода снимает запуск"

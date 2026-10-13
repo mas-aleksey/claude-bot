@@ -351,33 +351,34 @@ async def test_limits_ttl_follows_the_load(monkeypatch):
 def test_suggestion_lives_in_the_base_and_dies_with_the_next_prompt(tmp_path, monkeypatch):
     """Подсказку следующего промпта присылает CLI событием `prompt_suggestion`.
 
-    Держим её в базе по скоупу, а не в памяти процесса: панель читает её статусом, и так
+    Держим её в базе по сессии, а не в памяти процесса: панель читает её статусом, и так
     она переживает и перезагрузку страницы, и рестарт бота — а тот случается по десять
-    раз на дню. Снимается она при новом прогоне в том же скоупе: подсказка прошлого хода
-    больше не про то, что сейчас происходит.
+    раз на дню. По сессии, а не по скоупу окна: окно закрыли и открыли ту же сессию — у
+    него новый скоуп, а подсказка должна остаться. Снимается она при новом прогоне той же
+    сессии: подсказка прошлого хода больше не про то, что сейчас происходит.
     """
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "bot.db"))
     monkeypatch.setattr(store._local, "conn", None, raising=False)
 
-    runner.suggest("web:1", "раскатай на песочницы")
-    runner.suggest("tg:42", "запушь")
-    assert runner.suggestions() == {"web:1": "раскатай на песочницы", "tg:42": "запушь"}
+    runner.suggest("s-1", "раскатай на песочницы")
+    runner.suggest("s-2", "запушь")
+    assert runner.suggestions() == {"s-1": "раскатай на песочницы", "s-2": "запушь"}
 
-    # Новый прогон в скоупе стирает ключ, соседний скоуп не трогает.
-    runner.suggest("web:1", None)
-    assert runner.suggestions() == {"tg:42": "запушь"}
+    # Новый прогон сессии стирает её ключ, соседнюю не трогает.
+    runner.suggest("s-1", None)
+    assert runner.suggestions() == {"s-2": "запушь"}
 
     # Пустую строку CLI отдать может, показывать её нечего — ключа быть не должно.
-    runner.suggest("tg:42", None)
+    runner.suggest("s-2", None)
     assert runner.suggestions() == {}
 
     # Протухшая подсказка не показывается и стирается на том же проходе. Иначе ключи
     # копились бы по одному на каждое когда-либо открытое окно: закрытие окна случается
     # в браузере, и сказать об этом боту некому.
-    runner.suggest("web:2", "давно забытое")
-    old_at = json.loads(store.get("suggest:web:2"))
+    runner.suggest("s-3", "давно забытое")
+    old_at = json.loads(store.get("suggest:s-3"))
     old_at["at"] -= runner.SUGGEST_TTL + 1
-    store.put("suggest:web:2", json.dumps(old_at))
+    store.put("suggest:s-3", json.dumps(old_at))
 
     assert runner.suggestions() == {}
-    assert store.get("suggest:web:2") is None, "протухший ключ обязан исчезнуть"
+    assert store.get("suggest:s-3") is None, "протухший ключ обязан исчезнуть"

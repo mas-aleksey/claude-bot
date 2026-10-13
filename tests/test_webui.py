@@ -48,10 +48,12 @@ def test_items_keeps_conversation_drops_noise(tmp_path):
     seen, got, _ = transcript.items(path, 0)
 
     assert seen == path.stat().st_size  # прочитан весь файл, оффсет для следующего кадра
-    assert [i["role"] for i in got] == ["user", "tool", "assistant"]
+    # Вывод шага — с 2026-10-13 не шум, а OUT под шагом: панель вписывает его по id.
+    assert [i["role"] for i in got] == ["user", "tool", "out", "assistant"]
     assert got[0]["text"] == "почини тесты"
     assert got[1]["name"] == "Bash" and "pytest -q" in got[1]["text"]
-    assert got[2]["text"] == "готово"
+    assert got[2]["text"] == "1 failed"
+    assert got[3]["text"] == "готово"
 
 
 def test_long_tool_argument_comes_with_its_full_text(tmp_path):
@@ -276,13 +278,52 @@ def test_slash_command_without_args(tmp_path):
 
 
 def test_empty_injected_context_is_skipped(tmp_path):
-    """Пустой список блоков — служебное событие, пометка о нём была бы шумом."""
+    """Пустой список блоков — служебное событие, пометка о нём была бы шумом. Вывод
+    шага пометкой «подставлен контекст» тоже не становится: у него свой элемент."""
     path = tmp_path / "s.jsonl"
     write(path, {"type": "user", "message": {"role": "user", "content": []}},
                 {"type": "user", "message": {"role": "user", "content": [
                     {"type": "tool_result", "content": "лог"}]}})
     _, got, _ = transcript.items(path, 0)
-    assert got == []
+    assert [i["role"] for i in got] == ["out"]
+
+
+def test_tool_output_is_clipped_and_tied_to_its_call(tmp_path):
+    """OUT под шагом: голова вывода, связь с вызовом по id, ошибки отдельно.
+
+    Режется на сервере, а не в браузере — иначе мегабайтные выводы ехали бы по сети,
+    чтобы там их выбросить. Картинка base64 в поток не попадает, остаётся словом.
+    """
+    path = tmp_path / "s.jsonl"
+    many = "\n".join(f"строка {n}" for n in range(25))
+    write(path,
+          {"type": "assistant", "message": {"role": "assistant", "content": [
+              {"type": "tool_use", "id": "t1", "name": "Bash", "input": {"command": "ls"}}]}},
+          {"type": "user", "message": {"role": "user", "content": [
+              {"type": "tool_result", "tool_use_id": "t1", "content": many},
+              {"type": "tool_result", "tool_use_id": "t2", "content": "x" * 5000},
+              {"type": "tool_result", "tool_use_id": "t3", "is_error": True,
+               "content": "\x1b[31mнет такого файла\x1b[0m"},
+              {"type": "tool_result", "tool_use_id": "t4", "content": [
+                  {"type": "image", "source": {"data": "iVBORw0KGgo" * 1000}},
+                  {"type": "text", "text": "подпись"}]},
+              {"type": "tool_result", "tool_use_id": "t5", "content": ""},
+              {"type": "tool_result", "tool_use_id": "t6", "is_error": True, "content": ""}]}})
+    _, got, _ = transcript.items(path, 0)
+    step, *outs = got
+    by = {o["id"]: o for o in outs}
+
+    assert step["id"] == "t1"                       # по нему панель найдёт шаг
+    lines = by["t1"]["text"].split("\n")
+    assert lines[:transcript.OUT_LINES] == [f"строка {n}" for n in range(10)]
+    assert lines[-1] == "… ещё 15 строк"
+    # Одна длинная строка — потолок по символам, без выдуманного «ещё N строк».
+    assert len(by["t2"]["text"]) == transcript.OUT_CHARS + 1
+    assert by["t2"]["text"].endswith("…")
+    assert by["t3"] == {"role": "out", "id": "t3", "text": "нет такого файла", "err": True}
+    assert by["t4"]["text"] == "[картинка]\nподпись"
+    assert "t5" not in by                           # пустой успех — нечего показывать
+    assert by["t6"]["err"] and by["t6"]["text"] == ""   # пустая ошибка — сама сообщение
 
 
 def test_task_notification_is_a_note_not_my_message(tmp_path):
@@ -396,3 +437,85 @@ def test_ctx_ignores_subagent_answers(tmp_path, monkeypatch):
 
     assert transcript.items(path, 0)[2]["used"] == 90_000
     assert transcript.ctx_of(path)["used"] == 90_000
+
+
+def test_meta_messages_get_their_own_labels(tmp_path):
+    """Служебные сообщения Claude Code (`isMeta`) — серой строкой с названием.
+
+    Размеры картинки после `Read` стояли пузырём «ты», а тело скилла и продолжение после
+    обрыва — безликим «подставлен контекст, N симв.». Незнакомый вид показывается головой
+    текста, чтобы не пропасть молча.
+    """
+    path = tmp_path / "s.jsonl"
+    def meta(content):
+        return {"type": "user", "isMeta": True,
+                "message": {"role": "user", "content": content}}
+    odd = "Что-то новое от Claude Code. " * 10
+    write(path,
+          meta([{"type": "text", "text":
+                 "Base directory for this skill: /opt/skills/20-assistant/telegram\n\n# Телеграм"}]),
+          meta([{"type": "text", "text": "Continue from where you left off."}]),
+          meta("[Image: original 2392x672, displayed at 2000x562. Multiply coordinates by 1.20]"),
+          meta(odd),
+          meta(""),
+          # Не служебное: вставленный контекст по-прежнему пометка с объёмом.
+          {"type": "user", "message": {"role": "user", "content": [
+              {"type": "text", "text": "x" * 40}]}})
+    _, got, _ = transcript.items(path, 0)
+
+    assert [i["role"] for i in got] == ["note"] * 5   # пустое служебное не даёт ничего
+    assert [i["text"] for i in got[:3]] == [
+        "скилл telegram", "продолжение после обрыва", "картинка 2392×672"]
+    assert got[3]["text"] == odd.strip()[:transcript.META_HEAD - 1] + "…"
+    assert got[4]["text"] == "подставлен контекст, 40 симв."
+
+
+def test_edit_and_write_send_a_diff_not_the_file(tmp_path):
+    """У Edit и Write вместо «updated successfully» — diff из `toolUseResult`.
+
+    Файл целиком (`originalFile`) в поток не идёт: в нём нет ничего сверх патча, а
+    размер любой. Новый файл — один кусок из `+`. Ошибка правки — без diff, красным OUT.
+    """
+    path = tmp_path / "s.jsonl"
+    big = "СЕКРЕТ_ВСЕГО_ФАЙЛА " * 500
+    def res(tid, tur, err=False):
+        return {"type": "user", "toolUseResult": tur, "message": {
+            "role": "user", "content": [{"type": "tool_result", "tool_use_id": tid,
+                                         "is_error": err, "content": "The file has been updated"}]}}
+    write(path,
+          res("e", {"filePath": "/a.py", "originalFile": big, "structuredPatch": [
+              {"oldStart": 10, "oldLines": 3, "newStart": 10, "newLines": 3,
+               "lines": [" было", "-старое", "+новое", " стало"]}]}),
+          res("w", {"type": "create", "filePath": "/b.md", "content": "раз\nдва\n",
+                    "structuredPatch": [], "originalFile": None}),
+          res("x", {"filePath": "/a.py", "structuredPatch": [
+              {"oldStart": 1, "newStart": 1, "lines": ["-a", "+b"]}]}, err=True),
+          res("big", {"type": "create", "content": "\n".join(map(str, range(500)))}))
+    _, got, _ = transcript.items(path, 0)
+    by = {o["id"]: o for o in got}
+
+    assert by["e"]["diff"] == {"new": False, "more": 0, "hunks": [
+        {"o": 10, "n": 10, "lines": [" было", "-старое", "+новое", " стало"]}]}
+    assert by["w"]["diff"]["new"] is True
+    assert by["w"]["diff"]["hunks"] == [{"o": 0, "n": 1, "lines": ["+раз", "+два"]}]
+    assert "diff" not in by["x"] and by["x"]["err"]       # ошибка — текстом, без diff
+    assert by["big"]["diff"]["more"] == 500 - transcript.DIFF_LINES
+    assert "СЕКРЕТ_ВСЕГО_ФАЙЛА" not in json.dumps(got, ensure_ascii=False)
+
+
+def test_step_carries_a_short_caption(tmp_path):
+    """Подпись после имени шага: описание у Bash, путь у правок, у остальных — ничего."""
+    path = tmp_path / "s.jsonl"
+    def call(name, inp):
+        return {"type": "tool_use", "id": name, "name": name, "input": inp}
+    write(path, {"type": "assistant", "message": {"role": "assistant", "content": [
+        call("Bash", {"command": "git status", "description": "Show working tree status"}),
+        call("Edit", {"file_path": "/p/a.py", "old_string": "a", "new_string": "b"}),
+        call("Write", {"file_path": "/p/b.md", "content": "x"}),
+        call("Read", {"file_path": "/p/c.py"}),
+        call("Grep", {"pattern": "x", "description": "  "})]}})
+    _, got, _ = transcript.items(path, 0)
+    by = {i["name"]: i.get("desc") for i in got}
+
+    assert by == {"Bash": "Show working tree status", "Edit": "/p/a.py",
+                  "Write": "/p/b.md", "Read": None, "Grep": None}

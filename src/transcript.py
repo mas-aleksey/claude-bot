@@ -28,6 +28,19 @@ CHUNK = 3000
 # около 1700, но встречаются и тридцатитысячные: такой развернули бы лог на весь экран,
 # а прочесть его всё равно негде. Обрезанную строку показываем без раскрытия.
 FULL_ARG = 2000
+# Сколько вывода инструмента показывать под шагом. Замер 2026-10-13 по живой сессии:
+# медиана 219 символов и 4 строки, p90 — 2643 и 58, максимум 7676. Десять строк покрывают
+# большинство целиком, а потолок в символах держит одну длинную строку (минифицированный
+# JSON) от того, чтобы стать мегабайтом в потоке.
+OUT_LINES = 10
+OUT_CHARS = 1500
+# Diff у Edit и Write: потолок строк на шаг и длины одной строки. Правка обычно в разы
+# меньше, а Write большого файла иначе стал бы мегабайтом в потоке. Длина строки — от
+# минифицированного кода, где весь файл одна строка.
+DIFF_LINES = 120
+# Шаги, у которых подписью служит путь файла.
+FILE_TOOLS = ("Edit", "Write", "MultiEdit", "NotebookEdit")
+DIFF_LINE_CHARS = 400
 # Окно контекста, пока claude не назвал своё: столько у haiku и sonnet, у opus больше.
 # Значение временное — после первого же прогона модели в `store` ложится настоящее.
 DEFAULT_WINDOW = 200_000
@@ -67,6 +80,14 @@ NOTES = {
 SERVICE_RE = re.compile(r"\A<([a-z-]{4,40})>")
 SUMMARY_RE = re.compile(r"<summary>(.*?)</summary>", re.S)
 
+# Служебные сообщения Claude Code (`isMeta`): он сам подкладывает их в разговор от имени
+# пользователя. По всем транскриптам контейнера 2026-10-13 их три вида — тело скилла после
+# `/скилл`, продолжение после обрыва и размеры прочитанной картинки. Узнаём по началу.
+SKILL_META_RE = re.compile(r"\ABase directory for this skill: (\S+)")
+IMAGE_META_RE = re.compile(r"\A\[Image: original (\d+)x(\d+)")
+CONTINUE_META = "Continue from where you left off"
+META_HEAD = 100
+
 
 def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
     """С байтового оффсета `start`: (оффсет конца прочитанного, элементы, контекст).
@@ -91,8 +112,8 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
         поэтому вместо содержимого — одна серая пометка с размером. Молча выбрасывать
         нельзя: тогда из панели бесследно исчезало бы то, что реально было в сессии.
 
-    Мысли и `tool_result` не показываем: первые длиннее ответа, вторые бывают на
-    мегабайт. Незнакомое событие пропускается молча — типов в транскрипте больше, чем
+    Мысли не показываем, они длиннее ответа. `tool_result` — показываем с 2026-10-13, но
+    только голову: бывает на мегабайт, поэтому режется в `_out` до OUT_LINES строк. Незнакомое событие пропускается молча — типов в транскрипте больше, чем
     нам нужно, и список растёт с версиями claude.
     """
     out: list[dict] = []
@@ -126,12 +147,40 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                 model = msg.get("model") or model
             content = msg.get("content")
 
+            # Служебное — своей серой строкой, раньше всякого разбора. Строковое шло в
+            # пузырь «ты» (размеры картинки после `Read`), списочное — в безликое
+            # «подставлен контекст, N симв.», по которому не угадать, что случилось.
+            if ev.get("isMeta"):
+                text = content if isinstance(content, str) else " ".join(
+                    b.get("text", "") for b in content or [] if b.get("type") == "text")
+                if text := text.strip():
+                    out.append(_meta(text))
+                continue
+
             if isinstance(content, str):
                 if text := content.strip():
                     out.append(_prompt(text))
                 continue
 
             if role == "user":
+                # Результат инструмента приходит `user`-событием отдельно от вызова и часто
+                # позже — следующей строкой транскрипта, а то и следующим кадром потока.
+                # Поэтому отдельный элемент со ссылкой на вызов, а не поле шага: панель
+                # вписывает его в уже нарисованный шаг по `id`.
+                # У Edit и Write рядом с результатом лежит `toolUseResult` с готовым
+                # diff — его шлём вместо текста «updated successfully». Событие на один
+                # `tool_result` всегда одно (проверено по 1268 событиям 2026-10-13),
+                # поэтому `toolUseResult` однозначно относится к своему шагу.
+                for block in content or []:
+                    if block.get("type") != "tool_result":
+                        continue
+                    o = _out(block)
+                    if not block.get("is_error") and (d := _diff(ev.get("toolUseResult"))):
+                        o = o or {"role": "out", "id": block.get("tool_use_id"),
+                                  "text": "", "err": False}
+                        o["diff"] = d
+                    if o:
+                        out.append(o)
                 # Подставленный контекст: показываем факт и объём, не содержимое.
                 size = sum(len(b.get("text", "")) for b in content or []
                            if b.get("type") == "text")
@@ -146,9 +195,18 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                         out.append({"role": "assistant", "text": text})
                 elif kind == "tool_use":
                     name = block.get("name", "?")
-                    arg = render.first_arg(name, block.get("input") or {})
+                    inp = block.get("input") or {}
+                    arg = render.first_arg(name, inp)
                     step = {"role": "tool", "icon": render.ICONS.get(name, "🔧"),
-                            "name": name, "text": render.clip(arg, 200)}
+                            "name": name, "text": render.clip(arg, 200),
+                            "id": block.get("id")}
+                    # Подпись к имени шага. У Bash это `description`, который claude
+                    # пишет сам (2026-10-13: у 719 вызовов из 1099), у правок — путь
+                    # файла: описания у них нет, а путь и есть «что сделано».
+                    desc = inp.get("description") if name == "Bash" else \
+                        inp.get("file_path") if name in FILE_TOOLS else None
+                    if isinstance(desc, str) and desc.strip():
+                        step["desc"] = render.clip(desc, 200)
                     # Полный текст — только когда строку реально обрезало: у Read и Edit
                     # аргумент это путь, и раскрывать там нечего. Переводы строк тут
                     # живые, в отличие от `clip`: команда с heredoc читается столбиком.
@@ -159,6 +217,82 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             if len(out) >= CHUNK:
                 break
     return start, out, _ctx(used, model)
+
+
+def _meta(text: str) -> dict:
+    """Серая строка для служебного сообщения: что случилось, а не сколько символов.
+
+    Незнакомый вид показываем головой текста — список видов растёт с версиями Claude
+    Code, и новый не должен пропасть молча. По сотне символов его уже можно узнать и
+    дописать сюда своё название.
+    """
+    if m := SKILL_META_RE.match(text):
+        label = f"скилл {Path(m[1]).name}"
+    elif m := IMAGE_META_RE.match(text):
+        label = f"картинка {m[1]}×{m[2]}"
+    elif text.startswith(CONTINUE_META):
+        label = "продолжение после обрыва"
+    else:
+        label = render.clip(text, META_HEAD)
+    return {"role": "note", "text": label}
+
+
+def _diff(r) -> dict | None:
+    """Diff правки для панели: куски с номерами строк, без файла целиком.
+
+    `structuredPatch` — готовый unified diff от Claude Code: строки с префиксом `-`, `+`
+    или пробелом, по три строки контекста, номера настоящие, из файла. У нового файла
+    патча нет, есть `content` — он становится одним куском из сплошных `+`.
+
+    `originalFile` рядом — весь файл до правки, и в поток он не идёт никогда: в нём нет
+    ничего, чего не было бы в патче, а размер у него любой.
+    """
+    if not isinstance(r, dict):
+        return None
+    hunks = r.get("structuredPatch") or []
+    new = r.get("type") == "create"
+    if not hunks and new and isinstance(r.get("content"), str):
+        lines = r["content"].split("\n")
+        if lines and lines[-1] == "":
+            lines.pop()
+        hunks = [{"oldStart": 0, "newStart": 1, "lines": ["+" + line for line in lines]}]
+    total = sum(len(h.get("lines") or []) for h in hunks)
+    shown, left = [], DIFF_LINES
+    for h in hunks:
+        if left <= 0:
+            break
+        lines = [render.strip_ansi(str(line))[:DIFF_LINE_CHARS]
+                 for line in (h.get("lines") or [])[:left]]
+        left -= len(lines)
+        shown.append({"o": h.get("oldStart", 0), "n": h.get("newStart", 0), "lines": lines})
+    if not total:
+        return None
+    return {"hunks": shown, "more": total - (DIFF_LINES - left), "new": new}
+
+
+def _out(block: dict) -> dict | None:
+    """Вывод инструмента для панели: первые строки, без картинок и без ANSI.
+
+    Обрезаем здесь, а не в браузере: иначе мегабайтные выводы всё равно ехали бы по
+    сети, чтобы там их выбросили. Картинка (`Read` по png) приходит base64 — в поток её
+    не пускаем, оставляем слово. Пустой успешный вывод не шлём вовсе: шаг без OUT
+    читается так же, а лишний кадр ничего не говорит. Пустая ошибка — шлём, красная
+    полоса сама по себе сообщение.
+    """
+    raw = block.get("content")
+    if isinstance(raw, list):
+        raw = "\n".join(b.get("text", "") if b.get("type") == "text" else "[картинка]"
+                        for b in raw if b.get("type") in ("text", "image"))
+    text = render.strip_ansi(str(raw or "")).rstrip()
+    err = bool(block.get("is_error"))
+    if not text and not err:
+        return None
+    lines = text.split("\n")
+    shown = "\n".join(lines[:OUT_LINES])[:OUT_CHARS]
+    if shown != text:
+        rest = len(lines) - (shown.count("\n") + 1)
+        shown += f"\n… ещё {rest} строк" if rest > 0 else "…"
+    return {"role": "out", "id": block.get("tool_use_id"), "text": shown, "err": err}
 
 
 def _ctx(used: int | None, model: str | None) -> dict | None:

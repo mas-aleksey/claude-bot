@@ -420,11 +420,26 @@ const node = (html) => ({
 });
 const renderItem = (it) => `<div class="${it.role}">${it.text}</div>`;
 const toolHead = (it) => it.text;
+const CSS = { escape: (s) => s };
 """ + body + """
 const box = node('<div>');
+// Слот OUT шага `b`: pour находит его по data-tid и вписывает вывод. Ищем по id в
+// селекторе — у неизвестного id слота нет, и вывод обязан пропасть молча.
+// `pre` ищется по имени, а не последним потомком: в живом логе его успевала обернуть
+// кнопка «копировать», и текст ложился в обёртку. Последним потомком тут нарочно стоит
+// чужой узел — запись в него и есть та ошибка.
+const pre = { textContent: '' }, wrapper = { textContent: '' };
+const step = { cls: [], classList: { toggle(c, on) { if (on) step.cls.push(c); } } };
+const slot = { hidden: true, cls: [], lastElementChild: wrapper,
+  querySelector: (sel) => sel === 'pre' ? pre : null,
+  closest: (sel) => sel === '.step' ? step : null,
+  classList: { toggle(c, on) { if (on) slot.cls.push(c); } } };
+box.querySelector = (sel) => sel.includes('"b"') ? slot : null;
 pour(box, [
   { role: 'user', text: 'сделай' },
-  { role: 'tool', text: 'Read a' }, { role: 'tool', text: 'Bash b' },
+  { role: 'tool', text: 'Read a', id: 'a' }, { role: 'tool', text: 'Bash b', id: 'b' },
+  { role: 'out', id: 'b', text: '1 failed', err: true },
+  { role: 'out', id: 'gone', text: 'шаг срезан LOG_MAX' },
   { role: 'assistant', text: 'готово' },
   { role: 'tool', text: 'Read c' },
 ]);
@@ -432,16 +447,33 @@ console.log(JSON.stringify([
   box.kids.map(k => k.classList.contains('tools') ? 'group' : k.html),
   box.kids[1].kids.length,
   box.kids[1].firstElementChild.innerHTML,
+  [slot.hidden, slot.cls, pre.textContent, wrapper.textContent, step.cls],
 ]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    kids, size, head = json.loads(done.stdout)
-    # Промпт, группа из двух шагов, ответ, новая группа: ответ группу закрыл.
+    kids, size, head, out = json.loads(done.stdout)
+    # Промпт, группа из двух шагов, ответ, новая группа: ответ группу закрыл. Вывод шагов
+    # между ними группу не рвёт и в лог строкой не встаёт.
     assert kids == ['<div class="user">сделай</div>', "group",
                     '<div class="assistant">готово</div>', "group"]
-    assert size == 3  # summary + два шага
+    assert size == 3  # summary + два шага: OUT в счётчик не попал
     assert head == "2 · Bash b"  # счётчик и последний вызов
+    # Вписан в свой `pre`, обёртка не тронута; ошибка помечена и на окошке, и на шаге —
+    # по второму классу красится точка на шкале.
+    assert out == [False, ["err"], "1 failed", "", ["bad"]]
+
+
+def test_copy_button_skips_tool_io():
+    """Кнопка «копировать» — для кода в ответах claude, не для окошек IN и OUT.
+
+    Пустой OUT рисуется заранее, и обёртка ловила его раньше вывода: кнопка запоминала
+    пустую строку, а вывод потом стирал её вместе с обёрткой. Поймано на живом прогоне
+    2026-10-13 — кнопка висела поверх вывода.
+    """
+    js = slice_out("script")
+    body = js.split("function wireCopy")[1].split("\n}\n")[0]
+    assert "pre:not([data-copy]):not(.io pre)" in body
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -509,7 +541,7 @@ console.log(JSON.stringify({ symlink, prefix, plain }));
 def test_upload_reports_progress_and_failures(tmp_path):
     """Ход отправки берётся из XHR: `fetch` его не отдаёт вовсе, и на мобильной сети
     большой файл уходил в тишину. Проверяем три исхода — проценты, успех и отказ."""
-    body = webui.PAGE.split("function upload")[1].split("\nasync function attach")[0]
+    body = webui.PAGE.split("function upload")[1].split("\n// --- attach:begin ---")[0]
     js = tmp_path / "upload.js"
     js.write_text("""
 let sent = null, mode = 'ok';
@@ -674,9 +706,15 @@ console.log(JSON.stringify([got, worstSix, worst,
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
 def test_raising_a_pane_takes_over_the_full_screen(tmp_path):
-    """Разворот переезжает на поднятое окно, а прежнее возвращается в свою клетку.
+    """Разворот переезжает на окно, с которым работают, а прежнее возвращается в клетку.
     Развёрнута всегда ровно одна панель: стопку развёрнутых не видно, и сколько их под
-    верхним окном, узнать нечем."""
+    верхним окном, узнать нечем.
+
+    Передаёт только `focus` — жест человека. Голый `raise` кладёт слой и ничего не
+    трогает: через него идёт и отрисовка, а она поднимает каждое окно по очереди. Пока
+    это была одна функция, восстановление после F5 перетасовывало развёрнутое и
+    оставляло его на последнем нарисованном окне — на телефоне это низ стопки.
+    """
     body = slice_out("script").split("// --- raise:begin ---")[1].split("// --- raise:end ---")[0]
     js = tmp_path / "raise.js"
     js.write_text("""
@@ -700,20 +738,28 @@ function zoom(p) {
 let panes = [{ pane: 'a', c: 1, r: 1, w: 12, h: 8, prev: { c: 7, r: 1, w: 6, h: 4 } },
              { pane: 'b', c: 1, r: 5, w: 6, h: 4 }];
 """ + body + """
-raise(small);
+focus(small);
 const after = panes.map(p => [p.c, p.r, p.w, p.h, !!p.prev]);
 // Касание самого развёрнутого его не сворачивает.
 panes = [{ pane: 'a', c: 1, r: 1, w: 12, h: 8, prev: { c: 7, r: 1, w: 6, h: 4 } }];
-raise(big);
-console.log(JSON.stringify([after, [panes[0].w, panes[0].h, !!panes[0].prev]]));
+focus(big);
+const self_ = [panes[0].w, panes[0].h, !!panes[0].prev];
+// Отрисовка поднимает каждое окно по очереди — и не должна трогать разворот ничьим.
+panes = [{ pane: 'a', c: 1, r: 1, w: 12, h: 8, prev: { c: 7, r: 1, w: 6, h: 4 } },
+         { pane: 'b', c: 1, r: 5, w: 6, h: 4 }];
+raise(big); raise(small);
+const drawn = panes.map(p => [p.c, p.r, p.w, p.h, !!p.prev]);
+console.log(JSON.stringify([after, self_, drawn]));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    after, self_raise = json.loads(done.stdout)
+    after, self_focus, drawn = json.loads(done.stdout)
 
-    assert after[0] == [7, 1, 6, 4, False]     # прежнее вернулось в свою клетку
-    assert after[1] == [1, 1, 12, 8, True]    # разворот забрало поднятое
-    assert self_raise == [12, 8, True]        # своё касание разворот не снимает
+    assert after[0] == [7, 1, 6, 4, False]    # прежнее вернулось в свою клетку
+    assert after[1] == [1, 1, 12, 8, True]    # разворот забрало то, с чем работают
+    assert self_focus == [12, 8, True]        # своё касание разворот не снимает
+    # Два подъёма подряд, как при восстановлении: развёрнутым осталось то же окно.
+    assert drawn == [[1, 1, 12, 8, True], [1, 5, 6, 4, False]]
 
 
 def test_session_title_is_cut_with_an_ellipsis():
@@ -733,17 +779,20 @@ def test_one_badge_for_every_unseen_answer():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_every_picked_file_is_uploaded(tmp_path):
-    """FileList у `<input type=file>` живой, и обработчик выбора чистит его сразу после
-    первого `await` внутри attach. Пока цикл шёл по самому списку, из выбранной пачки
-    доезжал ровно один файл: на второй итерации список уже пуст."""
+def test_picked_files_wait_in_chips_until_send(tmp_path):
+    """Выбранные файлы ждут отправки в памяти вкладки, а не уезжают на сервер сразу.
+
+    До 2026-10-13 `attach` грузил каждый файл в момент выбора, и передумать было нельзя:
+    строку с путём из поля убрать можно, а файл оставался в песочнице. Проверяем всю
+    цепочку — набор, снятие крестиком, загрузка на отправке и отказ.
+    """
     body = slice_out("script").split("// --- attach:begin ---")[1].split("// --- attach:end ---")[0]
     js = tmp_path / "attach.js"
     js.write_text("""
 // Подставной FileList: длина и обход читают одно хранилище, поэтому `clear()` виден
-// уже начатому циклу — ровно как настоящий список после `pick.value = ''`.
+// уже начатому обходу — ровно как настоящий список после `pick.value = ''`.
 function fileList(names) {
-  const items = names.map(name => ({ name, size: 10 }));
+  const items = names.map(name => ({ name, size: 10, type: '' }));
   return {
     clear: () => { items.length = 0; },
     [Symbol.iterator]() {
@@ -753,33 +802,61 @@ function fileList(names) {
     },
   };
 }
+// Строка карточек: `flushClips` пишет в неё ход отправки, поэтому нужны и children.
+const chip = () => ({ classList: { add() {} }, querySelector: () => ({ textContent: '' }) });
+const box = { hidden: true, innerHTML: '', children: [chip(), chip(), chip()] };
+global.document = { querySelector: () => box };
 const log = () => null;
 const kb = () => '10 б';
-const grow = () => {};
 const esc = (s) => s;
-const upload = async (file) => ({ path: '/data/inbox/' + file.name });
+let mode = 'ok';
+const upload = async (file) => mode === 'ok'
+  ? { path: '/data/inbox/' + file.name }
+  : Promise.reject(new Error('обрыв связи'));
 """ + body + """
 (async () => {
-  const ta = { value: '', focus: () => {} };
+  const p = { pane: 'x' };
+  const out = {};
+
   const list = fileList(['a.txt', 'b.txt', 'c.txt']);
-  const done = attach({}, ta, list);
-  list.clear();            // ровно то, что делает `pick.value = ''` в обработчике
-  await done;
+  attach(p, null, list);
+  list.clear();                          // ровно то, что делает `pick.value = ''`
+  out.picked = (clips.get('x') || []).map(f => f.name);
 
-  // Выбор без файлов и отсутствие списка вовсе не должны ронять обработчик.
-  const empty = { value: '', focus: () => {} };
-  await attach({}, empty, fileList([]));
-  await attach({}, empty, undefined);
+  attach(p, null, fileList([]));         // пустой выбор и отсутствие списка не роняют
+  attach(p, null, undefined);
+  out.afterEmpty = (clips.get('x') || []).length;
 
-  console.log(JSON.stringify([ta.value.trim().split('\\n'), empty.value]));
+  clips.get('x').splice(1, 1);           // то же, что делает крестик на второй карточке
+  out.afterRemove = clips.get('x').map(f => f.name);
+
+  mode = 'fail';
+  out.failed = await flushClips(p);
+  out.keptOnFail = (clips.get('x') || []).map(f => f.name);
+
+  mode = 'ok';
+  out.paths = await flushClips(p);
+  out.leftover = (clips.get('x') || []).length;
+  out.empty = await flushClips({ pane: 'none' });
+
+  console.log(JSON.stringify(out));
 })();
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    paths, empty = json.loads(done.stdout)
+    got = json.loads(done.stdout)
 
-    assert paths == ["/data/inbox/a.txt", "/data/inbox/b.txt", "/data/inbox/c.txt"]
-    assert empty == ""
+    # Копия списка, а не сам FileList: он живой и к этому моменту уже пуст.
+    assert got["picked"] == ["a.txt", "b.txt", "c.txt"]
+    assert got["afterEmpty"] == 3
+    assert got["afterRemove"] == ["a.txt", "c.txt"]
+    # Один файл не доехал — не доехал весь промпт. Половина путей хуже, чем ничего:
+    # разбираться в ней пришлось бы уже по ответу claude.
+    assert got["failed"] is None
+    assert got["keptOnFail"] == ["a.txt", "c.txt"], "карточки обязаны пережить отказ"
+    assert got["paths"] == ["/data/inbox/a.txt", "/data/inbox/c.txt"]
+    assert got["leftover"] == 0, "после отправки карточки снимаются"
+    assert got["empty"] == []   # панель без файлов отправляется как обычно
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
@@ -996,7 +1073,7 @@ def test_hint_runs_after_the_pane_is_marked_free():
     """
     js = slice_out("script")
     free = js.index("classList.toggle('busy', busy)")
-    hint = js.index("(st.suggest || {})[scope]")
+    hint = js.index("(st.suggest || {})[p.session]")
     assert free < hint, "подсказка не должна стоять до снятия занятости"
 
     # Ставится на каждом тике, а не на переходе «занята → свободна»: после F5 перехода
@@ -1012,7 +1089,10 @@ def test_field_height_ignores_the_hint(tmp_path):
     js_src = slice_out("script")
     body = "function grow" + js_src.split("function grow")[1].split("\n}\n")[0] + "\n}\n"
     js = tmp_path / "grow.js"
-    js.write_text(body + """
+    # Проверяем ручной путь: `AUTOSIZE` — это ветка для браузера с `field-sizing`,
+    # там высоту ставит CSS и ставить её скрипту нечем.
+    assert "if (AUTOSIZE) return;" in js_src, "ручной расчёт обязан уступать нативному"
+    js.write_text("const AUTOSIZE = false;\n" + body + """
 // Подставное поле: высота растёт и от значения, и от подсказки — как в браузере.
 const field = (value, placeholder) => ({
   value, placeholder, style: {},
@@ -1205,6 +1285,7 @@ def test_prompts_stick_to_the_edges_of_the_log():
     pin = css.split(".pin { ", 1)[1].split("}", 1)[0]
     assert "position:absolute" in pin and "top:0" in pin
     assert "pointer-events:none" in pin, "выделение текста под полоской не должно упираться в неё"
+    assert "opacity" not in both + pin, "полоска поверх текста, сквозь полупрозрачную он читается"
 
     assert "position:sticky" not in css.split(".user { ", 1)[1].split("}", 1)[0], \
         "сам промпт в потоке не закрепляем"
@@ -1279,6 +1360,14 @@ def test_zoomed_pane_on_a_phone_stays_in_the_flow():
     # перестало бы быть во весь экран.
     assert "body:has(#panes > section.zoomed) #term { display:none }" in phone
 
+    # Полоски сайдбаров — по 24px с каждого края, и на телефоне это 12% ширины.
+    assert "body.folded:has(#panes > section.zoomed) #fold" in phone
+    assert "body.rfolded:has(#panes > section.zoomed) #rfold { display:none }" in phone
+    # Условие на `folded` снимать нельзя: полоска — единственное, чем закрывается
+    # открытый сайдбар, и без неё человек заперт с панелью на полэкрана.
+    assert "body:has(#panes > section.zoomed) #fold" not in phone
+    assert "body:has(#panes > section.zoomed) #rfold" not in phone
+
 
 def test_page_is_exactly_as_tall_as_the_visible_screen():
     """Страница ростом в видимую часть экрана, иначе ей есть куда прокручиваться.
@@ -1351,3 +1440,81 @@ def test_style_comments_do_not_leak_prose_into_rules():
     for chunk in naked.split("}"):
         head = chunk.rsplit("{", 1)[0] if "{" in chunk else chunk
         assert not re.search(r"[а-яА-ЯёЁ]", head), f"проза в селекторе: {head.strip()[:80]}"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_attachment_paths_go_after_the_text(tmp_path):
+    """Пути в конце промпта: claude узнаёт `/команду` только первым словом.
+
+    До 2026-10-13 пути стояли первыми, и `/refine` с картинкой уходил обычным текстом —
+    скилл не запускался. Вид тот же, что у подписи к файлу в Telegram (`_prompt` в app.py).
+    """
+    js = slice_out("script")
+    fn = "const withPaths" + js.split("const withPaths")[1].split(";\n")[0] + ";"
+    src = tmp_path / "paths.js"
+    src.write_text(fn + """
+console.log(JSON.stringify([
+  withPaths('/refine поправь', ['/data/inbox/a.png', '/data/inbox/b.txt']),
+  withPaths('', ['/data/inbox/a.png']),
+  withPaths('просто текст', []),
+]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(src)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    both, only, none = json.loads(done.stdout)
+
+    assert both == "/refine поправь\n\n/data/inbox/a.png\n/data/inbox/b.txt"
+    assert both.startswith("/refine")
+    assert only == "/data/inbox/a.png"
+    assert none == "просто текст"
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_diff_pairs_removed_and_added_lines(tmp_path):
+    """Две колонки: подряд идущие `-` и `+` встают друг напротив друга, лишние — с пустой
+    клеткой напротив, контекст в обеих. Номера строк — свои у каждой колонки."""
+    js = slice_out("script")
+    body = js.split("// --- diff:begin ---")[1].split("// --- diff:end ---")[0]
+    src = tmp_path / "diff.js"
+    src.write_text("const esc = (s) => s;\n" + body + """
+const hunks = [{ o: 10, n: 20, lines: [' ctx', '-a', '-b', '+A', ' end', '\\\\ No newline'] },
+               { o: 50, n: 61, lines: ['+x'] }];
+const rows = diffRows(hunks).map(r => r === 'gap' ? 'gap'
+  : r.map(c => c ? c[0] + ':' + c[1] + ':' + c[2] : '-'));
+const wide = diffHTML({ hunks, more: 3, new: false }, false);
+const narrow = diffHTML({ hunks, more: 0, new: false }, true);
+const fresh = diffHTML({ hunks: [{ o: 0, n: 1, lines: ['+one'] }], more: 0, new: true }, false);
+console.log(JSON.stringify({ rows, wide, narrow, fresh }));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(src)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    assert got["rows"] == [
+        ["10:ctx:", "20:ctx:"],
+        ["11:a:del", "21:A:add"],      # замена: строка против строки
+        ["12:b:del", "-"],             # лишняя удалённая — пустая клетка справа
+        ["13:end:", "22:end:"],
+        "gap",                          # между кусками — разрыв
+        ["-", "61:x:add"],
+    ]
+    assert "ещё 3 строк" in got["wide"] and 'class="dv"' in got["wide"]
+    # Узко — одна колонка: контекст один раз, удалённое над добавленным.
+    assert 'class="dv one"' in got["narrow"]
+    assert got["narrow"].count(">ctx<") == 1
+    assert got["narrow"].index(">a<") < got["narrow"].index(">A<")
+    # Новый файл — одна зелёная колонка без пустой левой половины.
+    assert 'class="dv one"' in got["fresh"] and "none" not in got["fresh"]
+
+
+def test_clamped_io_has_no_peeking_next_line():
+    """Отступ вокруг текста окошка — внешний. `line-clamp` задаёт высоту, но не прячет
+    следующие строки, а `overflow:hidden` режет по краю внутреннего отступа: пока отступ
+    был `padding`, в его нижние пиксели заглядывала верхушка второй строки IN.
+    Раскрывается кликом только обрезанное или уже раскрытое окошко."""
+    css, js = slice_out("style"), slice_out("script")
+    rule = css.split(".io pre { ", 1)[1].split("}", 1)[0]
+    assert "padding:0" in rule and "margin:6px 10px" in rule
+    assert "-webkit-line-clamp:1" in rule
+    assert ".io.out pre { -webkit-line-clamp:3" in css
+    assert "closest('.io.more, .io.open')" in js
