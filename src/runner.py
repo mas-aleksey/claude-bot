@@ -529,9 +529,8 @@ async def run(
             # Предсказанный следующий промпт. В базу, а не в память процесса: панель
             # читает его из `/api/status`, и так он переживает и F5, и рестарт бота —
             # а тот случается по десять раз на дню.
-            if ev.get("type") == "prompt_suggestion":
-                if session_id:
-                    suggest(session_id, (ev.get("suggestion") or "").strip() or None)
+            if ev.get("type") == "prompt_suggestion" and session_id:
+                suggest(session_id, (ev.get("suggestion") or "").strip() or None)
             # Закрываем до `yield`: вызывающий рисует ответ в Telegram, а процесс
             # столько ждать не должен.
             drain.feed(ev)
