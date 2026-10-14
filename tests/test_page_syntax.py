@@ -1518,3 +1518,41 @@ def test_clamped_io_has_no_peeking_next_line():
     assert "-webkit-line-clamp:1" in rule
     assert ".io.out pre { -webkit-line-clamp:3" in css
     assert "closest('.io.more, .io.open')" in js
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_busy_pane_shows_stop_and_queue(tmp_path):
+    """Окно с живым прогоном и ждущим промптом: класс `busy` (он показывает «стоп» и
+    таймер) и полоса очереди. Так видно и ожидание фонового агента — процесс жив, окно
+    занято. 2026-10-14 `tickPane` падал на `running++`, оставшемся от цикла в `tick`:
+    окно выглядело свободным, а промпт, вставший в очередь, исчезал с экрана.
+    """
+    js_src = slice_out("script")
+    start = js_src.index("function tickPane(")
+    body = js_src[start:js_src.index("\n}\n", start) + 3]
+    js = tmp_path / "tick.js"
+    js.write_text("""
+const cls = new Set();
+const el = { querySelector: (s) => s === 'header' ? {} : s === '.timer' ? timer : null,
+             classList: { toggle: (c, on) => on ? cls.add(c) : cls.delete(c),
+                          remove: (c) => cls.delete(c), contains: (c) => cls.has(c) } };
+const timer = { textContent: '', title: '' };
+const document = { getElementById: () => el, querySelector: () => null, hidden: false };
+const EventSource = { CLOSED: 2 };
+const streams = new Map([['x', { readyState: 1 }]]);
+const hints = new Map(), lastElapsed = new Map();
+const dead = false, BLANK = ' ';
+const fmt = (s) => s + 'с';
+let drawn = null;
+const drawQueue = (p, q) => { drawn = q; };
+const sweepEchoes = () => {}, showOnce = () => {};
+const shownErr = 0, shownLocal = 0, shownStats = 0;
+""" + body + """
+const p = { pane: 'x', session: 's' };
+const busy = tickPane(p, { runs: [{ scope: 'web:x', secs: 5, session: 's' }],
+                           queued: { 'web:x': ['точно запущен?'] } });
+console.log(JSON.stringify([busy, [...cls], drawn, timer.textContent]));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(js)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    assert json.loads(done.stdout) == [True, ["busy"], ["точно запущен?"], "5с +1"]

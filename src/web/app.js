@@ -2349,7 +2349,6 @@ function tickPane(p, st) {
   const mine = (st.runs || []).find(
     (r) => r.scope === scope || (p.session && r.session === p.session));
   const busy = !!mine;
-  if (busy) running++;
 
   // Промпт вставал в очередь без сессии, claude придумал её уже в этом прогоне.
   // Ответ на отправку её не содержал, зато содержит статус — отсюда и берём.
