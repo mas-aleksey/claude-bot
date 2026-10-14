@@ -340,7 +340,7 @@ async def api_name(req: web.Request) -> web.Response:
     sid = data.get("session") or ""
     if not transcript.SESSION_RE.match(sid):
         return web.json_response({"error": "bad session"}, status=400)
-    store.put(f"name:{sid}", (data.get("name") or "").strip() or None)
+    store.set_name(sid, (data.get("name") or "").strip())
     return web.json_response({"ok": True})
 
 

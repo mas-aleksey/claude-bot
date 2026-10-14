@@ -57,6 +57,22 @@ def put(key: str, value: str | None) -> None:
         )
 
 
+# Имя сессии, которое задал человек. Формат ключа живёт только здесь: пишут его
+# Telegram и панель, читает список сессий, стирает `forget_sessions` — и строка,
+# собранная в каждом из них по-своему, молча развела бы запись и чтение.
+def _name_key(sid: str) -> str:
+    return f"name:{sid}"
+
+
+def name_of(sid: str) -> str | None:
+    return get(_name_key(sid))
+
+
+def set_name(sid: str, name: str | None) -> None:
+    """Задать имя сессии. Пустое или None снимает его."""
+    put(_name_key(sid), name or None)
+
+
 # Колонка `project` хранит составной ключ "<скоуп>:<путь>" — так топик форума помнит
 # свою сессию в каждом проекте, а схема остаётся прежней и миграция не нужна.
 def _key(scope: str, project: str) -> str:
@@ -93,7 +109,7 @@ def forget_sessions(ids: list[str]) -> int:
     # Имя лежит в `state` и по транскрипту уже не находится: не снять его здесь — значит
     # копить ключи мёртвых сессий вечно, потому что искать их потом будет не по чему.
     conn().execute(f"DELETE FROM state WHERE key IN ({marks})",
-                   tuple(f"name:{sid}" for sid in ids))
+                   tuple(_name_key(sid) for sid in ids))
     return cur.rowcount
 
 

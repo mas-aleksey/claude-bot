@@ -46,7 +46,7 @@ def title(path: Path) -> str:
     Одно место на все списки: через `title` идут и `/sessions` в Telegram, и поиск, и
     предпросмотр `/purge`, и панель в браузере. Цена имени — точечный запрос в sqlite
     на строку списка."""
-    if name := store.get(f"name:{path.stem}"):
+    if name := store.name_of(path.stem):
         return name
     found = ""
     for line in path.read_text("utf-8", "replace").splitlines():

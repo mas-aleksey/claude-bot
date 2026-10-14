@@ -294,7 +294,7 @@ async def cmd_name(msg: Message) -> None:
         await msg.answer("сессия новая — называть нечего")
         return
     text = (msg.text or "").partition(" ")[2].strip()
-    store.put(f"name:{sid}", text or None)
+    store.set_name(sid, text)
     await msg.answer(f"имя: {text}" if text else "имя снято")
 
 
