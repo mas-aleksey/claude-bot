@@ -131,3 +131,40 @@ def test_indented_line_continues_the_item(render):
     """Абзац с отступом под пунктом — продолжение пункта, а не новый список."""
     (got,) = render("- пункт\n\n  продолжение\n- второй")
     assert got == "<ul><li>пункт<br>продолжение</li><li>второй</li></ul>"
+
+
+def test_code_block_inside_list_item_is_unpacked(render):
+    """Блок кода в пункте списка — ящик внутри ящика: код прячется первым, потом весь
+    список вместе с его заглушкой. Распаковка шла в один проход, и внутренняя заглушка
+    оставалась на экране символом `\\uE000` с номером — ≣0≣ под пунктом. Поймано
+    2026-10-15 на ответе со ссылками на карты под каждым пунктом."""
+    src = ("- **Booinga.** обжаривают на месте\n"
+           "  ```\n"
+           "  https://maps.app.goo.gl/r4gggFEXek7FNdo86\n"
+           "  ```\n"
+           "- **Pina** у рынка\n")
+    (html,) = render(src)
+    assert "" not in html
+    assert "<pre><code>" in html and "maps.app.goo.gl" in html
+    assert html.index("Booinga") < html.index("<pre>") < html.index("Pina")
+
+
+def test_code_in_list_item_loses_the_item_indent_only(render):
+    """Блок в пункте списка написан с отступом пункта, и этот отступ — разметка, а не код.
+    Он рисовался сдвигом ссылки вправо и пустой строкой под ней, а `<br>` между текстом
+    пункта и блоком — пустой строкой над ним (2026-10-15). Снимаем ровно отступ ```,
+    внутренние отступы кода остаются."""
+    url = "https://maps.app.goo.gl/r4gggFEXek7FNdo86"
+    item, nested, top = render(
+        f"- **Booinga.** обжарка на месте.\n  ```\n  {url}\n  ```\n- **Pina** у рынка\n",
+        "- шаг:\n  ```\n  def f():\n      return 1\n  ```\n",
+        "```\n    уже сдвинутый кусок\n    тела метода\n```")
+
+    code = item.split("<code>")[1].split("</code>")[0]
+    assert code == f'<a href="{url}" target="_blank" rel="noopener">{url}</a>'
+    assert "<br><pre>" not in item and "</pre><br>" not in item
+    # Отступ внутри кода — его собственный, он остаётся.
+    assert "<code>def f():\n    return 1</code>" in nested
+    # Блок верхнего уровня не трогаем: его отступ — часть кода.
+    assert "<code>    уже сдвинутый кусок\n    тела метода</code>" in top
+

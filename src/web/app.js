@@ -1797,11 +1797,17 @@ function setPlan(lim, auth) {
 // «почти внизу» читается как «внизу» — и дальше лог снова едет за ответом сам.
 const atEnd = (box) => box.scrollTop + box.clientHeight >= box.scrollHeight - 40;
 
-function log(p, html) {
+// Вниз — только тому, кто внизу и был, ровно как у потока в `absorb`. До 2026-10-15
+// прокрутка была безусловной, а сюда пишет и сам тик: итог прогона (`✓ модель · время`),
+// ошибку, ответ местной команды. Прогон кончался, пока человек читал историю выше, —
+// и лог уезжал у него из-под глаз вниз.
+// `force` — для собственного промпта: отправил — значит хочешь видеть, что ушло.
+function log(p, html, force) {
   const box = document.querySelector('#pane-' + p.pane + ' .log');
   if (!box) return null;
+  const wasEnd = force || atEnd(box);
   box.insertAdjacentHTML('beforeend', html);
-  box.scrollTop = 1e9;
+  if (wasEnd) box.scrollTop = 1e9;
   return box.lastElementChild;
 }
 
@@ -1866,7 +1872,7 @@ async function send(p, ta) {
   // видно, что именно отправлено, даже если лог отлистан вверх. Снимать его не нужно —
   // `absorb` убирает весь узел, когда тот же промпт приезжает из транскрипта на своё
   // место, и дальше он живёт обычной строкой лога.
-  const line = log(p, `<div class="msg user pending"><span class=role>ты</span>${linkify(esc(prompt))}</div>`);
+  const line = log(p, `<div class="msg user pending"><span class=role>ты</span>${linkify(esc(prompt))}</div>`, true);
   const echo = { text: norm(prompt), at: Date.now(), nodes: [line] };
   echoes.set(p.pane, [...(echoes.get(p.pane) || []), echo]);
   try {
@@ -1953,7 +1959,7 @@ function md(src) {
   const stash = (html) => BOX + (box.push(html) - 1) + BOX;
 
   let t = String(src).replace(/```[^\n]*\n?([\s\S]*?)```/g,
-    (_, body) => stash('<pre><code>' + esc(body.replace(/\n+$/, '')) + '</code></pre>'));
+    (_, body, at, all) => stash(codeBlock(body, fenceIndent(all, at))));
   t = esc(t);
 
   // Таблица: строка заголовка, строка-разделитель, дальше данные.
@@ -1993,7 +1999,37 @@ function md(src) {
     }).join('');
 
   // Ящик распаковываем последним: внутри него готовый HTML, правила его не касались.
-  return t.replace(new RegExp(BOX + '(\\d+)' + BOX, 'g'), (_, i) => box[+i]);
+  // Рекурсивно: ящики бывают вложены — блок кода в пункте списка прячется первым, а
+  // потом весь список уходит в ящик вместе с его заглушкой. В один проход внутренняя
+  // оставалась на экране символом `\uE000` с номером (2026-10-15). Зациклиться нечему:
+  // ящик ссылается только на те, что положены раньше него.
+  const unbox = (s) => s.replace(new RegExp(BOX + '(\\d+)' + BOX, 'g'), (_, i) => unbox(box[+i]));
+  return unbox(t);
+}
+
+// Отступ, на который сдвинут открывающий ```: пробелы от начала его строки до него.
+// Блок внутри пункта списка claude пишет с отступом пункта, и этот отступ — разметка,
+// а не часть кода. Ищем его по тексту перед совпадением, а не в самой регулярке
+// блока: так ловится ровно то же, что ловилось раньше, включая ``` посреди строки —
+// у такого отступа нет, и код не трогается.
+function fenceIndent(all, at) {
+  const lead = all.slice(all.lastIndexOf('\n', at - 1) + 1, at);
+  return /^ *$/.test(lead) ? lead.length : 0;
+}
+
+// Тело блока кода. Снимаем с каждой строки не больше `indent` пробелов — ровно отступ
+// открывающего ```, как в CommonMark. Не общий отступ всех строк: блок верхнего уровня,
+// где весь код сдвинут (кусок тела метода), остаётся как был. Хвост из пустых строк и
+// строк из одних пробелов уходит: перед закрывающим ``` в пункте стоит отступ пункта, и
+// он рисовался лишней пустой строкой под кодом (2026-10-15).
+// Ссылки в коде кликабельны: claude кладёт в блок адреса, чтобы их было удобно
+// скопировать, — теперь их можно и открыть. Кнопка «копировать» берёт текст, не
+// разметку, поэтому копирует тот же адрес.
+function codeBlock(body, indent) {
+  const cut = new RegExp('^ {0,' + indent + '}');
+  const lines = body.split('\n').map(l => indent ? l.replace(cut, '') : l);
+  while (lines.length && !lines[lines.length - 1].trim()) lines.pop();
+  return '<pre><code>' + linkify(esc(lines.join('\n'))) + '</code></pre>';
 }
 
 // Блок списка: начинается строкой с маркером, дальше — такие же строки, строки с
@@ -2035,11 +2071,20 @@ function list(block) {
   // не пишет, а гадать по каждому пункту значило бы рвать список ровно там, где раньше.
   const draw = (nodes) => {
     const tag = nodes[0].ordered ? 'ol' : 'ul';
-    const li = nodes.map(n => `<li>${n.lines.map(inline).join('<br>')}` +
+    const li = nodes.map(n => `<li>${joinLines(n.lines)}` +
                               `${n.kids.length ? draw(n.kids) : ''}</li>`).join('');
     return `<${tag}>${li}</${tag}>`;
   };
   return draw(root);
+}
+
+// Строки пункта — через перенос, кроме стыка с блоком (код, таблица): блок и так
+// начинается с новой строки, и `<br>` рядом с ним рисовал пустую строку над ним или
+// под ним.
+const BLOCK_LINE = /^\uE000\d+\uE000$/;
+function joinLines(lines) {
+  return lines.map((l, i) => (i && !BLOCK_LINE.test(l) && !BLOCK_LINE.test(lines[i - 1])
+    ? '<br>' : '') + inline(l)).join('');
 }
 
 function inline(t) {
@@ -2192,8 +2237,16 @@ const LOG_MAX = 300;
 
 // Лишнее — с головы лога, пачку инструментов целиком. Резать внутри `details` нельзя:
 // в заголовке счётчик шагов, и он стал бы врать.
+// Убранное сверху сдвигает всё, что ниже, вверх на свою высоту. Chrome держит видимый
+// текст на месте сам (scroll anchoring), Safari этого не умеет — и у читающего историю
+// текст уезжал из-под глаз. Там, где браузер не якорит сам, возвращаем позицию руками;
+// где якорит — не трогаем, иначе сдвиг вычтется дважды.
+const ANCHORS = CSS.supports('overflow-anchor', 'auto');
 function trim(box) {
+  if (box.children.length <= LOG_MAX) return;
+  const before = box.scrollHeight;
   while (box.children.length > LOG_MAX) box.firstElementChild.remove();
+  if (!ANCHORS) box.scrollTop -= before - box.scrollHeight;
 }
 
 function pour(box, items) {

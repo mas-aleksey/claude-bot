@@ -420,7 +420,7 @@ const node = (html) => ({
 });
 const renderItem = (it) => `<div class="${it.role}">${it.text}</div>`;
 const toolHead = (it) => it.text;
-const CSS = { escape: (s) => s };
+const CSS = { escape: (s) => s, supports: () => true };
 """ + body + """
 const box = node('<div>');
 // Слот OUT шага `b`: pour находит его по data-tid и вписывает вывод. Ищем по id в
@@ -1280,15 +1280,21 @@ def test_prompts_stick_to_the_edges_of_the_log():
     both = css.split(".pin, .user.pending {", 1)[1].split("}", 1)[0]
     assert "-webkit-line-clamp:2" in both, "полоска обязана быть в две строки"
     assert "Canvas" in both, "закреплённой полоске нужна непрозрачная подложка"
-    assert "border-radius:0" in both, "полоска идёт от края до края, а не пузырём"
+    # С 2026-10-15 полоски — такие же блоки, как промпт в логе: контур в цвете окна.
+    assert "border-radius:6px" in both, "полоска — блок, как промпт в логе"
+    assert "oklch(0.62 0.20 var(--hue" in both, "контур в цвете своего окна"
+    assert "165" not in both, "зелёной заливки больше нет"
 
     pin = css.split(".pin { ", 1)[1].split("}", 1)[0]
-    assert "position:absolute" in pin and "top:0" in pin
+    assert "position:absolute" in pin and "top:6px" in pin
+    # Зазор над полоской закрыт фоном: иначе в нём выглядывала бы строка лога.
+    assert "box-shadow:0 0 0 6px Canvas" in pin
     assert "pointer-events:none" in pin, "выделение текста под полоской не должно упираться в неё"
     assert "opacity" not in both + pin, "полоска поверх текста, сквозь полупрозрачную он читается"
 
-    assert "position:sticky" not in css.split(".user { ", 1)[1].split("}", 1)[0], \
-        "сам промпт в потоке не закрепляем"
+    user = css.split(".user { ", 1)[1].split("}", 1)[0]
+    assert "position:sticky" not in user, "сам промпт в потоке не закрепляем"
+    assert "background" not in user and "var(--hue" in user, "промпт — контур без заливки"
     # Блок очереди в потоке: ни липкий, ни абсолютный, ни со своим слоем. Всё это он уже
     # пробовал, и каждый раз спорил с логом за один и тот же нижний край.
     queue = css.split(".queue { ", 1)[1].split("}", 1)[0]
@@ -1556,3 +1562,52 @@ console.log(JSON.stringify([busy, [...cls], drawn, timer.textContent]));
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
     assert json.loads(done.stdout) == [True, ["busy"], ["точно запущен?"], "5с +1"]
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
+def test_log_does_not_yank_a_reader_down(tmp_path):
+    """Дописанная строка прокручивает лог вниз только тому, кто внизу и был.
+
+    Итог прогона (`✓ модель · время`) пишет тик, и раньше `log()` прокручивал вниз всегда:
+    прогон кончался, пока человек читал историю выше, — и лог уезжал из-под глаз
+    (2026-10-15). Свой промпт — исключение: отправил, значит хочешь видеть, что ушло.
+    Убранное `trim` сверху в Safari сдвигало текст вверх — там позиция возвращается руками.
+    """
+    js = slice_out("script")
+    at_end = "const atEnd" + js.split("const atEnd")[1].split(";\n")[0] + ";"
+    log_fn = "function log" + js.split("function log(")[1].split("\n}\n")[0] + "\n}\n"
+    log_fn = log_fn.replace("function log", "function log(", 1) if not log_fn.startswith("function log(") else log_fn
+    trim_fn = "function trim" + js.split("function trim(")[1].split("\n}\n")[0] + "\n}\n"
+    trim_fn = "function trim(" + trim_fn[len("function trim"):]
+    src = tmp_path / "scroll.js"
+    src.write_text("""
+// Лог: сто строк по 20px, окно в 200px. Вставка и удаление меняют высоту содержимого.
+const mk = (top) => ({ scrollTop: top, clientHeight: 200, n: 100,
+  get scrollHeight() { return this.n * 20; },
+  get children() { return { length: this.n }; },
+  get firstElementChild() { const b = this; return { remove() { b.n--; } }; },
+  insertAdjacentHTML() { this.n++; }, get lastElementChild() { return {}; } });
+let box;
+const document = { querySelector: () => box };
+""" + at_end + "\n" + log_fn + """
+const LOG_MAX = 100;
+""" + "\nconst run = (anchors) => {\nconst ANCHORS = anchors;\n" +
+        trim_fn.replace("function trim(", "const trim = function (") .replace("\n}\n", "\n};\n") + """
+return trim; };
+const out = {};
+box = mk(1800); log({ pane: 'a' }, 'x'); out.bottom = box.scrollTop;            // был внизу
+box = mk(400);  log({ pane: 'a' }, 'x'); out.reading = box.scrollTop;           // читал выше
+box = mk(400);  log({ pane: 'a' }, 'x', true); out.own = box.scrollTop;        // свой промпт
+box = mk(400); box.n = 103; run(false)(box); out.safari = box.scrollTop;        // 3 строки ушли
+box = mk(400); box.n = 103; run(true)(box);  out.chrome = box.scrollTop;
+console.log(JSON.stringify(out));
+""", encoding="utf-8")
+    done = subprocess.run(["node", str(src)], capture_output=True, text=True)
+    assert done.returncode == 0, done.stderr
+    got = json.loads(done.stdout)
+
+    assert got["bottom"] == 1e9          # внизу — едет за новым
+    assert got["reading"] == 400         # читал выше — остаётся на месте
+    assert got["own"] == 1e9             # свой промпт — вниз всегда
+    assert got["safari"] == 400 - 3 * 20  # ушло 60px сверху — позиция возвращена
+    assert got["chrome"] == 400          # браузер якорит сам — не трогаем
