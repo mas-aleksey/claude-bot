@@ -1306,7 +1306,8 @@ def test_prompts_stick_to_the_edges_of_the_log():
     # Кнопка «вниз» остаётся в логе и ни с чем не пересекается — свой слой ей больше не
     # нужен, но и мешать он не может: блок очереди теперь вне её родителя.
     assert "position:absolute" in css.split(".down { ", 1)[1].split("}", 1)[0]
-    assert ".user.pending .role { display:none }" in css, "подписи на полоске нет"
+    # Подписей ролей нет вовсе (2026-10-16): промпт узнаётся по контуру, ответ — по полосе.
+    assert "class=role" not in slice_out("script") and ".role" not in css
 
     # Тот же класс и у локальной копии, и у строк блока очереди: выглядят они одинаково,
     # отличается только то, кто их рисует.
@@ -1321,8 +1322,7 @@ def test_pin_shows_the_prompt_of_the_turn_being_read(tmp_path):
     body = slice_out("script").split("// --- pin:begin ---")[1].split("// --- pin:end ---")[0]
     js = tmp_path / "pin.js"
     js.write_text("""
-const mk = (text, top) => ({ textContent: 'ты' + text,
-  querySelector: () => ({ textContent: 'ты' }),   // метка роли внутри пузыря
+const mk = (text, top) => ({ textContent: text,   // подписи «ты» нет с 2026-10-16
   getBoundingClientRect: () => ({ top }) });
 const run = (tops) => {
   const box = { getBoundingClientRect: () => ({ top: 100 }),

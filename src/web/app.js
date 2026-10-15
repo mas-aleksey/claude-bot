@@ -196,10 +196,8 @@ function showPin(box, pin) {
     if (b.getBoundingClientRect().top > top + 1) break;
     cur = b;
   }
-  // Метку роли («ты») снимаем по длине самой метки, а не по её тексту: он тут может
-  // смениться, а строка молча показывала бы его началом промпта.
-  const role = cur?.querySelector('.role')?.textContent.length || 0;
-  pin.textContent = cur ? cur.textContent.slice(role).trim() : '';
+  // Подписи «ты» в промпте больше нет (2026-10-16), поэтому текст берётся целиком.
+  pin.textContent = cur ? cur.textContent.trim() : '';
   pin.hidden = !cur;
 }
 // --- pin:end ---
@@ -1872,7 +1870,7 @@ async function send(p, ta) {
   // видно, что именно отправлено, даже если лог отлистан вверх. Снимать его не нужно —
   // `absorb` убирает весь узел, когда тот же промпт приезжает из транскрипта на своё
   // место, и дальше он живёт обычной строкой лога.
-  const line = log(p, `<div class="msg user pending"><span class=role>ты</span>${linkify(esc(prompt))}</div>`, true);
+  const line = log(p, `<div class="msg user pending">${linkify(esc(prompt))}</div>`, true);
   const echo = { text: norm(prompt), at: Date.now(), nodes: [line] };
   echoes.set(p.pane, [...(echoes.get(p.pane) || []), echo]);
   try {
@@ -2144,9 +2142,11 @@ function renderItem(it) {
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
   if (it.role === 'user') {
-    return `<div class="msg user"><span class=role>ты</span>${linkify(esc(it.text))}</div>`;
+    return `<div class="msg user">${linkify(esc(it.text))}</div>`;
   }
-  return `<div class="msg assistant"><span class=role>claude</span>` +
+  // Подписей «ты» и «claude» нет с 2026-10-16, полосы слева у ответа тоже: промпт
+  // обведён контуром в цвет окна, всё вне контура — ответ.
+  return `<div class="msg assistant">` +
          `<div class=body>${md(it.text)}</div></div>`;
 }
 

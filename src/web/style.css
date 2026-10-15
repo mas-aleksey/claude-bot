@@ -478,9 +478,6 @@ section.zoomed header .max::before { content:'\2921' }
    «ждёт» от «отправлено»: контур и фон у них общие. */
 .user.pending { margin-bottom:0; opacity:.85 }
 .user.pending + .user.pending { margin-top:4px }
-/* Подпись только в логе: на полоске её нет и вверху, а зелёный тон и так говорит, чья
-   это строка. В логе сообщений много, и без подписи непонятно, чья реплика. */
-.user.pending .role { display:none }
 .body p { margin:.5em 0 }
 .body > :first-child { margin-top:0 }
 .body > :last-child { margin-bottom:0 }
@@ -505,7 +502,10 @@ section.zoomed header .max::before { content:'\2921' }
 .body th, .body td { border:1px solid #8884; padding:2px 6px; text-align:left }
 .body a { color:#7ad }
 .body blockquote { margin:.4em 0; padding-left:.8em; border-left:3px solid #8884; opacity:.85 }
-.assistant { border-left:3px solid #88f; padding-left:10px }
+/* Ответ без полосы слева (с 2026-10-16): промпт и так узнаётся по контуру, а всё, что не
+   в контуре, — это claude. Отступ слева в 11px — ровно до текста внутри контура промпта
+   (1px рамки + 10px поля), чтобы реплики начинались по одной вертикали. */
+.assistant { padding-left:11px }
 .tool { opacity:.65; font-size:13px; font-family:ui-monospace,monospace }
 /* Шаг внутри пачки: имя, под ним окошки IN и OUT в общей рамке. Подпись слева узкой
    колонкой, текст рядом — так длинная команда переносится под себя, а не под подпись.
@@ -594,7 +594,6 @@ section.zoomed header .max::before { content:'\2921' }
 .tools > :not(summary) { margin:2px 0 0 1.2em }
 .note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
-.role { display:block; font-size:11px; text-transform:uppercase; opacity:.5 }
 /* Композер: рамка одна на всё, поле внутри без своей, под ним ряд управления. Раньше
    тут стояли в ряд три рамки разной высоты — селект, скрепка и поле.
    Правый отступ 20px — под ручку .h-se: она лежит в том же углу, и кнопка отправки
