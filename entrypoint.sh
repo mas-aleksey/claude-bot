@@ -110,6 +110,13 @@ else
     echo "entrypoint: /etc/ssh/keys is not mounted — sshd not started" >&2
 fi
 
+# The shared headless browser, see browser.sh. On everywhere by default; BROWSER=off in the
+# instance's .env keeps it from starting — the image still carries it, the MCP server
+# simply fails to connect.
+if [ "$BROWSER" != off ] && [ -x /usr/local/bin/browser.sh ]; then
+    browser.sh &
+fi
+
 # The browser terminal. Traefik routes /term of the same host here, so the page embeds it
 # without a second login; -b tells ttyd to build its own urls from that prefix. No binary —
 # the panel simply has no terminal.

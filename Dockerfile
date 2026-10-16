@@ -4,9 +4,9 @@ FROM python:${PYTHON_VERSION}-slim-bookworm
 
 COPY --from=ghcr.io/astral-sh/uv:0.5.27 /uv /bin/uv
 
-# LANG: the image has no locale at all, and tmux falls back to its non-UTF-8 mode —
+# LANG: the image has no locale at all, and a terminal falls back to its non-UTF-8 mode —
 # the browser terminal printed `______` in place of every Cyrillic word (`cat` of a
-# Russian file, tmux client in a C locale). C.UTF-8 ships with the base image, needs no
+# Russian file in a C locale). C.UTF-8 ships with the base image, needs no
 # locale-gen, and reaches everything: ttyd, the ssh shell and claude's own subprocesses.
 ENV LANG=C.UTF-8 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -27,8 +27,9 @@ ENV LANG=C.UTF-8 \
 # poppler-utils — pdftotext: a pdf arrives as an attachment often enough, and without it
 # the only way to read one is a python library installed on the spot, every time.
 # vim — edits over ssh from inside the container; the slim image has not even vi.
-# tmux — the browser terminal attaches to a named session instead of spawning a shell per
-# page load, which is the only reason a reload does not kill whatever was running.
+# dtach — the browser terminal attaches to one long-lived shell instead of spawning one per
+# page load, which is the only reason a reload does not kill whatever was running. Why not
+# tmux — see entrypoint.sh.
 # iproute2/iputils-ping/dnsutils — inspecting a network path from inside the container:
 # whether an interface exists, whether an address answers, whether a name resolves. The
 # slim image has none of the three, so the first question after a tunnel comes up ("is
@@ -39,7 +40,7 @@ ENV LANG=C.UTF-8 \
 # instance's compose file, see example/docker-compose.yml.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl gnupg git openssh-client openssh-server \
-        jq postgresql-client poppler-utils vim tmux dtach iproute2 iputils-ping dnsutils \
+        jq postgresql-client poppler-utils vim dtach iproute2 iputils-ping dnsutils \
     && install -m 0755 -d /etc/apt/keyrings \
     && curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
         | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg \
@@ -84,12 +85,39 @@ ARG TTYD_VERSION=1.7.7
 ADD https://github.com/tsl0922/ttyd/releases/download/${TTYD_VERSION}/ttyd.x86_64 /usr/local/bin/ttyd
 RUN chmod +x /usr/local/bin/ttyd && ttyd --version | grep -q "${TTYD_VERSION}"
 
+# A shared headless browser — claude drives it through MCP, a human watches and clicks
+# through chrome://inspect. browser.sh starts it from the entrypoint; the MCP server is
+# registered in /opt/claude/mcp.json, which runner.py passes with --mcp-config.
+#
+# headless-shell only, but the system libraries of full chromium: projects that bring their
+# own playwright (a revision pinned by their lock file, downloaded into ~/.cache, which lives
+# on the /root volume) find the apt side already here. apt packages do not survive a
+# recreate, so this is the only place for them.
+#
+# PLAYWRIGHT_BROWSERS_PATH is set for this step only, NOT as an ENV: an inherited value
+# would send a project's `npx playwright install` into the image layer under /opt/pw — gone
+# on the next recreate — and its tests would look for their revision there too.
+# Outside /root for the same reason as everything else in the image: the volume covers it.
+#
+# @playwright/mcp attaches to the running browser over CDP rather than launching one, so
+# its own playwright version does not have to match the revision installed here.
+# socat — DevTools out through a unix socket, see browser.sh.
+ARG PLAYWRIGHT_VERSION=1.64.1
+ARG PLAYWRIGHT_MCP_VERSION=0.0.83
+RUN apt-get update && apt-get install -y --no-install-recommends socat \
+ && PLAYWRIGHT_BROWSERS_PATH=/opt/pw npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps --only-shell chromium \
+ && npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium \
+ && npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
+ && rm -rf /var/lib/apt/lists/* /root/.npm \
+ && ls /opt/pw/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell \
+ && playwright-mcp --version
+
 # /run/sshd — without it sshd dies with "Missing privilege separation directory".
 # sshd_config.d/ is picked up by the image's default config through Include.
 RUN mkdir -p /run/sshd
 COPY sshd_config /etc/ssh/sshd_config.d/10-container.conf
-COPY tmux.conf /etc/tmux.conf
 COPY entrypoint.sh /entrypoint.sh
+COPY browser.sh /usr/local/bin/browser.sh
 
 # The answer style is part of the product, not per-instance configuration: it is the same
 # everywhere and changes with the image. Hence COPY, rather than a mount in every compose
@@ -98,6 +126,7 @@ COPY entrypoint.sh /entrypoint.sh
 # /opt/claude rather than /root/.claude — the latter is covered by the ${USER_DATA}/root
 # mount, which would hide anything the image puts there.
 COPY claude/settings.json /opt/claude/settings.json
+COPY claude/mcp.json /opt/claude/mcp.json
 COPY claude/output-styles /opt/claude/output-styles
 
 WORKDIR /src

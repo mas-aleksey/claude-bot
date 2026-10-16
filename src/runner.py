@@ -24,7 +24,11 @@ log = logging.getLogger("claude_bot.runner")
 # остаётся описанием окружения. Правка стиля требует пересборки образа, но это ровно тот
 # темп, в котором он меняется.
 SETTINGS = "/opt/claude/settings.json"
-BASE = ["claude", "--permission-mode", "bypassPermissions", "--settings", SETTINGS]
+# --mcp-config — the image's own MCP servers (the shared browser), added on top of the ones
+# the user registers through /mcp: without --strict-mcp-config the two lists merge.
+MCP = "/opt/claude/mcp.json"
+BASE = ["claude", "--permission-mode", "bypassPermissions", "--settings", SETTINGS,
+        "--mcp-config", MCP]
 CONFIG = "/root/.claude.json"
 # Домен OAuth уже переезжал (claude.ai → claude.com), поэтому ловим по пути /oauth/,
 # а не по списку хостов. Проверено на 2.1.220: claude.com/cai/oauth/authorize?...

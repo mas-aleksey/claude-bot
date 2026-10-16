@@ -134,7 +134,9 @@ network stack of its own.
 ### Sizing an instance
 
 The image ships python 3.14 + uv, node 22 + npm, git, docker CLI, psql, jq, vim,
-kubectl, ip, ping and dig. Anything beyond that goes into a `Dockerfile` of its own, layered
+kubectl, ip, ping and dig, plus a shared headless Chromium that claude drives through the
+`playwright` MCP server (`browser.sh`; profile in `/data/browser`, `BROWSER=off` to skip it).
+Anything beyond that goes into a `Dockerfile` of its own, layered
 `FROM claude-bot:latest`. Answer these while writing the compose file above, not after
 the first command fails inside the container:
 
