@@ -437,17 +437,22 @@ section.zoomed header .max::before { content:'\2921' }
 /* С 2026-10-15 обе — такие же блоки, как промпт в логе: контур в цвете окна, скругление,
    отступ от краёв. Лентами от края до края они были, пока промпт заливался зелёным; с
    контуром лента легла бы вплотную к рамке окна того же цвета — двойной линией.
-   Фон — цвет страницы, без тона: верхняя лежит поверх текста лога, и он не должен
+   Фон — ровно фон окна, той же строкой: тон окна поверх непрозрачного `Canvas`. Голый
+   `Canvas` (до 2026-10-16) был чисто белым или чёрным пятном на тонированном окне.
+   Нижний слой непрозрачный: верхняя полоска лежит поверх текста лога, и он не должен
    читаться сквозь неё. */
 .pin, .user.pending {
   padding:4px 10px; font-size:12px; white-space:pre-wrap; border-radius:6px;
   display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
-  border:1px solid oklch(0.62 0.20 var(--hue,250)); background:Canvas }
+  border:1px solid oklch(0.62 0.20 var(--hue,250));
+  background:linear-gradient(oklch(0.62 0.16 var(--hue,250) / .12),
+                             oklch(0.62 0.16 var(--hue,250) / .12)), Canvas }
 /* По бокам — те же 14px, что у лога, чтобы полоска стояла ровно над промптами. Сверху
-   зазор в 6px закрыт тенью цвета страницы: иначе в нём выглядывала бы строка лога,
-   прокрученная под полоску. */
+   зазор в 6px закрыт тенью цвета окна: иначе в нём выглядывала бы строка лога,
+   прокрученная под полоску. Тени градиент не дать, ей нужен один цвет — `color-mix` в
+   sRGB даёт тот же, что 12% тона поверх `Canvas`: так браузер и накладывает слои. */
 .pin { position:absolute; left:14px; right:14px; top:6px; z-index:2; pointer-events:none;
-  box-shadow:0 0 0 6px Canvas }
+  box-shadow:0 0 0 6px color-mix(in srgb, oklch(0.62 0.16 var(--hue,250)) 12%, Canvas) }
 .pin[hidden] { display:none }
 /* Без `content-visibility`, и это проверено на живой панели 2026-10-11: с ним прокрутка
    вверх тряслась. Сообщения разной высоты, у неразмеченного браузер берёт оценку
@@ -462,6 +467,8 @@ section.zoomed header .max::before { content:'\2921' }
    было залито одним зелёным во всех окнах: в четырёх панелях глаз ищет «где я говорил»
    первым делом, и контур в цвет окна отвечает заодно и на «в каком я окне». Яркий тон —
    тот же, что у рамки активного окна и полоски открытой сессии в списке слева. */
+/* Без подложки: серый строчного кода пробовали 2026-10-16 и вернули фон окна — промпт
+   узнаётся по контуру, заливка ему не нужна. */
 .user { border:1px solid oklch(0.62 0.20 var(--hue,250)); padding:8px 10px; border-radius:6px }
 /* Ждущие промпты — своей полосой между логом и композером. Не внутри лога и не поверх
    него: `section` это колонка, `.logbox` в ней `flex:1`, поэтому полоса просто занимает
@@ -515,22 +522,32 @@ section.zoomed header .max::before { content:'\2921' }
    текстом, и пачка читалась как одна каша моноширинного текста. Ритм дают три вещи:
    воздух между шагами, рамка вместо заливки и заголовок другим шрифтом. */
 .tool.step { opacity:1 }
-/* Заголовок шага: имя и подпись (описание у Bash, путь у правок) одной строкой. Подпись
-   режется многоточием — шаг не должен расти в высоту из-за длинного описания. */
-.sh { display:flex; gap:8px; align-items:baseline; min-width:0;
-  font:12px/1.5 system-ui,sans-serif }
-.sh b { flex:none; font-weight:600; opacity:.6 }
-.sh span { opacity:.75; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 
-/* Шкала слева через всю пачку: точка у каждого шага и линия до следующего. Точка
-   зелёная, как галочка готовности, у упавшего шага — красная (класс ставит `pour`). */
-.tools > .step { position:relative; margin:12px 0 0 1.2em; padding-left:16px }
-.tools > .step::before { content:''; position:absolute; left:0; top:6px; width:7px;
+/* Шаг — одна строка лога (с 2026-10-16, пачек больше нет): значок, описание, длительность
+   справа. Описание режется многоточием — строка не растёт в высоту. Без описания идёт
+   сама команда моноширинным. Длительность прижата вправо и не сжимается.
+   Шкала слева: точка у каждого шага и линия до следующего, если следующий — тоже шаг.
+   Точка зелёная, у упавшего — красная (класс ставит `pour`), там же краснеет строка. */
+.step { position:relative; margin:4px 0 0; padding-left:16px }
+.step + :not(.step) { margin-top:12px }
+.step > summary { display:flex; gap:8px; align-items:baseline; min-width:0;
+  cursor:pointer; list-style:none; font:12px/1.5 system-ui,sans-serif }
+.step > summary::-webkit-details-marker { display:none }
+.step > summary b { flex:none; font-weight:400 }
+.step > summary span, .step > summary code { flex:1; min-width:0; opacity:.8;
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+.step > summary code { font:11px/1.6 ui-monospace,monospace }
+.step > summary u { flex:none; text-decoration:none; opacity:.5;
+  font-variant-numeric:tabular-nums }
+.step > summary:hover span, .step > summary:hover code, .step[open] > summary span,
+.step[open] > summary code { opacity:1 }
+.step.bad > summary span, .step.bad > summary code { color:#e55; opacity:1 }
+.step[open] { margin-bottom:8px }
+.step::before { content:''; position:absolute; left:0; top:7px; width:7px;
   height:7px; border-radius:50%; background:oklch(0.68 0.17 145) }
-.tools > .step.bad::before { background:#e55 }
-.tools > .step::after { content:''; position:absolute; left:3px; top:17px; bottom:-14px;
-  width:1px; background:#8884 }
-.tools > .step:last-child::after { display:none }
+.step.bad::before { background:#e55 }
+.step:has(+ .step)::after { content:''; position:absolute; left:3px; top:16px;
+  bottom:-6px; width:1px; background:#8884 }
 
 /* Колонка текста `minmax(0, 1fr)`, а не `1fr`: у голого `1fr` нижняя граница — самое
    длинное слово, и неразрывный путь распирал окошко вправо за край пачки. */
@@ -586,12 +603,6 @@ section.zoomed header .max::before { content:'\2921' }
 .dv:not(.one) td:nth-child(3) { border-left:1px solid #8883 }
 .dv .gap td { text-align:center; opacity:.4 }
 .dv .more { padding:2px 6px; opacity:.5 }
-/* Пачка вызовов: одна строка со счётчиком и последним вызовом. Заголовок не переносим —
-   иначе свёрнутая группа занимает столько же места, сколько развёрнутая. */
-.tools > summary { cursor:pointer; opacity:.65; font-size:13px;
-  font-family:ui-monospace,monospace; white-space:nowrap; overflow:hidden;
-  text-overflow:ellipsis }
-.tools > :not(summary) { margin:2px 0 0 1.2em }
 .note { opacity:.45; font-size:12px; font-style:italic }
 .err { color:#e55 }
 /* Композер: рамка одна на всё, поле внутри без своей, под ним ряд управления. Раньше

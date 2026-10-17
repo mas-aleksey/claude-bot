@@ -953,10 +953,10 @@ function drawPane(p) {
     if (!io || e.target.closest('a') || String(getSelection())) return;
     io.classList.toggle('open');
   });
-  // Пачка раскрылась — меряем её окошки. До этого они не размечены, высота нулевая, и
+  // Шаг раскрылся — меряем его окошки. До этого они не размечены, высота нулевая, и
   // понять, обрезан ли текст, нельзя. `toggle` не всплывает, поэтому перехват.
   box.addEventListener('toggle', (e) => {
-    if (e.target.open && e.target.classList?.contains('tools')) markMore(e.target);
+    if (e.target.open && e.target.classList?.contains('step')) markMore(e.target);
   }, true);
   let stick = true;   // новое окно открывается у низа
   const pin = el.querySelector('.pin');
@@ -1866,11 +1866,24 @@ async function send(p, ta) {
   // Пузырь печатаем до запроса: ответ на отправку ждёт id сессии до полутора минут, и
   // без него панель всё это время выглядела бы проглотившей промпт. Узлы кладём в запись
   // эха — снимет их `absorb`, когда тот же промпт приедет из транскрипта на своё место.
-  // Класс `pending` держит пузырь у нижнего края, пока промпт ждёт своей очереди: с ним
-  // видно, что именно отправлено, даже если лог отлистан вверх. Снимать его не нужно —
-  // `absorb` убирает весь узел, когда тот же промпт приезжает из транскрипта на своё
-  // место, и дальше он живёт обычной строкой лога.
-  const line = log(p, `<div class="msg user pending">${linkify(esc(prompt))}</div>`, true);
+  //
+  // Куда печатаем — по тому, занято ли окно (2026-10-16). До этого копия всегда шла в лог
+  // с классом очереди: у занятого окна промпт мелькал в окне и прыгал в блок очереди под
+  // ним, у свободного — стоял в окне бледным обрезанным блоком очереди, хотя уже
+  // выполнялся. Занято — сразу в блок очереди, где ему и место; блок перерисуется с
+  // сервера на ближайшем тике (ключ сравнения сбрасываем, иначе при совпавшем составе
+  // копия осталась бы там навсегда). Свободно — обычным промптом в лог: он и выполняется.
+  const pane = document.getElementById('pane-' + p.pane);
+  const q = pane?.classList.contains('busy') && pane.querySelector(':scope > .queue');
+  let line;
+  if (q) {
+    q.hidden = false;
+    delete q.dataset.j;
+    q.insertAdjacentHTML('beforeend', `<div class="msg user pending">${linkify(esc(prompt))}</div>`);
+    line = q.lastElementChild;
+  } else {
+    line = log(p, `<div class="msg user">${linkify(esc(prompt))}</div>`, true);
+  }
   const echo = { text: norm(prompt), at: Date.now(), nodes: [line] };
   echoes.set(p.pane, [...(echoes.get(p.pane) || []), echo]);
   try {
@@ -2107,37 +2120,28 @@ function linkify(t) {
 
 // --- md:end ---
 
-// Строка вызова. В заголовке группы ссылку не делаем: клик по ней и разворачивал бы
-// пачку, и уводил на страницу разом.
-const toolHead = (it, link) => {
-  const arg = esc(it.text);
-  return `${esc(it.icon)} ${esc(it.name)}: ${link ? linkify(arg) : arg}`;
-};
-
 function renderItem(it) {
   // Подставленный контекст: факт и объём, без содержимого.
   if (it.role === 'note') {
     return `<div class="msg note">↳ ${esc(it.text)}</div>`;
   }
-  // Шаг — имя инструмента и под ним два окошка: IN с аргументом вызова и OUT с головой
-  // результата. Окошки поджаты — IN в строку, OUT в три, — а клик раскрывает каждое
-  // целиком на месте. Так пачка из двадцати шагов читается сверху вниз одним взглядом, а
-  // полный текст — по одному клику на том окошке, которое нужно.
-  // Раскрывашкой на весь шаг это было один заход (2026-10-13): каждый шаг сворачивался в
-  // строку, и чтобы увидеть хоть начало вывода, приходилось открывать их по очереди.
-  // OUT рисуется пустым и скрытым: результат приходит позже отдельным элементом, и
-  // `pour` впишет его сюда по `data-tid`.
-  // Подпись после имени: описание у Bash, путь у правок. Совпадает с IN — значит, IN
-  // повторил бы то же самое строкой ниже (у Edit и Write аргумент и есть путь), и его
-  // не рисуем.
+  // Шаг — одна строка лога (с 2026-10-16, пачек больше нет): значок, описание и
+  // длительность. Клик раскрывает под строкой IN и OUT (или DIFF у правок).
+  // Описание — `desc`: у Bash его пишет сам claude, у правок это путь. Без него строкой
+  // идёт сам аргумент, моноширинным — это команда, а не текст.
+  // IN не рисуем, если он повторил бы строку: у Edit и Write аргумент и есть путь.
+  // Длительность — «…», пока не пришёл результат: `pour` впишет её по `data-tid`,
+  // вычтя `data-ts` вызова из времени ответа. Сами часы не показываем.
   if (it.role === 'tool') {
     const tid = it.id ? ` data-tid="${esc(it.id)}"` : '';
+    const ts = it.ts ? ` data-ts="${it.ts}"` : '';
     const arg = it.full || it.text;
-    const desc = it.desc ? `<span>${esc(it.desc)}</span>` : '';
+    const label = it.desc ? `<span>${esc(it.desc)}</span>` : `<code>${esc(it.text)}</code>`;
     const inBox = it.desc && it.desc === arg ? ''
       : `<div class=io><i>IN</i><pre>${linkify(esc(arg))}</pre></div>`;
-    return `<div class="tool step"${tid}><div class=sh><b>${esc(it.icon)} ${esc(it.name)}</b>` +
-           `${desc}</div>${inBox}<div class="io out" hidden><i>OUT</i><pre></pre></div></div>`;
+    return `<details class="tool step"${tid}${ts}><summary title="${esc(it.name)}">` +
+           `<b>${esc(it.icon)}</b>${label}<u>\u2026</u></summary>` +
+           `${inBox}<div class="io out" hidden><i>OUT</i><pre></pre></div></details>`;
   }
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
@@ -2150,20 +2154,13 @@ function renderItem(it) {
          `<div class=body>${md(it.text)}</div></div>`;
 }
 
-// Шаги инструментов идут пачкой между промптом и ответом, и их бывает по полсотни —
-// ответ уезжает за экран, а листать приходится мимо того, что и так уже случилось.
-// Пачка сворачивается в один `details`: в заголовке счётчик и последний вызов, поэтому
-// на бегущем прогоне видно, чем claude занят сейчас, а раскрытие остаётся нативным.
-// Группу закрывает любое другое сообщение: следующий шаг начнёт новую. Дописываем
-// именно в последнего потомка — пачка приезжает батчами по CHUNK и живым потоком, и
-// разрыв между ними не должен рвать группу надвое.
 // Стрелка «есть ещё» только у окошка, где текст действительно не влез. Мерить можно
-// лишь размеченное: шаги свёрнутой пачки не отрисованы, и высота у них нулевая. Поэтому
-// меряем в раскрытых пачках после каждой вставки и в пачке — в момент её раскрытия.
+// лишь размеченное: окошки свёрнутого шага не отрисованы, и высота у них нулевая.
+// Поэтому меряем в раскрытых шагах после каждой вставки и в шаге — в момент раскрытия.
 function markMore(root) {
-  const scope = root.matches?.('details.tools') ? root : null;
+  const scope = root.matches?.('details.step') ? root : null;
   const list = scope ? scope.querySelectorAll('.io:not([hidden])')
-                     : root.querySelectorAll('details.tools[open] .io:not([hidden])');
+                     : root.querySelectorAll('details.step[open] .io:not([hidden])');
   for (const io of list) {
     if (io.classList.contains('open')) continue;
     const el = io.lastElementChild;
@@ -2233,10 +2230,12 @@ function diffHTML(d, narrow) {
 // тысячи, и каждое — живой узел со своей раскладкой: панель тормозит тем сильнее, чем
 // дольше сессия. История при этом никуда не девается, она в файле сессии; на экране
 // нужен хвост, и перечитывают его прокруткой, а не поиском по годовой ленте.
-const LOG_MAX = 300;
+// Тысяча, а не триста, с 2026-10-16: шаги инструментов больше не сворачиваются в
+// пачку, и каждый теперь отдельный элемент лога — прогон в полсотни шагов занимал бы
+// шестую часть потолка.
+const LOG_MAX = 1000;
 
-// Лишнее — с головы лога, пачку инструментов целиком. Резать внутри `details` нельзя:
-// в заголовке счётчик шагов, и он стал бы врать.
+// Лишнее — с головы лога.
 // Убранное сверху сдвигает всё, что ниже, вверх на свою высоту. Chrome держит видимый
 // текст на месте сам (scroll anchoring), Safari этого не умеет — и у читающего историю
 // текст уезжал из-под глаз. Там, где браузер не якорит сам, возвращаем позицию руками;
@@ -2249,40 +2248,36 @@ function trim(box) {
   if (!ANCHORS) box.scrollTop -= before - box.scrollHeight;
 }
 
+// Длительность шага подписью: секунды до минуты, дальше — минуты и секунды.
+const took = (ms) => ms < 1000 ? '<1 с' : ms < 60000 ? Math.round(ms / 1000) + ' с' : fmt(ms / 1000);
+
 function pour(box, items) {
   for (const it of items) {
-    // Вывод вписывается в свой шаг, а не встаёт в лог. Отдельной строкой он ломал бы
-    // дважды: закрыл бы пачку (её закрывает любой не-`tool`) и сбил бы счётчик шагов в
-    // заголовке — тот считает детей пачки. Шага нет — его срезал `LOG_MAX` или он был
-    // до начала потока, — тогда и показывать вывод не к чему.
+    // Результат вписывается в свой шаг, а не встаёт в лог отдельной строкой. Шага нет —
+    // его срезал `LOG_MAX` или он был до начала потока, — тогда и вписывать некуда.
     if (it.role === 'out') {
-      const o = it.id && box.querySelector(`.step[data-tid="${CSS.escape(it.id)}"] .out`);
-      if (o) {
-        o.hidden = false;
-        o.classList.toggle('err', !!it.err);
-        // Упавший шаг красит свою точку на шкале — её рисует CSS по классу шага.
-        o.closest('.step')?.classList.toggle('bad', !!it.err);
-        // У правки вместо «updated successfully» — diff. Подпись своя: это уже не
-        // вывод команды, а то, что стало с файлом.
-        if (it.diff) {
-          o.classList.add('diff');
-          o.innerHTML = '<i>DIFF</i>' + diffHTML(it.diff, NARROW.matches);
-        } else {
-          // `pre` по имени, а не последним потомком: окошко не должно зависеть от того,
-          // во что его успел завернуть кто-то ещё.
-          o.querySelector('pre').textContent = it.text;
-        }
+      const step = it.id && box.querySelector(`.step[data-tid="${CSS.escape(it.id)}"]`);
+      if (!step) continue;
+      const o = step.querySelector('.out');
+      // Пустой успех приходит ради времени ответа: окошко ему не нужно.
+      o.hidden = !(it.text || it.diff || it.err);
+      o.classList.toggle('err', !!it.err);
+      step.classList.toggle('bad', !!it.err);
+      const at = Number(step.dataset.ts);
+      if (it.ts && at) step.querySelector('summary u').textContent = took(it.ts - at);
+      // У правки вместо «updated successfully» — diff. Подпись своя: это уже не
+      // вывод команды, а то, что стало с файлом.
+      if (it.diff) {
+        o.classList.add('diff');
+        o.innerHTML = '<i>DIFF</i>' + diffHTML(it.diff, NARROW.matches);
+      } else {
+        // `pre` по имени, а не последним потомком: окошко не должно зависеть от того,
+        // во что его успел завернуть кто-то ещё.
+        o.querySelector('pre').textContent = it.text;
       }
       continue;
     }
-    if (it.role !== 'tool') { box.insertAdjacentHTML('beforeend', renderItem(it)); continue; }
-    let g = box.lastElementChild;
-    if (!g || !g.classList.contains('tools')) {
-      box.insertAdjacentHTML('beforeend', '<details class="msg tools"><summary></summary></details>');
-      g = box.lastElementChild;
-    }
-    g.insertAdjacentHTML('beforeend', renderItem(it));
-    g.firstElementChild.innerHTML = `${g.children.length - 1} · ${toolHead(it, false)}`;
+    box.insertAdjacentHTML('beforeend', renderItem(it));
   }
 }
 // --- tools:end ---

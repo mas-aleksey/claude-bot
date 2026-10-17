@@ -11,6 +11,7 @@
 import json
 import re
 import time
+from datetime import datetime
 from pathlib import Path
 
 import render
@@ -179,7 +180,14 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                         o = o or {"role": "out", "id": block.get("tool_use_id"),
                                   "text": "", "err": False}
                         o["diff"] = d
+                    # Пустой успех вывода не даёт, но время ответа нужно и ему: без него
+                    # у шага навсегда осталось бы «…» вместо длительности.
+                    if not o and (t := _ts(ev)):
+                        o = {"role": "out", "id": block.get("tool_use_id"), "text": "",
+                             "err": False}
                     if o:
+                        if t := _ts(ev):
+                            o["ts"] = t
                         out.append(o)
                 # Подставленный контекст: показываем факт и объём, не содержимое.
                 size = sum(len(b.get("text", "")) for b in content or []
@@ -200,6 +208,10 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                     step = {"role": "tool", "icon": render.ICONS.get(name, "🔧"),
                             "name": name, "text": render.clip(arg, 200),
                             "id": block.get("id")}
+                    # Время вызова — для длительности шага: панель вычтет его из времени
+                    # результата. Сами часы панель не показывает.
+                    if t := _ts(ev):
+                        step["ts"] = t
                     # Подпись к имени шага. У Bash это `description`, который claude
                     # пишет сам (2026-10-13: у 719 вызовов из 1099), у правок — путь
                     # файла: описания у них нет, а путь и есть «что сделано».
@@ -217,6 +229,18 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             if len(out) >= CHUNK:
                 break
     return start, out, _ctx(used, model)
+
+
+def _ts(ev: dict) -> int | None:
+    """Время события в миллисекундах эпохи, либо None. Claude Code пишет его в каждое
+    событие строкой ISO в UTC; кривое или отсутствующее — не повод ронять разбор."""
+    raw = ev.get("timestamp")
+    if not isinstance(raw, str):
+        return None
+    try:
+        return int(datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp() * 1000)
+    except ValueError:
+        return None
 
 
 def _meta(text: str) -> dict:

@@ -403,65 +403,57 @@ def test_sidebars_fold_independently():
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")
-def test_tool_steps_fold_into_one_group(tmp_path):
-    """Шаги инструментов обязаны складываться в одну группу, а ответ — её закрывать.
-    Иначе панель снова превращается в ленту из полусотни строк, где ответ внизу."""
+def test_each_tool_step_is_its_own_line(tmp_path):
+    """Шаги не сворачиваются в пачку (с 2026-10-16): каждый вызов — своя строка лога.
+
+    Результат вписывается в свой шаг по id: в `pre`, а не в последнего потомка (его
+    успевала обернуть кнопка «копировать»), длительность — разность времени ответа и
+    вызова. Упавший шаг помечается. Пустой успех приходит ради времени и окошка не
+    открывает. Результат без шага — его срезал потолок лога — пропадает молча.
+    """
     body = slice_out("script").split("// --- tools:begin ---")[1].split("// --- tools:end ---")[0]
-    js = tmp_path / "tools.js"
+    js = tmp_path / "steps.js"
     js.write_text("""
-// Минимальный узел: класс берём из разметки регуляркой, больше pour() ничего не трогает.
-const node = (html) => ({
-  html, kids: html.startsWith('<details') ? [node('summary')] : [],
-  classList: { contains: (c) => (html.match(/class="([^"]*)"/)?.[1] || '').split(' ').includes(c) },
-  get children() { return this.kids; },
-  get lastElementChild() { return this.kids[this.kids.length - 1] || null; },
-  get firstElementChild() { return this.kids[0] || null; },
-  insertAdjacentHTML(_, h) { this.kids.push(node(h)); },
-});
-const renderItem = (it) => `<div class="${it.role}">${it.text}</div>`;
-const toolHead = (it) => it.text;
 const CSS = { escape: (s) => s, supports: () => true };
+const fmt = (sec) => Math.floor(sec / 60) + ':' + String(Math.round(sec % 60)).padStart(2, '0');
+const renderItem = (it) => it.role;
+// Шаг с двумя окошками: OUT (с `pre` и чужой обёрткой последним потомком) и подписью.
+const mkStep = (id, ts) => {
+  const pre = { textContent: '' }, u = { textContent: '\u2026' };
+  const out = { hidden: true, cls: [], lastElementChild: { textContent: '' },
+    querySelector: (q) => q === 'pre' ? pre : null,
+    classList: { toggle(c, on) { if (on) out.cls.push(c); }, add() {} } };
+  const step = { id, dataset: { ts: String(ts) }, cls: [], pre, u, out,
+    querySelector: (q) => q === '.out' ? out : q === 'summary u' ? u : null,
+    classList: { toggle(c, on) { if (on) step.cls.push(c); } } };
+  return step;
+};
+const steps = { a: mkStep('a', 1000), b: mkStep('b', 5000) };
+const kids = [];
+const box = { insertAdjacentHTML: (_, h) => kids.push(h),
+  querySelector: (q) => steps[(q.match(/data-tid="([^"]+)"/) || [])[1]] || null };
 """ + body + """
-const box = node('<div>');
-// Слот OUT шага `b`: pour находит его по data-tid и вписывает вывод. Ищем по id в
-// селекторе — у неизвестного id слота нет, и вывод обязан пропасть молча.
-// `pre` ищется по имени, а не последним потомком: в живом логе его успевала обернуть
-// кнопка «копировать», и текст ложился в обёртку. Последним потомком тут нарочно стоит
-// чужой узел — запись в него и есть та ошибка.
-const pre = { textContent: '' }, wrapper = { textContent: '' };
-const step = { cls: [], classList: { toggle(c, on) { if (on) step.cls.push(c); } } };
-const slot = { hidden: true, cls: [], lastElementChild: wrapper,
-  querySelector: (sel) => sel === 'pre' ? pre : null,
-  closest: (sel) => sel === '.step' ? step : null,
-  classList: { toggle(c, on) { if (on) slot.cls.push(c); } } };
-box.querySelector = (sel) => sel.includes('"b"') ? slot : null;
 pour(box, [
   { role: 'user', text: 'сделай' },
-  { role: 'tool', text: 'Read a', id: 'a' }, { role: 'tool', text: 'Bash b', id: 'b' },
-  { role: 'out', id: 'b', text: '1 failed', err: true },
-  { role: 'out', id: 'gone', text: 'шаг срезан LOG_MAX' },
+  { role: 'tool', id: 'a' }, { role: 'tool', id: 'b' },
+  { role: 'out', id: 'a', text: '', err: false, ts: 1400 },
+  { role: 'out', id: 'b', text: '1 failed', err: true, ts: 77000 },
+  { role: 'out', id: 'gone', text: 'шаг срезан', ts: 9 },
   { role: 'assistant', text: 'готово' },
-  { role: 'tool', text: 'Read c' },
 ]);
-console.log(JSON.stringify([
-  box.kids.map(k => k.classList.contains('tools') ? 'group' : k.html),
-  box.kids[1].kids.length,
-  box.kids[1].firstElementChild.innerHTML,
-  [slot.hidden, slot.cls, pre.textContent, wrapper.textContent, step.cls],
-]));
+const show = (s) => [s.out.hidden, s.out.cls, s.pre.textContent, s.cls, s.u.textContent];
+console.log(JSON.stringify({ kids, a: show(steps.a), b: show(steps.b) }));
 """, encoding="utf-8")
     done = subprocess.run(["node", str(js)], capture_output=True, text=True)
     assert done.returncode == 0, done.stderr
-    kids, size, head, out = json.loads(done.stdout)
-    # Промпт, группа из двух шагов, ответ, новая группа: ответ группу закрыл. Вывод шагов
-    # между ними группу не рвёт и в лог строкой не встаёт.
-    assert kids == ['<div class="user">сделай</div>', "group",
-                    '<div class="assistant">готово</div>', "group"]
-    assert size == 3  # summary + два шага: OUT в счётчик не попал
-    assert head == "2 · Bash b"  # счётчик и последний вызов
-    # Вписан в свой `pre`, обёртка не тронута; ошибка помечена и на окошке, и на шаге —
-    # по второму классу красится точка на шкале.
-    assert out == [False, ["err"], "1 failed", "", ["bad"]]
+    got = json.loads(done.stdout)
+
+    # Каждый шаг — свой элемент лога, никакой пачки вокруг; результаты строк не дают.
+    assert got["kids"] == ["user", "tool", "tool", "assistant"]
+    # Пустой успех: окошко закрыто, длительность есть.
+    assert got["a"] == [True, [], "", [], "<1 с"]
+    # Ошибка: окошко открыто и красное, шаг помечен, текст в `pre`, 72 секунды — 1:12.
+    assert got["b"] == [False, ["err"], "1 failed", ["bad"], "1:12"]
 
 
 def test_copy_button_skips_tool_io():
@@ -1280,6 +1272,9 @@ def test_prompts_stick_to_the_edges_of_the_log():
     both = css.split(".pin, .user.pending {", 1)[1].split("}", 1)[0]
     assert "-webkit-line-clamp:2" in both, "полоска обязана быть в две строки"
     assert "Canvas" in both, "закреплённой полоске нужна непрозрачная подложка"
+    # Фон — фон окна, а не голый Canvas: тот был белым или чёрным пятном на окне.
+    assert "oklch(0.62 0.16 var(--hue,250) / .12)" in both, "фон полоски — тон окна"
+    assert "#8882" not in both, "серого поверх фона окна нет"
     # С 2026-10-15 полоски — такие же блоки, как промпт в логе: контур в цвете окна.
     assert "border-radius:6px" in both, "полоска — блок, как промпт в логе"
     assert "oklch(0.62 0.20 var(--hue" in both, "контур в цвете своего окна"
@@ -1288,7 +1283,7 @@ def test_prompts_stick_to_the_edges_of_the_log():
     pin = css.split(".pin { ", 1)[1].split("}", 1)[0]
     assert "position:absolute" in pin and "top:6px" in pin
     # Зазор над полоской закрыт фоном: иначе в нём выглядывала бы строка лога.
-    assert "box-shadow:0 0 0 6px Canvas" in pin
+    assert "box-shadow:0 0 0 6px color-mix(in srgb, oklch(0.62 0.16 var(--hue,250)) 12%, Canvas)" in pin
     assert "pointer-events:none" in pin, "выделение текста под полоской не должно упираться в неё"
     assert "opacity" not in both + pin, "полоска поверх текста, сквозь полупрозрачную он читается"
 
@@ -1611,3 +1606,19 @@ console.log(JSON.stringify(out));
     assert got["own"] == 1e9             # свой промпт — вниз всегда
     assert got["safari"] == 400 - 3 * 20  # ушло 60px сверху — позиция возвращена
     assert got["chrome"] == 400          # браузер якорит сам — не трогаем
+
+
+def test_just_sent_prompt_goes_where_it_belongs():
+    """Копия только что отправленного промпта: у занятого окна — в блок очереди под логом,
+    у свободного — обычным промптом в лог. До 2026-10-16 она всегда шла в лог с классом
+    очереди: промпт мелькал в окне и прыгал вниз, а у свободного окна стоял в логе
+    бледным обрезанным блоком очереди, хотя уже выполнялся."""
+    js = slice_out("script")
+    body = js.split("async function send(")[1].split("\n}\n")[0]
+    assert "classList.contains('busy')" in body
+    assert "querySelector(':scope > .queue')" in body
+    # В очередь — с классом очереди, и ключ перерисовки сброшен, чтобы сервер её сменил.
+    assert "delete q.dataset.j" in body
+    # В лог — обычным промптом, без `pending`.
+    assert 'log(p, `<div class="msg user">' in body
+    assert 'log(p, `<div class="msg user pending">' not in body
