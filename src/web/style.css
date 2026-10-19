@@ -513,6 +513,16 @@ section.zoomed header .max::before { content:'\2921' }
 /* Без подложки: серый строчного кода пробовали 2026-10-16 и вернули фон окна — промпт
    узнаётся по контуру, заливка ему не нужна. */
 .user { border:1px solid oklch(0.62 0.20 var(--hue,250)); padding:8px 10px; border-radius:6px }
+/* Длинный промпт в логе — три строки, клик раскрывает, как окошки IN/OUT. Обрезается
+   внутренний `.txt`, а не сам контур: `overflow:hidden` режет по краю отступа, и в
+   нижние 8px контура заглядывала бы четвёртая строка. Стрелку ставит `markMore`, только
+   если текст не влез. Ждущие в `.queue` — без `.txt`, у них свои две строки. */
+.user .txt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3;
+  overflow:hidden }
+.user.open .txt { display:block; -webkit-line-clamp:none; cursor:text }
+.user.more, .user.open { cursor:pointer }
+.user.more::after { content:'\25BE'; display:block; font-size:11px; opacity:.5 }
+.user.open::after { content:'\25B4' }
 /* Ждущие промпты — своей полосой между логом и композером. Не внутри лога и не поверх
    него: `section` это колонка, `.logbox` в ней `flex:1`, поэтому полоса просто занимает
    свою высоту, а лента ужимается сама. Скакать нечему, перекрывать нечего, мерить
@@ -657,6 +667,12 @@ form { position:relative; display:flex; flex-direction:column; gap:4px;
   border:1px solid #8886; border-radius:12px;
   background:oklch(0.62 0.16 var(--hue,250) / .05) }
 form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+/* Ручка высоты поля — полоска на верхней кромке композера, поверх неё, места в потоке
+   не занимает. Тянут вверх — поле выше, двойной клик возвращает рост по тексту. */
+.hgrab { position:absolute; top:-5px; left:12px; right:12px; height:10px;
+  cursor:ns-resize; touch-action:none; z-index:1 }
+.hgrab:hover::before { content:''; position:absolute; left:40%; right:40%; top:3px;
+  height:3px; border-radius:2px; background:#8888 }
 /* Сворачивание в заголовок — мобильное, правила лежат в медиаблоке внизу. На большом
    экране оно бессмысленно: окна стоят в явных клетках сетки, освободившиеся ряды никто
    не занимает, и свёрнутое оставляло бы под собой дыру. Кнопка спрятана здесь, а не
@@ -694,7 +710,11 @@ div.look { flex:1; min-height:0; overflow:auto; margin:8px; padding:4px 10px;
    `scrollHeight` на каждую букву и не заставляет пересчитывать раскладку панели.
    Где не понимает (сейчас это Safari и Firefox), свойство игнорируется, и высоту
    по-прежнему ставит скрипт. */
-textarea { position:relative; resize:none; min-height:40px; max-height:240px;
+/* Потолок самороста — шесть строк (было 240px, около десяти): лог в четырёх панелях
+   теснился полем, которое ещё набирают. Выше тянут ручкой `.hgrab`, тогда скрипт
+   снимает потолок на самом поле. Низ — одна строка, а не 40px: пустое поле не держит
+   пустую вторую. */
+textarea { position:relative; resize:none; min-height:calc(1lh + 4px); max-height:calc(6lh + 4px);
   field-sizing:content;
   padding:4px 4px 0; font:inherit; background:none; color:inherit; border:0; outline:none }
 /* Подсветка слеш-команды: залить текст внутри textarea нельзя, поэтому под полем лежит
@@ -704,7 +724,8 @@ textarea { position:relative; resize:none; min-height:40px; max-height:240px;
 /* Обёртка поля: подложка подсветки меряется от неё, а не от формы. Иначе строка
    карточек сдвигала бы поле вниз, а метку команды оставляла на прежнем месте. */
 .field { position:relative; display:flex; flex-direction:column }
-.ghost { position:absolute; left:0; right:0; top:0; max-height:240px;
+/* Высота по обёртке, а не своим потолком: поле бывает растянуто ручкой выше него. */
+.ghost { position:absolute; inset:0;
   overflow:hidden; padding:4px 4px 0; font:inherit; color:transparent;
   white-space:pre-wrap; pointer-events:none }
 .ghost mark { color:transparent; border-radius:4px;

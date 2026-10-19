@@ -1083,7 +1083,7 @@ def test_field_height_ignores_the_hint(tmp_path):
     js = tmp_path / "grow.js"
     # Проверяем ручной путь: `AUTOSIZE` — это ветка для браузера с `field-sizing`,
     # там высоту ставит CSS и ставить её скрипту нечем.
-    assert "if (AUTOSIZE) return;" in js_src, "ручной расчёт обязан уступать нативному"
+    assert "if (AUTOSIZE || ta.style.maxHeight) return;" in js_src, "ручной расчёт обязан уступать нативному"
     js.write_text("const AUTOSIZE = false;\n" + body + """
 // Подставное поле: высота растёт и от значения, и от подсказки — как в браузере.
 const field = (value, placeholder) => ({
@@ -1520,7 +1520,10 @@ def test_clamped_io_has_no_peeking_next_line():
     assert "padding:0" in rule and "margin:6px 10px" in rule
     assert "-webkit-line-clamp:1" in rule
     assert ".io.out pre { -webkit-line-clamp:3" in css
-    assert "closest('.io.more, .io.open')" in js
+    assert "closest('.io.more, .io.open, .user.more, .user.open')" in js
+    # Промпт режется по внутреннему `.txt`, а не по контуру с отступом — та же грабля.
+    assert ".user .txt { display:-webkit-box;" in css and "-webkit-line-clamp:3" in css
+    assert '<div class="msg user"><div class=txt>' in js
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="node нужен только для этой проверки")

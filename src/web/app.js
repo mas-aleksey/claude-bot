@@ -890,6 +890,7 @@ function drawPane(p) {
     </div>
     <div class=queue hidden></div>
     <form>
+      <div class=hgrab title="потянуть — высота поля, двойной клик — по тексту"></div>
       <div class=menu hidden></div>
       <div class=clips hidden></div>
       <!-- Поле и подложка подсветки — в своей обёртке, а не прямо в форме. Подложка
@@ -949,7 +950,7 @@ function drawPane(p) {
   // чтобы его можно было свернуть. Короткое окошко на клик не отзывается: раскрывать там
   // нечего, а мигнувший курсор обещал бы обратное.
   box.addEventListener('click', (e) => {
-    const io = e.target.closest('.io.more, .io.open');
+    const io = e.target.closest('.io.more, .io.open, .user.more, .user.open');
     if (!io || e.target.closest('a') || String(getSelection())) return;
     io.classList.toggle('open');
   });
@@ -996,6 +997,7 @@ function drawPane(p) {
   drawClips(p);   // после F5 список пуст, но панель могла быть перерисована на лету
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
   wireSlash(p, el, ta);
+  wireHgrab(el, ta);
 
   const model = el.querySelector('.model');
   fillModels(p, model);
@@ -1342,8 +1344,9 @@ function setWho(p, el) {
   who.title = p.title || p.session || '';
 }
 
-// Поле растёт под текст до потолка в 240px: сбрасываем высоту, чтобы scrollHeight
-// пересчитался, и ставим по содержимому. Дальше поле скроллится само.
+// Поле растёт под текст до потолка из CSS (`max-height`, шесть строк): сбрасываем
+// высоту, чтобы scrollHeight пересчитался, и ставим по содержимому — потолок срежет
+// CSS. Дальше поле скроллится само. Растянутое ручкой (`maxHeight` снят) не трогаем.
 // Высота поля — по набранному, а не по подсказке. У пустого поля `scrollHeight` считает
 // и placeholder, и длинная подсказка растягивала композер до потолка в 240px. Дальше
 // браузер подкручивал секцию, чтобы показать поле с фокусом, и шапка уезжала за верхний
@@ -1355,12 +1358,31 @@ function setWho(p, el) {
 const AUTOSIZE = CSS.supports('field-sizing', 'content');
 
 function grow(ta) {
-  if (AUTOSIZE) return;
+  if (AUTOSIZE || ta.style.maxHeight) return;
   const hold = ta.placeholder;
   ta.placeholder = '';
   ta.style.height = 'auto';
-  ta.style.height = Math.min(ta.scrollHeight, 240) + 'px';
+  ta.style.height = ta.scrollHeight + 'px';
   ta.placeholder = hold;
+}
+
+// Ручка над полем: тянут вверх — поле выше потолка самороста. Высоту ставим на само
+// поле и снимаем с него `max-height` — по нему же `grow` понимает, что поле держат
+// руками. Предел — 70% окна: выше лог сжимается в ничто. Живёт до перезагрузки.
+function wireHgrab(el, ta) {
+  const bar = el.querySelector('.hgrab');
+  bar.onpointerdown = (e) => {
+    if (e.button) return;
+    e.preventDefault();
+    bar.setPointerCapture(e.pointerId);
+    const y0 = e.clientY, h0 = ta.offsetHeight;
+    bar.onpointermove = (ev) => {
+      ta.style.maxHeight = 'none';
+      ta.style.height = Math.min(el.clientHeight * 0.7, Math.max(24, h0 + y0 - ev.clientY)) + 'px';
+    };
+    bar.onpointerup = bar.onpointercancel = () => { bar.onpointermove = null; };
+  };
+  bar.ondblclick = () => { ta.style.maxHeight = ta.style.height = ''; grow(ta); };
 }
 
 // --- slash:begin ---
@@ -1882,7 +1904,8 @@ async function send(p, ta) {
     q.insertAdjacentHTML('beforeend', `<div class="msg user pending">${linkify(esc(prompt))}</div>`);
     line = q.lastElementChild;
   } else {
-    line = log(p, `<div class="msg user">${linkify(esc(prompt))}</div>`, true);
+    line = log(p, `<div class="msg user"><div class=txt>${linkify(esc(prompt))}</div></div>`, true);
+    if (line) markMore(line);
   }
   const echo = { text: norm(prompt), at: Date.now(), nodes: [line] };
   echoes.set(p.pane, [...(echoes.get(p.pane) || []), echo]);
@@ -2146,7 +2169,7 @@ function renderItem(it) {
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
   if (it.role === 'user') {
-    return `<div class="msg user">${linkify(esc(it.text))}</div>`;
+    return `<div class="msg user"><div class=txt>${linkify(esc(it.text))}</div></div>`;
   }
   // Подписей «ты» и «claude» нет с 2026-10-16, полосы слева у ответа тоже: промпт
   // обведён контуром в цвет окна, всё вне контура — ответ.
@@ -2157,10 +2180,11 @@ function renderItem(it) {
 // Стрелка «есть ещё» только у окошка, где текст действительно не влез. Мерить можно
 // лишь размеченное: окошки свёрнутого шага не отрисованы, и высота у них нулевая.
 // Поэтому меряем в раскрытых шагах после каждой вставки и в шаге — в момент раскрытия.
+// Промпты (`.user` с `.txt`) размечены всегда, их меряем при каждом вызове по логу.
 function markMore(root) {
-  const scope = root.matches?.('details.step') ? root : null;
-  const list = scope ? scope.querySelectorAll('.io:not([hidden])')
-                     : root.querySelectorAll('details.step[open] .io:not([hidden])');
+  const scope = root.matches?.('details.step, .user') ? root : null;
+  const list = scope ? (scope.matches('.user') ? [scope] : scope.querySelectorAll('.io:not([hidden])'))
+                     : root.querySelectorAll('details.step[open] .io:not([hidden]), .user:has(> .txt)');
   for (const io of list) {
     if (io.classList.contains('open')) continue;
     const el = io.lastElementChild;
