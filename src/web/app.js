@@ -2699,8 +2699,6 @@ $('dt-term').onclick = () => setDrawer('term');
 $('dt-br').onclick = () => setDrawer('browser');
 brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); brSync(); };
 $('brback').onclick = () => brSend({t: 'back'});
-// focus прямо в обработчике касания: iOS поднимает клавиатуру только по жесту.
-$('brkbd').onclick = () => brin.focus({preventScroll: true});
 $('brfull').onclick = () => { document.body.classList.toggle('brfull'); };
 $('brreload').onclick = () => brSend({t: 'reload'});
 brurl.onkeydown = (e) => { if (e.key === 'Enter' && brurl.value.trim()) { brSend({t: 'nav', url: brurl.value}); brin.focus(); } };
@@ -2712,9 +2710,9 @@ new ResizeObserver(() => { brDraw(); clearTimeout(brTimer); brTimer = setTimeout
 let brTouch = null;
 brc.onpointerdown = (e) => {
   e.preventDefault();
+  brin.focus({preventScroll: true});
   brc.setPointerCapture(e.pointerId);
   if (e.pointerType === 'touch') { brTouch = {x: e.clientX, y: e.clientY, moved: false}; return; }
-  brin.focus({preventScroll: true});
   const b = ['left', 'middle', 'right'][e.button] || 'left';
   brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
 };
@@ -2723,7 +2721,6 @@ brc.onpointermove = (e) => {
     if (!brTouch) return;
     const dy = brTouch.y - e.clientY, dx = brTouch.x - e.clientX;
     if (!brTouch.moved && Math.hypot(dx, dy) < 6) return;
-    if (!brTouch.moved) brin.blur();      // прокрутка убирает клавиатуру, а не вызывает
     brTouch.moved = true;
     brSend({t: 'wheel', ...brXY(e), dx: Math.round(dx * 2), dy: Math.round(dy * 2)});
     brTouch.x = e.clientX; brTouch.y = e.clientY;
@@ -2742,6 +2739,9 @@ brc.onpointerup = (e) => {
   }
   const b = ['left', 'middle', 'right'][e.button] || 'left';
   brSend({t: 'mouse', type: 'mouseReleased', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
+  // Ещё раз после отпускания: если браузер по умолчанию увёл фокус с поля на нажатии
+  // (Safari, ввод не доходил 2026-10-19), здесь он возвращается.
+  brin.focus({preventScroll: true});
 };
 brc.oncontextmenu = (e) => e.preventDefault();
 brc.onwheel = (e) => { e.preventDefault(); brSend({t: 'wheel', ...brXY(e), dx: Math.round(e.deltaX), dy: Math.round(e.deltaY), mods: brMods(e)}); };

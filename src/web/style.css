@@ -60,10 +60,9 @@ body.dbrowser #term iframe { display:none }
 #brsay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   pointer-events:none; font-size:13px }
 #brsay:empty { display:none }
-/* Клавиатура — только по кнопке и только на тач-экране: касание картинки чаще прокрутка,
-   чем ввод, и поднимать клавиатуру на каждое было главной жалобой. Мышь фокусирует сама. */
-#brkbd { display:none }
-@media (pointer: coarse) { #brkbd { display:inline-block } }
+/* Рамка — ввод с клавиатуры идёт во вкладку. Без неё не понять, взял ли браузер панели
+   фокус: картинка выглядит одинаково, а нажатия уходят в никуда. */
+#bview:focus-within { box-shadow:inset 0 0 0 2px Highlight }
 /* Узкий экран: кнопки и вкладки в первой строке, адрес — второй строкой во всю ширину.
    В одну строку на 390px адресу оставалось место на одну букву. */
 @media (max-width: 700px) {
