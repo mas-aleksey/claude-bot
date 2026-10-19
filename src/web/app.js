@@ -2635,7 +2635,16 @@ const brXY = (e) => {
 // Телефон просит мобильную вёрстку — иначе десктопная страница в 390px мелкая.
 const brSize = () => brSend({t: 'size', w: Math.round(brc.clientWidth), h: Math.round(brc.clientHeight),
   mobile: brCoarse.matches});
-const brClose = () => { const w = bws; bws = null; if (w) { w.onclose = null; w.close(); } };
+// Почему закрылось соединение — в лог бота. Шторка пересоздавала его каждые 5-10 с, и
+// по логам сервера и Traefik не было видно, кто его закрывает.
+let brSince = 0;
+const brLog = (why, extra = {}) => fetch('api/browser/log', {method: 'POST', keepalive: true,
+  headers: {'Content-Type': 'application/json'},
+  body: JSON.stringify({why, alive_ms: brSince ? Date.now() - brSince : null, ...extra})}).catch(() => {});
+const brClose = (why) => {
+  const w = bws; bws = null;
+  if (w) { brLog(why); w.onclose = null; w.close(); }
+};
 const brTabs = async () => {
   try { const r = await fetch('api/browser/tabs'); return r.ok ? await r.json() : null; } catch (e) { return null; }
 };
@@ -2659,9 +2668,14 @@ const brDraw = () => {
   g.clearRect(0, 0, w, h);
   g.drawImage(bimg, brRect.x * dpr, brRect.y * dpr, brRect.w * dpr, brRect.h * dpr);
 };
+// brOpening — защита от повторного входа: пока ждём список вкладок, bws ещё пуст, и второй
+// brSync открывал второе соединение. Первое оставалось сиротой и дёргало размер вкладки.
+let brOpening = false;
 const brOpen = async () => {
-  if (bws) return;
-  const tabs = await brTabs();
+  if (bws || brOpening) return;
+  brOpening = true;
+  let tabs;
+  try { tabs = await brTabs(); } finally { brOpening = false; }
   if (!brOn() || bws) return;
   if (!tabs || !tabs.length) { brSay(tabs ? 'в браузере нет вкладок' : 'браузер не отвечает'); return; }
   let tab = localStorage.getItem('brtab');
@@ -2674,7 +2688,7 @@ const brOpen = async () => {
   const u = new URL('api/browser/ws?tab=' + tab, location.href);
   u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const ws = bws = new WebSocket(u);
-  ws.onopen = () => { brSay(''); brSize(); };
+  ws.onopen = () => { brSince = Date.now(); brSay(''); brSize(); };
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === 'frame') {
@@ -2694,8 +2708,9 @@ const brOpen = async () => {
       localStorage.removeItem('brtab');
     }
   };
-  ws.onclose = () => {
+  ws.onclose = (e) => {
     if (bws !== ws) return;
+    brLog('сокет закрыт не панелью', {code: e.code, reason: e.reason, clean: e.wasClean});
     bws = null;
     if (brOn()) { brSay('связь потеряна, переподключаюсь…'); setTimeout(brSync, 2000); }
   };
@@ -2705,12 +2720,13 @@ function brSync() {
   $('bview').hidden = drawer() !== 'browser';
   $('dt-term').classList.toggle('on', drawer() === 'term');
   $('dt-br').classList.toggle('on', drawer() === 'browser');
-  if (brOn()) brOpen(); else brClose();
+  if (brOn()) brOpen();
+  else brClose(`шторка скрыта: term=${document.body.classList.contains('term')} drawer=${drawer()} hidden=${document.hidden}`);
 }
 const setDrawer = (d) => { localStorage.setItem('drawer', d); showTerm(true); };
 $('dt-term').onclick = () => setDrawer('term');
 $('dt-br').onclick = () => setDrawer('browser');
-brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); brSync(); };
+brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose('смена вкладки в списке'); brSync(); };
 $('brback').onclick = () => brSend({t: 'back'});
 // Запасной путь к клавиатуре: поле, которое проба не узнала (чужой iframe, своё
 // рисованное поле ввода). focus прямо в обработчике нажатия — iOS требует жест.
@@ -2722,7 +2738,17 @@ $('brnew').onclick = async () => {
   const r = await fetch('api/browser/new', {method: 'POST'});
   if (!r.ok) { brSay('не удалось открыть вкладку'); return; }
   localStorage.setItem('brtab', (await r.json()).id);
-  brClose(); brSync();
+  brClose('новая вкладка'); brSync();
+};
+// Закрыть текущую вкладку. WhatsApp сервер закрыть не даст (403): на ней живёт вход.
+$('brx').onclick = async () => {
+  const tab = localStorage.getItem('brtab');
+  if (!tab) return;
+  const r = await fetch('api/browser/close?tab=' + tab, {method: 'POST'});
+  if (r.status === 403) { brSay('вкладку WhatsApp не закрываем'); setTimeout(() => brSay(''), 2500); return; }
+  if (!r.ok) { brSay('не удалось закрыть вкладку'); return; }
+  localStorage.removeItem('brtab');
+  brClose('вкладка закрыта кнопкой'); brSync();
 };
 $('brfull').onclick = () => { document.body.classList.toggle('brfull'); };
 $('brreload').onclick = () => brSend({t: 'reload'});

@@ -83,7 +83,9 @@ def enabled() -> bool:
 async def _tabs() -> list[dict]:
     async with (aiohttp.ClientSession() as s,
                 s.get(f"{CDP}/json/list", timeout=aiohttp.ClientTimeout(total=3)) as r):
-        return [t for t in await r.json() if t.get("type") == "page"]
+        # chrome:// — служебные страницы интерфейса (после входа в Google висит
+        # chrome://signin-dice-web-intercept…): вкладками они не являются и не закрываются.
+        return [t for t in await r.json() if t.get("type") == "page" and not t.get("url", "").startswith("chrome://")]
 
 
 async def api_tabs(req: web.Request) -> web.Response:
@@ -108,6 +110,38 @@ async def api_new(req: web.Request) -> web.Response:
             return web.json_response({"id": (await r.json())["id"]})
     except (TimeoutError, aiohttp.ClientError, OSError, KeyError):
         raise web.HTTPServiceUnavailable(text="браузер не отвечает") from None
+
+
+async def api_close(req: web.Request) -> web.Response:
+    """Закрыть вкладку. WhatsApp — нельзя: на ней живёт вход и скилл чтения чатов."""
+    if not enabled():
+        raise web.HTTPNotFound(text="BROWSER=off")
+    tab = req.query.get("tab", "")
+    if not TAB_RE.match(tab):
+        raise web.HTTPBadRequest(text="нужен tab")
+    try:
+        t = next((t for t in await _tabs() if t["id"] == tab), None)
+        if t is None:
+            raise web.HTTPNotFound(text="нет такой вкладки")
+        if NO_MOBILE_UA.match(t.get("url", "")):
+            raise web.HTTPForbidden(text="вкладку WhatsApp не закрываем")
+        async with (aiohttp.ClientSession() as s,
+                    s.get(f"{CDP}/json/close/{tab}", timeout=aiohttp.ClientTimeout(total=5)) as r):
+            await r.read()
+    except (TimeoutError, aiohttp.ClientError, OSError):
+        raise web.HTTPServiceUnavailable(text="браузер не отвечает") from None
+    return web.json_response({"ok": True})
+
+
+async def api_log(req: web.Request) -> web.Response:
+    """Почему панель закрыла соединение шторки — в лог бота. Соединение пересоздавалось
+    каждые 5-10 с, и по логам сервера и Traefik не было видно, кто его рвёт."""
+    try:
+        data = await req.json()
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        raise web.HTTPBadRequest(text="нужен json") from None
+    log.info("шторка: %s", json.dumps(data, ensure_ascii=False)[:500])
+    return web.json_response({"ok": True})
 
 
 def _clamp(v, lo, hi) -> int:
@@ -161,10 +195,16 @@ def command(msg: dict) -> list[tuple[str, dict]]:
         # по ширине вместе с метаданными, и клики уезжают. Чёткость добирает QUALITY.
         # stop перед start обязателен: второй startScreencast поверх идущего Chromium молча
         # игнорирует, и после смены размера кадры не приходили вовсе.
+        # Телефону — и экран телефона: с мобильным UA, но десктопным screen 800x600 вкладка
+        # выглядела для антибота «смартфоном с экраном ноутбука». Высота — по пропорциям
+        # Pixel 8 (412x915), не меньше окна шторки.
         w, h = _clamp(msg.get("w"), 200, MAX_SIDE), _clamp(msg.get("h"), 150, MAX_SIDE)
+        mobile = msg.get("mobile") is True
+        metrics = {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": mobile}
+        if mobile:
+            metrics.update(screenWidth=w, screenHeight=max(h, round(w * 915 / 412)))
         return [("Page.stopScreencast", {}),
-                ("Emulation.setDeviceMetricsOverride",
-                 {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": msg.get("mobile") is True}),
+                ("Emulation.setDeviceMetricsOverride", metrics),
                 ("Page.startScreencast",
                  {"format": "jpeg", "quality": QUALITY, "maxWidth": w, "maxHeight": h})]
     return []

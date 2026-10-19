@@ -69,3 +69,10 @@ def test_mobile_ua_is_android_chrome_with_client_hints():
 def test_whatsapp_never_gets_mobile_ua():
     assert browser.NO_MOBILE_UA.match("https://web.whatsapp.com/")
     assert not browser.NO_MOBILE_UA.match("https://www.google.com/")
+
+
+def test_phone_screen_is_phone_shaped():
+    m = dict(browser.command({"t": "size", "w": 390, "h": 500, "mobile": True}))["Emulation.setDeviceMetricsOverride"]
+    assert (m["screenWidth"], m["screenHeight"]) == (390, 866)
+    desk = dict(browser.command({"t": "size", "w": 900, "h": 500}))["Emulation.setDeviceMetricsOverride"]
+    assert "screenWidth" not in desk

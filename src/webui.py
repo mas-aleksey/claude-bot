@@ -578,6 +578,8 @@ def build() -> web.Application:
         web.get("/api/browser/tabs", browser.api_tabs),
         web.get("/api/browser/ws", browser.api_ws),
         web.post("/api/browser/new", browser.api_new),
+        web.post("/api/browser/close", browser.api_close),
+        web.post("/api/browser/log", browser.api_log),
     ])
     return app
 
