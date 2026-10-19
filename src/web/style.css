@@ -527,6 +527,10 @@ section.zoomed header .max::before { content:'\2921' }
 .user .txt { display:-webkit-box; -webkit-box-orient:vertical; -webkit-line-clamp:3;
   overflow:hidden }
 .user.open .txt { display:block; -webkit-line-clamp:none; cursor:text }
+/* Обрезанный низ гаснет, как у diff (`.dv`): маска гасит сам текст, фон под ней любой.
+   Стоп на 40%, а не 70%: на трёх строках при 70% гасла бы лишь нижняя кромка. */
+.user.more:not(.open) .txt { -webkit-mask-image:linear-gradient(#000 40%, transparent);
+  mask-image:linear-gradient(#000 40%, transparent) }
 .user.more, .user.open { cursor:pointer }
 .user.more::after { content:'\25BE'; display:block; font-size:11px; opacity:.5 }
 .user.open::after { content:'\25B4' }
