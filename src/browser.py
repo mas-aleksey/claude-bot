@@ -33,20 +33,31 @@ TAB_RE = re.compile(r"[0-9A-F]{32}\Z")
 MAX_SIDE = 2000
 QUALITY = 80
 
-PROBE = """(() => { let d = document, x = %d, y = %d, e = null;
-  for (let i = 0; i < 8; i++) {
-    e = d.elementFromPoint(x, y);
-    while (e && e.shadowRoot) { const s = e.shadowRoot.elementFromPoint(x, y); if (!s || s === e) break; e = s; }
-    if (!e || e.tagName !== 'IFRAME') break;
-    let inner; try { inner = e.contentDocument; } catch (_) { inner = null; }
-    if (!inner) return false;
-    const r = e.getBoundingClientRect(); x -= r.left; y -= r.top; d = inner;
-  }
-  if (!e) return false;
-  if (e.isContentEditable || e.tagName === 'TEXTAREA') return true;
-  const l = e.closest && e.closest('label'); if (l && l.control) e = l.control;
-  return e.tagName === 'INPUT' && !/^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i.test(e.type);
-})()"""
+# Где на странице поля ввода — прямоугольники в css-пикселях вкладки. Сервер шлёт их панели
+# сам после перерисовки, а панель решает в момент касания, поднимать ли клавиатуру.
+# Спрашивать на касании нельзя: по мобильной сети ответ приходил позже отпускания пальца,
+# а клавиатуру iOS поднимает только внутри жеста. Заходит в открытые shadow root и iframe
+# своего origin; чужой iframe (капча) не виден — для него у панели кнопка клавиатуры.
+EDITS = """(() => { const out = [], skip = /^(button|submit|reset|checkbox|radio|file|image|range|color|hidden)$/i;
+  const walk = (root, dx, dy, depth) => {
+    if (depth > 4) return;
+    for (const e of root.querySelectorAll('*')) {
+      if (e.shadowRoot) walk(e.shadowRoot, dx, dy, depth + 1);
+      if (e.tagName === 'IFRAME') {
+        let d; try { d = e.contentDocument; } catch (_) { d = null; }
+        if (d) { const r = e.getBoundingClientRect(); walk(d, dx + r.left, dy + r.top, depth + 1); }
+        continue;
+      }
+      if (!(e.tagName === 'TEXTAREA' || (e.tagName === 'INPUT' && !skip.test(e.type)) || e.isContentEditable)) continue;
+      if (e.isContentEditable && e.parentElement && e.parentElement.isContentEditable) continue;
+      const r = e.getBoundingClientRect();
+      if (r.width < 4 || r.height < 4 || r.bottom < 0 || r.top > innerHeight) continue;
+      out.push([Math.round(r.left + dx), Math.round(r.top + dy), Math.round(r.width), Math.round(r.height)]);
+      if (out.length >= 60) return;
+    }
+  };
+  walk(document, 0, 0, 0);
+  return out; })()"""
 
 # Мобильный UA — только на время просмотра с телефона и только в сессии шторки: Google и
 # Википедия выбирают вёрстку по UA и Client Hints, а не по ширине, и на 390px отдавали
@@ -87,6 +98,18 @@ async def api_tabs(req: web.Request) -> web.Response:
                               for t in tabs])
 
 
+async def api_new(req: web.Request) -> web.Response:
+    """Новая пустая вкладка: шторка переключается на неё, адрес вводят в строке."""
+    if not enabled():
+        raise web.HTTPNotFound(text="BROWSER=off")
+    try:
+        async with (aiohttp.ClientSession() as s,
+                    s.put(f"{CDP}/json/new?about:blank", timeout=aiohttp.ClientTimeout(total=5)) as r):
+            return web.json_response({"id": (await r.json())["id"]})
+    except (TimeoutError, aiohttp.ClientError, OSError, KeyError):
+        raise web.HTTPServiceUnavailable(text="браузер не отвечает") from None
+
+
 def _clamp(v, lo, hi) -> int:
     try:
         return max(lo, min(hi, int(v)))
@@ -125,13 +148,6 @@ def command(msg: dict) -> list[tuple[str, dict]]:
         if not re.match(r"[a-z][a-z0-9+.-]*:", url):
             url = "https://" + url
         return [("Page.navigate", {"url": url[:4000]})]
-    if t == "probe":
-        # Что под пальцем: поле ввода или нет. Панель поднимает экранную клавиатуру только
-        # над полем — иначе она вылезала на каждое касание и прокрутку. Спрашиваем на
-        # касании, ответ нужен к отпусканию: фокус для клавиатуры iOS ставится только
-        # внутри жеста, позже уже нельзя. Заходит в shadow DOM и iframe своего origin;
-        # чужой iframe (капча) — «не знаю», для него у панели кнопка клавиатуры.
-        return [("Runtime.evaluate", {"returnByValue": True, "expression": PROBE % (x, y)})]
     if t == "back":
         return [("Runtime.evaluate", {"expression": "history.back()"})]
     if t == "reload":
@@ -171,7 +187,9 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
             return ws
         seq = 0
         shots: dict[int, tuple[int, int]] = {}   # id запроса скриншота → css-размер кадра
-        probes: dict[int, object] = {}           # id запроса пробы → id касания в панели
+        edits_ids: set[int] = set()              # запросы прямоугольников полей
+        edits_task: asyncio.Task | None = None
+        edits_last: list = []
         ua_major = ""
         mobile_on = False
         try:
@@ -187,15 +205,24 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
             await cdp.send_json({"id": seq, "method": method, "params": params})
             return seq
 
+        async def ask_edits() -> None:
+            # Не чаще раза в 0.3 с: после перерисовки страница ещё досчитывает раскладку,
+            # а во время прокрутки кадров десятки в секунду.
+            await asyncio.sleep(0.3)
+            edits_ids.add(await send("Runtime.evaluate", {"expression": EDITS, "returnByValue": True}))
+
         async def from_cdp() -> None:
+            nonlocal edits_task
             async for m in cdp:
                 if m.type != aiohttp.WSMsgType.TEXT:
                     break
                 ev = json.loads(m.data)
-                if ev.get("id") in probes:
-                    touch = probes.pop(ev["id"])
+                if ev.get("id") in edits_ids:
+                    edits_ids.discard(ev["id"])
                     v = ev.get("result", {}).get("result", {}).get("value")
-                    await ws.send_json({"t": "probe", "id": touch, "edit": v is True})
+                    if isinstance(v, list) and v != edits_last:
+                        edits_last[:] = v
+                        await ws.send_json({"t": "edits", "r": v})
                     continue
                 if ev.get("id") in shots:
                     w, h = shots.pop(ev["id"])
@@ -203,6 +230,8 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
                         await ws.send_json({"t": "frame", "n": None, "data": ev["result"]["data"], "w": w, "h": h})
                     continue
                 name, p = ev.get("method"), ev.get("params", {})
+                if name == "Page.screencastFrame" and (edits_task is None or edits_task.done()):
+                    edits_task = asyncio.create_task(ask_edits())
                 if name == "Page.screencastFrame":
                     await ws.send_json({"t": "frame", "n": p["sessionId"], "data": p["data"],
                                         "w": p["metadata"]["deviceWidth"], "h": p["metadata"]["deviceHeight"]})
@@ -230,12 +259,7 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
                         and ua_major and not NO_MOBILE_UA.match(page_url)):
                     mobile_on = True
                     await send("Emulation.setUserAgentOverride", mobile_ua(ua_major))
-                cmds = command(msg)
-                if msg.get("t") == "probe" and cmds:
-                    method, params = cmds[0]
-                    probes[await send(method, params)] = msg.get("id")
-                    continue
-                for method, params in cmds:
+                for method, params in command(msg):
                     await send(method, params)
                 # Screencast шлёт кадр только на перерисовку: к неподвижной странице (главная
                 # Google) шторка подключалась и показывала серое поле — 0 кадров за 5 с.
@@ -248,5 +272,7 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
             log.info("browser ws: %s", e)
         finally:
             reader.cancel()
+            if edits_task:
+                edits_task.cancel()
             await cdp.close()     # с сессией уходят и screencast, и подгонка размера
     return ws

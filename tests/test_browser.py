@@ -53,10 +53,10 @@ def test_phone_gets_mobile_layout_only_for_a_real_true():
     assert junk["Emulation.setDeviceMetricsOverride"]["mobile"] is False
 
 
-def test_probe_asks_the_page_at_clamped_point():
-    [(m, p)] = browser.command({"t": "probe", "x": 12, "y": "x"})
-    assert m == "Runtime.evaluate" and p["returnByValue"] is True
-    assert "x = 12, y = 0," in p["expression"]
+def test_probe_is_gone_fields_come_from_the_server():
+    # Решение «поднимать ли клавиатуру» панель принимает сама, по прямоугольникам EDITS.
+    assert browser.command({"t": "probe", "x": 12, "y": 5}) == []
+    assert "querySelectorAll('*')" in browser.EDITS and "shadowRoot" in browser.EDITS
 
 
 def test_mobile_ua_is_android_chrome_with_client_hints():

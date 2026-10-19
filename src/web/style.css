@@ -60,11 +60,10 @@ body.dbrowser #term iframe { display:none }
 #brsay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   pointer-events:none; font-size:13px }
 #brsay:empty { display:none }
-/* Кнопка клавиатуры — только на тач-экране, запасной путь для полей, которые проба не
-   узнала. Подсвечивается, если под пальцем было поле, а ответ пробы опоздал. */
+/* Кнопка клавиатуры — только на тач-экране, запасной путь для полей, которых сервер не
+   видит (чужой iframe, своё рисованное поле ввода). */
 #brkbd { display:none }
 @media (pointer: coarse) { #brkbd { display:inline-block } }
-#brkbd.want { outline:2px solid Highlight }
 /* Рамка — ввод с клавиатуры идёт во вкладку. Без неё не понять, взял ли браузер панели
    фокус: картинка выглядит одинаково, а нажатия уходят в никуда. */
 #bview:focus-within { box-shadow:inset 0 0 0 2px Highlight }

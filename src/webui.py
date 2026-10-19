@@ -577,6 +577,7 @@ def build() -> web.Application:
         web.post("/api/login/code", api_login_code),
         web.get("/api/browser/tabs", browser.api_tabs),
         web.get("/api/browser/ws", browser.api_ws),
+        web.post("/api/browser/new", browser.api_new),
     ])
     return app
 

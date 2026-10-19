@@ -2617,9 +2617,12 @@ let bimg = new Image();
 // Chromium перестаёт слать кадры, и картинка замерзала. Теперь у кадра своя картинка,
 // подтверждается каждый, рисуется только самый свежий.
 let brSeq = 0, brShown = 0;
-// Касание пальцем: id пробы «что под пальцем» и её ответ. lastTap — для ответа,
-// опоздавшего к отпусканию: клавиатуру тогда уже не поднять, подсвечиваем кнопку ⌨.
-let brProbe = 0, lastTap = null;
+// Прямоугольники полей ввода на странице, css-пиксели вкладки. Сервер присылает их сам
+// после перерисовки (src/browser.py, EDITS), и в момент касания панель решает без
+// запроса: ответ на запрос по мобильной сети приходил позже, чем отпускался палец, а
+// клавиатуру iOS поднимает только внутри жеста.
+let brEdits = [];
+const brOnEdit = (p) => brEdits.some(([x, y, w, h]) => p.x >= x && p.x <= x + w && p.y >= y && p.y <= y + h);
 const brSay = (t) => { $('brsay').textContent = t; };
 const brOn = () => document.body.classList.contains('term') && drawer() === 'browser' && !document.hidden;
 const brSend = (m) => { if (bws && bws.readyState === 1) bws.send(JSON.stringify(m)); };
@@ -2682,9 +2685,8 @@ const brOpen = async () => {
         if (m.n != null) brSend({t: 'ack', n: m.n});   // первый кадр-скриншот не подтверждают
       };
       img.src = 'data:image/jpeg;base64,' + m.data;
-    } else if (m.t === 'probe') {
-      if (brTouch && brTouch.id === m.id) brTouch.edit = m.edit;
-      else if (lastTap === m.id && m.edit) $('brkbd').classList.add('want');
+    } else if (m.t === 'edits') {
+      brEdits = m.r;
     } else if (m.t === 'url') {
       if (document.activeElement !== brurl) brurl.value = m.url;
     } else if (m.t === 'gone') {
@@ -2712,7 +2714,16 @@ brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); 
 $('brback').onclick = () => brSend({t: 'back'});
 // Запасной путь к клавиатуре: поле, которое проба не узнала (чужой iframe, своё
 // рисованное поле ввода). focus прямо в обработчике нажатия — iOS требует жест.
-$('brkbd').onclick = () => { $('brkbd').classList.remove('want'); brin.focus({preventScroll: true}); };
+$('brkbd').onclick = () => brin.focus({preventScroll: true});
+// Новая вкладка — пустая, курсор сразу в адрес: на телефоне клавиатура нужна именно тут.
+$('brnew').onclick = async () => {
+  brurl.value = '';
+  brurl.focus();
+  const r = await fetch('api/browser/new', {method: 'POST'});
+  if (!r.ok) { brSay('не удалось открыть вкладку'); return; }
+  localStorage.setItem('brtab', (await r.json()).id);
+  brClose(); brSync();
+};
 $('brfull').onclick = () => { document.body.classList.toggle('brfull'); };
 $('brreload').onclick = () => brSend({t: 'reload'});
 // Enter в адресе: на компьютере ввод сразу идёт в страницу, на телефоне клавиатура
@@ -2733,8 +2744,7 @@ brc.onpointerdown = (e) => {
   e.preventDefault();
   try { brc.setPointerCapture(e.pointerId); } catch (_) { /* синтетическое событие без указателя */ }
   if (e.pointerType === 'touch') {
-    brTouch = {x: e.clientX, y: e.clientY, moved: false, id: ++brProbe, edit: null};
-    brSend({t: 'probe', ...brXY(e), id: brTouch.id});
+    brTouch = {x: e.clientX, y: e.clientY, moved: false};
     return;
   }
   brin.focus({preventScroll: true});
@@ -2759,10 +2769,8 @@ brc.onpointerup = (e) => {
     if (brTouch && !brTouch.moved) {
       brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: 'left', clicks: 1});
       brSend({t: 'mouse', type: 'mouseReleased', ...brXY(e), button: 'left', clicks: 1});
-      $('brkbd').classList.remove('want');
-      if (brTouch.edit) brin.focus({preventScroll: true});
+      if (brOnEdit(brXY(e))) brin.focus({preventScroll: true});
       else brin.blur();
-      lastTap = brTouch.edit === null ? brTouch.id : null;
     }
     brTouch = null;
     return;
