@@ -2593,6 +2593,21 @@ const showTerm = (on) => {
   }
   brSync();
 };
+// Вставка в терминал с телефона. xterm.js рисует экран на canvas, а принимает ввод
+// невидимым полем в точку — долгому нажатию не за что зацепить меню «Вставить». Буфер
+// читаем сами и отдаём в `term.paste` — его ttyd выставляет в `window.term`, а iframe
+// с того же домена. `paste`, а не посимвольно: он заворачивает текст в bracketed paste,
+// и многострочное встаёт в строку bash целиком, не выполняясь до Enter.
+// Буфер не отдали (отказ, старый браузер) — системное окно ввода: в нём долгое нажатие
+// и «Вставить» работают как в любом поле.
+$('tpaste').onclick = async () => {
+  const t = term.querySelector('iframe')?.contentWindow?.term;
+  if (!t) return;
+  let text = '';
+  try { text = await navigator.clipboard.readText(); } catch {}
+  if (!text) text = prompt('текст для терминала') || '';
+  if (text) { t.paste(text); t.focus(); }
+};
 // Что сейчас в шторке. Браузер без строки вкладок недоступен — тогда всегда терминал.
 const drawer = () => !$('drawtabs').hidden && localStorage.getItem('drawer') === 'browser' ? 'browser' : 'term';
 term.style.setProperty('--th', (localStorage.getItem('termh') || Math.round(innerHeight * 0.4)) + 'px');

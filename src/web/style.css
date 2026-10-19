@@ -40,6 +40,13 @@ body.term #termbar::before { content:'\2304' }
 #term { flex:none; height:var(--th,40vh); min-height:0; display:flex; flex-direction:column }
 body:not(.term) #term { display:none }
 #term iframe { display:block; width:100%; flex:1; min-height:0; border:0 }
+/* «Вставить» — поверх терминала в правом нижнем углу: строка вкладок есть не везде
+   (без браузера её нет), а с телефона вставить больше нечем. */
+#term { position:relative }
+#tpaste { position:absolute; right:8px; bottom:8px; z-index:1; padding:2px 8px;
+  font-size:12px; opacity:.6 }
+#tpaste:hover { opacity:1 }
+body.dbrowser #tpaste { display:none }
 /* Вкладки шторки. Высота одна на обе: переключение её не трогает, двигает только полоска. */
 #drawtabs { flex:none; display:flex; gap:4px; align-items:center; padding:2px 4px;
   border-bottom:1px solid #8884; font-size:12px }
