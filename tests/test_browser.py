@@ -38,5 +38,14 @@ def test_bare_host_becomes_https():
 
 def test_size_overrides_viewport_and_restarts_screencast():
     calls = browser.command({"t": "size", "w": 99999, "h": 10})
-    assert [m for m, _ in calls] == ["Emulation.setDeviceMetricsOverride", "Page.startScreencast"]
-    assert (calls[0][1]["width"], calls[0][1]["height"]) == (browser.MAX_SIDE, 150)
+    assert [m for m, _ in calls] == ["Page.stopScreencast", "Emulation.setDeviceMetricsOverride",
+                                     "Page.startScreencast"]
+    assert (calls[1][1]["width"], calls[1][1]["height"]) == (browser.MAX_SIDE, 150)
+    assert calls[1][1]["mobile"] is False and calls[1][1]["deviceScaleFactor"] == 1
+
+
+def test_phone_gets_mobile_layout_only_for_a_real_true():
+    calls = dict(browser.command({"t": "size", "w": 390, "h": 600, "mobile": True}))
+    assert calls["Emulation.setDeviceMetricsOverride"]["mobile"] is True
+    junk = dict(browser.command({"t": "size", "w": 390, "h": 600, "mobile": "yes"}))
+    assert junk["Emulation.setDeviceMetricsOverride"]["mobile"] is False

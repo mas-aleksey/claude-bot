@@ -2607,6 +2607,10 @@ $('termbar').onpointerdown = (e) => {
 // keydown пересылает только клавиши без символа — иначе буква печаталась бы дважды.
 const brc = $('brcanvas'), brin = $('brinput'), brurl = $('brurl'), brsel = $('brtabs');
 let bws = null, bdev = {w: 1, h: 1}, brTimer = 0;
+// Где на canvas нарисован кадр, в css-пикселях: кадр вписан с сохранением пропорций, и
+// клики пересчитываются по этой рамке, а не по всему canvas.
+let brRect = {x: 0, y: 0, w: 1, h: 1};
+const brCoarse = matchMedia('(pointer: coarse)');
 const bimg = new Image();
 const brSay = (t) => { $('brsay').textContent = t; };
 const brOn = () => document.body.classList.contains('term') && drawer() === 'browser' && !document.hidden;
@@ -2614,12 +2618,35 @@ const brSend = (m) => { if (bws && bws.readyState === 1) bws.send(JSON.stringify
 const brMods = (e) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
 const brXY = (e) => {
   const r = brc.getBoundingClientRect();
-  return {x: Math.round((e.clientX - r.left) / r.width * bdev.w), y: Math.round((e.clientY - r.top) / r.height * bdev.h)};
+  return {x: Math.round((e.clientX - r.left - brRect.x) / brRect.w * bdev.w),
+          y: Math.round((e.clientY - r.top - brRect.y) / brRect.h * bdev.h)};
 };
-const brSize = () => brSend({t: 'size', w: Math.round(brc.clientWidth), h: Math.round(brc.clientHeight)});
+// Телефон просит мобильную вёрстку — иначе десктопная страница в 390px мелкая.
+const brSize = () => brSend({t: 'size', w: Math.round(brc.clientWidth), h: Math.round(brc.clientHeight),
+  mobile: brCoarse.matches});
 const brClose = () => { const w = bws; bws = null; if (w) { w.onclose = null; w.close(); } };
 const brTabs = async () => {
   try { const r = await fetch('api/browser/tabs'); return r.ok ? await r.json() : null; } catch (e) { return null; }
+};
+// Последний кадр — в canvas, вписанным с сохранением пропорций. Зовётся и на кадр, и на
+// смену размера шторки: иначе до следующего кадра браузер сам растягивал старую картинку
+// canvas под новый размер, и её сплющивало.
+const brDraw = () => {
+  if (!bimg.naturalWidth) return;
+  // Вписываем с сохранением пропорций. Растягивание на весь canvas искажало картинку
+  // всё время, пока шторку тянут: новый размер страницы приезжает с задержкой.
+  const dpr = devicePixelRatio || 1;
+  const cw = brc.clientWidth, ch = brc.clientHeight;
+  const w = Math.round(cw * dpr), h = Math.round(ch * dpr);
+  if (brc.width !== w || brc.height !== h) { brc.width = w; brc.height = h; }
+  // Пропорции — по самой картинке, а не по метаданным: первый кадр после смены размера
+  // приходит с новыми метаданными и старой картинкой, и по ним он растягивался.
+  const iw = bimg.naturalWidth || bdev.w, ih = bimg.naturalHeight || bdev.h;
+  const k = Math.min(cw / iw, ch / ih);
+  brRect = {x: (cw - iw * k) / 2, y: (ch - ih * k) / 2, w: iw * k, h: ih * k};
+  const g = brc.getContext('2d');
+  g.clearRect(0, 0, w, h);
+  g.drawImage(bimg, brRect.x * dpr, brRect.y * dpr, brRect.w * dpr, brRect.h * dpr);
 };
 const brOpen = async () => {
   if (bws) return;
@@ -2643,10 +2670,7 @@ const brOpen = async () => {
       bdev = {w: m.w, h: m.h};
       // Подтверждение — после отрисовки: пока кадр не нарисован, следующий не нужен.
       bimg.onload = () => {
-        const dpr = devicePixelRatio || 1;
-        const w = Math.round(brc.clientWidth * dpr), h = Math.round(brc.clientHeight * dpr);
-        if (brc.width !== w || brc.height !== h) { brc.width = w; brc.height = h; }
-        brc.getContext('2d').drawImage(bimg, 0, 0, w, h);
+        brDraw();
         brSend({t: 'ack', n: m.n});
       };
       bimg.src = 'data:image/jpeg;base64,' + m.data;
@@ -2675,19 +2699,22 @@ $('dt-term').onclick = () => setDrawer('term');
 $('dt-br').onclick = () => setDrawer('browser');
 brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); brSync(); };
 $('brback').onclick = () => brSend({t: 'back'});
+// focus прямо в обработчике касания: iOS поднимает клавиатуру только по жесту.
+$('brkbd').onclick = () => brin.focus({preventScroll: true});
+$('brfull').onclick = () => { document.body.classList.toggle('brfull'); };
 $('brreload').onclick = () => brSend({t: 'reload'});
 brurl.onkeydown = (e) => { if (e.key === 'Enter' && brurl.value.trim()) { brSend({t: 'nav', url: brurl.value}); brin.focus(); } };
 document.addEventListener('visibilitychange', brSync);
-new ResizeObserver(() => { clearTimeout(brTimer); brTimer = setTimeout(brSize, 200); }).observe(brc);
+new ResizeObserver(() => { brDraw(); clearTimeout(brTimer); brTimer = setTimeout(brSize, 200); }).observe(brc);
 
 // Мышь — как есть. Палец: ведение прокручивает страницу (как на телефоне), а не выделяет
 // текст, и касание без сдвига — это клик.
 let brTouch = null;
 brc.onpointerdown = (e) => {
   e.preventDefault();
-  brin.focus({preventScroll: true});
   brc.setPointerCapture(e.pointerId);
   if (e.pointerType === 'touch') { brTouch = {x: e.clientX, y: e.clientY, moved: false}; return; }
+  brin.focus({preventScroll: true});
   const b = ['left', 'middle', 'right'][e.button] || 'left';
   brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
 };
@@ -2696,6 +2723,7 @@ brc.onpointermove = (e) => {
     if (!brTouch) return;
     const dy = brTouch.y - e.clientY, dx = brTouch.x - e.clientX;
     if (!brTouch.moved && Math.hypot(dx, dy) < 6) return;
+    if (!brTouch.moved) brin.blur();      // прокрутка убирает клавиатуру, а не вызывает
     brTouch.moved = true;
     brSend({t: 'wheel', ...brXY(e), dx: Math.round(dx * 2), dy: Math.round(dy * 2)});
     brTouch.x = e.clientX; brTouch.y = e.clientY;

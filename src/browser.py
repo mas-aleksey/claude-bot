@@ -31,7 +31,7 @@ CDP = "http://127.0.0.1:9222"
 TAB_RE = re.compile(r"[0-9A-F]{32}\Z")
 # Кадр не крупнее экрана шторки: дальше это лишние байты, глазом разницы нет.
 MAX_SIDE = 2000
-QUALITY = 60
+QUALITY = 80
 
 
 def enabled() -> bool:
@@ -99,9 +99,18 @@ def command(msg: dict) -> list[tuple[str, dict]]:
     if t == "reload":
         return [("Page.reload", {})]
     if t == "size":
+        # Телефону — мобильная вёрстка: десктопная страница шириной 390px мелкая.
+        # Плотность пикселей не передаём: screencast отдаёт кадры в css-пикселях при любой
+        # (проверено: dpr 3 → кадр 390x600, хотя captureScreenshot даёт 1170x1800), а
+        # досылать резкий кадр скриншотом нельзя — снимок посреди трансляции на миг
+        # переключает вкладку в физические пиксели, кадры начинают чередоваться 390 и 1170
+        # по ширине вместе с метаданными, и клики уезжают. Чёткость добирает QUALITY.
+        # stop перед start обязателен: второй startScreencast поверх идущего Chromium молча
+        # игнорирует, и после смены размера кадры не приходили вовсе.
         w, h = _clamp(msg.get("w"), 200, MAX_SIDE), _clamp(msg.get("h"), 150, MAX_SIDE)
-        return [("Emulation.setDeviceMetricsOverride",
-                 {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": False}),
+        return [("Page.stopScreencast", {}),
+                ("Emulation.setDeviceMetricsOverride",
+                 {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": msg.get("mobile") is True}),
                 ("Page.startScreencast",
                  {"format": "jpeg", "quality": QUALITY, "maxWidth": w, "maxHeight": h})]
     return []

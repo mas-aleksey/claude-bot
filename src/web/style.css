@@ -60,6 +60,24 @@ body.dbrowser #term iframe { display:none }
 #brsay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
   pointer-events:none; font-size:13px }
 #brsay:empty { display:none }
+/* Клавиатура — только по кнопке и только на тач-экране: касание картинки чаще прокрутка,
+   чем ввод, и поднимать клавиатуру на каждое было главной жалобой. Мышь фокусирует сама. */
+#brkbd { display:none }
+@media (pointer: coarse) { #brkbd { display:inline-block } }
+/* Узкий экран: кнопки и вкладки в первой строке, адрес — второй строкой во всю ширину.
+   В одну строку на 390px адресу оставалось место на одну букву. */
+@media (max-width: 700px) {
+  #drawtabs { flex-wrap:wrap }
+  #brbar { flex-basis:100%; order:1 }
+  #brbar input { flex-basis:100%; order:1 }
+  #brbar { flex-wrap:wrap }
+}
+/* «На весь экран»: шторка поверх всей панели, высота пальцем не нужна. */
+body.brfull #term { position:fixed; inset:0; height:auto; z-index:50; background:Canvas }
+body.brfull #termbar { display:none }
+body.brfull #brfull::before { content:'⤡' }
+body.brfull #brfull { font-size:0 }
+body.brfull #brfull::before { font-size:12px }
 /* Правый сайдбар — дерево файлов. Устроен зеркально левому: своя полоска, свой класс
    на body, своя память в localStorage. Флаг отдельный, а не общий: списки прячутся
    независимо, и один класс схлопывал бы оба разом. */
