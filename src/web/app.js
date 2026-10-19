@@ -2561,15 +2561,17 @@ const showTerm = (on) => {
   localStorage.setItem('term', on ? '1' : '0');
   // Кадр создаём один раз и держим: пересоздание рвало бы websocket и мигало экраном.
   // `prepend`, а не `innerHTML`, — кнопка копирования живёт в этом же блоке.
-  if (on && !term.querySelector('iframe')) {
+  if (on && drawer() === 'term' && !term.querySelector('iframe')) {
     const frame = document.createElement('iframe');
     frame.src = 'term/';
     frame.title = 'терминал';
-    term.prepend(frame);
+    $('drawtabs').after(frame);
   }
+  brSync();
 };
+// Что сейчас в шторке. Браузер без строки вкладок недоступен — тогда всегда терминал.
+const drawer = () => !$('drawtabs').hidden && localStorage.getItem('drawer') === 'browser' ? 'browser' : 'term';
 term.style.setProperty('--th', (localStorage.getItem('termh') || Math.round(innerHeight * 0.4)) + 'px');
-if (localStorage.getItem('term') === '1') showTerm(true);
 
 // Полоска и переключает, и тянет — разводим по расстоянию: сдвиг до четырёх пикселей
 // считаем кликом, дальше начинается высота. Порог нужен пальцу, мышь и так точна.
@@ -2594,6 +2596,147 @@ $('termbar').onpointerdown = (e) => {
     if (!dragged) showTerm(!document.body.classList.contains('term'));
   };
 };
+
+// Общий браузер во второй вкладке шторки: картинка вкладки Chromium и ввод в неё, через
+// `/api/browser/ws` (src/browser.py). Соединение живёт, только пока вкладка «браузер»
+// видна: закрыли шторку, переключились на терминал или ушли со страницы — сокет
+// закрывается, сервер рвёт CDP-сессию, и кадры перестают идти.
+// Ввод: клики и колесо — по canvas, текст — через невидимое поле #brinput. Поле нужно
+// телефону: экранная клавиатура поднимается только для поля в фокусе, а canvas им не
+// является. Печатные символы идут событием input (так работают и IME, и вставка), а
+// keydown пересылает только клавиши без символа — иначе буква печаталась бы дважды.
+const brc = $('brcanvas'), brin = $('brinput'), brurl = $('brurl'), brsel = $('brtabs');
+let bws = null, bdev = {w: 1, h: 1}, brTimer = 0;
+const bimg = new Image();
+const brSay = (t) => { $('brsay').textContent = t; };
+const brOn = () => document.body.classList.contains('term') && drawer() === 'browser' && !document.hidden;
+const brSend = (m) => { if (bws && bws.readyState === 1) bws.send(JSON.stringify(m)); };
+const brMods = (e) => (e.altKey ? 1 : 0) | (e.ctrlKey ? 2 : 0) | (e.metaKey ? 4 : 0) | (e.shiftKey ? 8 : 0);
+const brXY = (e) => {
+  const r = brc.getBoundingClientRect();
+  return {x: Math.round((e.clientX - r.left) / r.width * bdev.w), y: Math.round((e.clientY - r.top) / r.height * bdev.h)};
+};
+const brSize = () => brSend({t: 'size', w: Math.round(brc.clientWidth), h: Math.round(brc.clientHeight)});
+const brClose = () => { const w = bws; bws = null; if (w) { w.onclose = null; w.close(); } };
+const brTabs = async () => {
+  try { const r = await fetch('api/browser/tabs'); return r.ok ? await r.json() : null; } catch (e) { return null; }
+};
+const brOpen = async () => {
+  if (bws) return;
+  const tabs = await brTabs();
+  if (!brOn() || bws) return;
+  if (!tabs || !tabs.length) { brSay(tabs ? 'в браузере нет вкладок' : 'браузер не отвечает'); return; }
+  let tab = localStorage.getItem('brtab');
+  if (!tabs.some((t) => t.id === tab)) tab = (tabs.find((t) => !t.url.startsWith('about:')) || tabs[0]).id;
+  localStorage.setItem('brtab', tab);
+  brsel.replaceChildren(...tabs.map((t) => new Option((t.title || t.url || 'вкладка').slice(0, 40), t.id, false, t.id === tab)));
+  const cur = tabs.find((t) => t.id === tab);
+  if (document.activeElement !== brurl) brurl.value = cur ? cur.url : '';
+  brSay('подключаюсь…');
+  const u = new URL('api/browser/ws?tab=' + tab, location.href);
+  u.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const ws = bws = new WebSocket(u);
+  ws.onopen = () => { brSay(''); brSize(); };
+  ws.onmessage = (e) => {
+    const m = JSON.parse(e.data);
+    if (m.t === 'frame') {
+      bdev = {w: m.w, h: m.h};
+      // Подтверждение — после отрисовки: пока кадр не нарисован, следующий не нужен.
+      bimg.onload = () => {
+        const dpr = devicePixelRatio || 1;
+        const w = Math.round(brc.clientWidth * dpr), h = Math.round(brc.clientHeight * dpr);
+        if (brc.width !== w || brc.height !== h) { brc.width = w; brc.height = h; }
+        brc.getContext('2d').drawImage(bimg, 0, 0, w, h);
+        brSend({t: 'ack', n: m.n});
+      };
+      bimg.src = 'data:image/jpeg;base64,' + m.data;
+    } else if (m.t === 'url') {
+      if (document.activeElement !== brurl) brurl.value = m.url;
+    } else if (m.t === 'gone') {
+      brSay(m.why || 'вкладка недоступна');
+      localStorage.removeItem('brtab');
+    }
+  };
+  ws.onclose = () => {
+    if (bws !== ws) return;
+    bws = null;
+    if (brOn()) { brSay('связь потеряна, переподключаюсь…'); setTimeout(brSync, 2000); }
+  };
+};
+function brSync() {
+  document.body.classList.toggle('dbrowser', drawer() === 'browser');
+  $('bview').hidden = drawer() !== 'browser';
+  $('dt-term').classList.toggle('on', drawer() === 'term');
+  $('dt-br').classList.toggle('on', drawer() === 'browser');
+  if (brOn()) brOpen(); else brClose();
+}
+const setDrawer = (d) => { localStorage.setItem('drawer', d); showTerm(true); };
+$('dt-term').onclick = () => setDrawer('term');
+$('dt-br').onclick = () => setDrawer('browser');
+brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); brSync(); };
+$('brback').onclick = () => brSend({t: 'back'});
+$('brreload').onclick = () => brSend({t: 'reload'});
+brurl.onkeydown = (e) => { if (e.key === 'Enter' && brurl.value.trim()) { brSend({t: 'nav', url: brurl.value}); brin.focus(); } };
+document.addEventListener('visibilitychange', brSync);
+new ResizeObserver(() => { clearTimeout(brTimer); brTimer = setTimeout(brSize, 200); }).observe(brc);
+
+// Мышь — как есть. Палец: ведение прокручивает страницу (как на телефоне), а не выделяет
+// текст, и касание без сдвига — это клик.
+let brTouch = null;
+brc.onpointerdown = (e) => {
+  e.preventDefault();
+  brin.focus({preventScroll: true});
+  brc.setPointerCapture(e.pointerId);
+  if (e.pointerType === 'touch') { brTouch = {x: e.clientX, y: e.clientY, moved: false}; return; }
+  const b = ['left', 'middle', 'right'][e.button] || 'left';
+  brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
+};
+brc.onpointermove = (e) => {
+  if (e.pointerType === 'touch') {
+    if (!brTouch) return;
+    const dy = brTouch.y - e.clientY, dx = brTouch.x - e.clientX;
+    if (!brTouch.moved && Math.hypot(dx, dy) < 6) return;
+    brTouch.moved = true;
+    brSend({t: 'wheel', ...brXY(e), dx: Math.round(dx * 2), dy: Math.round(dy * 2)});
+    brTouch.x = e.clientX; brTouch.y = e.clientY;
+    return;
+  }
+  brSend({t: 'mouse', type: 'mouseMoved', ...brXY(e), button: e.buttons & 1 ? 'left' : 'none', mods: brMods(e)});
+};
+brc.onpointerup = (e) => {
+  if (e.pointerType === 'touch') {
+    if (brTouch && !brTouch.moved) {
+      brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: 'left', clicks: 1});
+      brSend({t: 'mouse', type: 'mouseReleased', ...brXY(e), button: 'left', clicks: 1});
+    }
+    brTouch = null;
+    return;
+  }
+  const b = ['left', 'middle', 'right'][e.button] || 'left';
+  brSend({t: 'mouse', type: 'mouseReleased', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
+};
+brc.oncontextmenu = (e) => e.preventDefault();
+brc.onwheel = (e) => { e.preventDefault(); brSend({t: 'wheel', ...brXY(e), dx: Math.round(e.deltaX), dy: Math.round(e.deltaY), mods: brMods(e)}); };
+brin.onkeydown = (e) => {
+  // Unidentified/Process — так Android и IME сообщают «символ придёт через input».
+  if (e.key === 'Unidentified' || e.key === 'Process') return;
+  const combo = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() !== 'v';
+  if (e.key.length > 1 || combo) {
+    e.preventDefault();
+    brSend({t: 'key', key: e.key, code: e.code, vk: e.keyCode, mods: brMods(e)});
+  }
+};
+brin.oninput = (e) => {
+  if (e.inputType === 'deleteContentBackward') brSend({t: 'key', key: 'Backspace', code: 'Backspace', vk: 8});
+  else if (brin.value) brSend({t: 'text', text: brin.value});
+  brin.value = '';
+};
+
+// Вкладка «браузер» есть, только если сервер его видит; иначе шторка — один терминал.
+brTabs().then((tabs) => {
+  $('drawtabs').hidden = !tabs;
+  if (localStorage.getItem('term') === '1') showTerm(true);
+});
 
 // Правый сайдбар спрятан по умолчанию, в отличие от левого: сессии нужны каждый заход,
 // а дерево файлов — под задачу. Открыли хоть раз — состояние запоминается, и правило

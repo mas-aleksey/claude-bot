@@ -136,6 +136,8 @@ network stack of its own.
 The image ships python 3.14 + uv, node 22 + npm, git, docker CLI, psql, jq, vim,
 kubectl, ip, ping and dig, plus a shared headless Chromium that claude drives through the
 `playwright` MCP server (`browser.sh`; profile in `/data/browser`, `BROWSER=off` to skip it).
+The panel shows it live in the bottom drawer, next to the terminal: a human logs in or
+passes 2FA there, and claude carries on in the same session.
 Anything beyond that goes into a `Dockerfile` of its own, layered
 `FROM claude-bot:latest`. Answer these while writing the compose file above, not after
 the first command fails inside the container:

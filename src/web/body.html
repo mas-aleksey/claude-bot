@@ -25,7 +25,21 @@
 </div>
 <button id=termbar title="терминал: клик открывает и закрывает, потянуть — высота"
   aria-label="терминал"></button>
-<div id=term></div>
+<!-- Шторка: терминал или общий браузер. Строка вкладок появляется, только когда браузер
+     есть (`/api/browser/tabs` ответил), иначе шторка — тот же терминал, что и раньше. -->
+<div id=term>
+  <div id=drawtabs hidden>
+    <button id=dt-term class=on>терминал</button><button id=dt-br>браузер</button>
+    <span id=brbar>
+      <button id=brback title="назад">←</button><button id=brreload title="обновить">↻</button>
+      <input id=brurl placeholder="адрес" autocomplete=off spellcheck=false>
+      <select id=brtabs title="вкладка"></select>
+    </span>
+  </div>
+  <div id=bview hidden><canvas id=brcanvas tabindex=0></canvas>
+    <textarea id=brinput aria-label="ввод в браузер" autocomplete=off autocapitalize=off spellcheck=false></textarea>
+    <div id=brsay></div></div>
+</div>
 <div id=dead hidden>бот не отвечает или кончилась сессия входа
   <button id=reload>обновить страницу</button></div>
 <!-- Вход по подписке. Своё окно, а не `prompt()`: в нём ссылка — ссылка, по ней можно

@@ -32,6 +32,7 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 import account
+import browser
 import files
 import runner
 import sessions
@@ -574,6 +575,8 @@ def build() -> web.Application:
         web.post("/api/cancel", api_cancel),
         web.post("/api/login", api_login),
         web.post("/api/login/code", api_login_code),
+        web.get("/api/browser/tabs", browser.api_tabs),
+        web.get("/api/browser/ws", browser.api_ws),
     ])
     return app
 
