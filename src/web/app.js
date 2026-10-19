@@ -2611,7 +2611,15 @@ let bws = null, bdev = {w: 1, h: 1}, brTimer = 0;
 // клики пересчитываются по этой рамке, а не по всему canvas.
 let brRect = {x: 0, y: 0, w: 1, h: 1};
 const brCoarse = matchMedia('(pointer: coarse)');
-const bimg = new Image();
+let bimg = new Image();
+// Кадры приходят быстрее, чем грузятся картинки. Одна общая картинка с переназначаемым
+// onload теряла подтверждение кадра, который перебил следующий, — а без подтверждения
+// Chromium перестаёт слать кадры, и картинка замерзала. Теперь у кадра своя картинка,
+// подтверждается каждый, рисуется только самый свежий.
+let brSeq = 0, brShown = 0;
+// Касание пальцем: id пробы «что под пальцем» и её ответ. lastTap — для ответа,
+// опоздавшего к отпусканию: клавиатуру тогда уже не поднять, подсвечиваем кнопку ⌨.
+let brProbe = 0, lastTap = null;
 const brSay = (t) => { $('brsay').textContent = t; };
 const brOn = () => document.body.classList.contains('term') && drawer() === 'browser' && !document.hidden;
 const brSend = (m) => { if (bws && bws.readyState === 1) bws.send(JSON.stringify(m)); };
@@ -2667,13 +2675,16 @@ const brOpen = async () => {
   ws.onmessage = (e) => {
     const m = JSON.parse(e.data);
     if (m.t === 'frame') {
-      bdev = {w: m.w, h: m.h};
-      // Подтверждение — после отрисовки: пока кадр не нарисован, следующий не нужен.
-      bimg.onload = () => {
-        brDraw();
+      // Подтверждение — после загрузки: пока кадр не готов, следующий не нужен.
+      const seq = ++brSeq, img = new Image();
+      img.onload = img.onerror = () => {
+        if (seq > brShown && img.naturalWidth) { brShown = seq; bimg = img; bdev = {w: m.w, h: m.h}; brDraw(); }
         if (m.n != null) brSend({t: 'ack', n: m.n});   // первый кадр-скриншот не подтверждают
       };
-      bimg.src = 'data:image/jpeg;base64,' + m.data;
+      img.src = 'data:image/jpeg;base64,' + m.data;
+    } else if (m.t === 'probe') {
+      if (brTouch && brTouch.id === m.id) brTouch.edit = m.edit;
+      else if (lastTap === m.id && m.edit) $('brkbd').classList.add('want');
     } else if (m.t === 'url') {
       if (document.activeElement !== brurl) brurl.value = m.url;
     } else if (m.t === 'gone') {
@@ -2699,20 +2710,34 @@ $('dt-term').onclick = () => setDrawer('term');
 $('dt-br').onclick = () => setDrawer('browser');
 brsel.onchange = () => { localStorage.setItem('brtab', brsel.value); brClose(); brSync(); };
 $('brback').onclick = () => brSend({t: 'back'});
+// Запасной путь к клавиатуре: поле, которое проба не узнала (чужой iframe, своё
+// рисованное поле ввода). focus прямо в обработчике нажатия — iOS требует жест.
+$('brkbd').onclick = () => { $('brkbd').classList.remove('want'); brin.focus({preventScroll: true}); };
 $('brfull').onclick = () => { document.body.classList.toggle('brfull'); };
 $('brreload').onclick = () => brSend({t: 'reload'});
-brurl.onkeydown = (e) => { if (e.key === 'Enter' && brurl.value.trim()) { brSend({t: 'nav', url: brurl.value}); brin.focus(); } };
+// Enter в адресе: на компьютере ввод сразу идёт в страницу, на телефоне клавиатура
+// убирается — открытая страница не поле ввода.
+brurl.onkeydown = (e) => {
+  if (e.key !== 'Enter' || !brurl.value.trim()) return;
+  brSend({t: 'nav', url: brurl.value});
+  if (brCoarse.matches) brurl.blur(); else brin.focus();
+};
 document.addEventListener('visibilitychange', brSync);
 new ResizeObserver(() => { brDraw(); clearTimeout(brTimer); brTimer = setTimeout(brSize, 200); }).observe(brc);
 
-// Мышь — как есть. Палец: ведение прокручивает страницу (как на телефоне), а не выделяет
-// текст, и касание без сдвига — это клик.
+// Мышь — как есть: фокус на клике, экранной клавиатуры у компьютера нет, а печатать надо
+// сразу. Палец: ведение прокручивает страницу, касание без сдвига — клик, а клавиатура
+// поднимается, только если под пальцем поле ввода (проба на касании, фокус на отпускании).
 let brTouch = null;
 brc.onpointerdown = (e) => {
   e.preventDefault();
+  try { brc.setPointerCapture(e.pointerId); } catch (_) { /* синтетическое событие без указателя */ }
+  if (e.pointerType === 'touch') {
+    brTouch = {x: e.clientX, y: e.clientY, moved: false, id: ++brProbe, edit: null};
+    brSend({t: 'probe', ...brXY(e), id: brTouch.id});
+    return;
+  }
   brin.focus({preventScroll: true});
-  brc.setPointerCapture(e.pointerId);
-  if (e.pointerType === 'touch') { brTouch = {x: e.clientX, y: e.clientY, moved: false}; return; }
   const b = ['left', 'middle', 'right'][e.button] || 'left';
   brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: b, clicks: e.detail || 1, mods: brMods(e)});
 };
@@ -2721,6 +2746,7 @@ brc.onpointermove = (e) => {
     if (!brTouch) return;
     const dy = brTouch.y - e.clientY, dx = brTouch.x - e.clientX;
     if (!brTouch.moved && Math.hypot(dx, dy) < 6) return;
+    if (!brTouch.moved) brin.blur();      // прокрутка убирает клавиатуру, а не вызывает
     brTouch.moved = true;
     brSend({t: 'wheel', ...brXY(e), dx: Math.round(dx * 2), dy: Math.round(dy * 2)});
     brTouch.x = e.clientX; brTouch.y = e.clientY;
@@ -2733,6 +2759,10 @@ brc.onpointerup = (e) => {
     if (brTouch && !brTouch.moved) {
       brSend({t: 'mouse', type: 'mousePressed', ...brXY(e), button: 'left', clicks: 1});
       brSend({t: 'mouse', type: 'mouseReleased', ...brXY(e), button: 'left', clicks: 1});
+      $('brkbd').classList.remove('want');
+      if (brTouch.edit) brin.focus({preventScroll: true});
+      else brin.blur();
+      lastTap = brTouch.edit === null ? brTouch.id : null;
     }
     brTouch = null;
     return;

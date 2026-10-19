@@ -1,6 +1,8 @@
 """Разбор команд шторки браузера: из того, что шлёт панель, в вызовы CDP. Живого Chromium
 тут нет — проверяется ровно та часть, которая решает, что уйдёт во вкладку."""
 
+import json
+
 import browser
 
 
@@ -49,3 +51,21 @@ def test_phone_gets_mobile_layout_only_for_a_real_true():
     assert calls["Emulation.setDeviceMetricsOverride"]["mobile"] is True
     junk = dict(browser.command({"t": "size", "w": 390, "h": 600, "mobile": "yes"}))
     assert junk["Emulation.setDeviceMetricsOverride"]["mobile"] is False
+
+
+def test_probe_asks_the_page_at_clamped_point():
+    [(m, p)] = browser.command({"t": "probe", "x": 12, "y": "x"})
+    assert m == "Runtime.evaluate" and p["returnByValue"] is True
+    assert "x = 12, y = 0," in p["expression"]
+
+
+def test_mobile_ua_is_android_chrome_with_client_hints():
+    ua = browser.mobile_ua("156")
+    assert "Android" in ua["userAgent"] and "Chrome/156." in ua["userAgent"] and "Mobile" in ua["userAgent"]
+    assert ua["userAgentMetadata"]["mobile"] is True and ua["userAgentMetadata"]["platform"] == "Android"
+    assert "HeadlessChrome" not in json.dumps(ua)
+
+
+def test_whatsapp_never_gets_mobile_ua():
+    assert browser.NO_MOBILE_UA.match("https://web.whatsapp.com/")
+    assert not browser.NO_MOBILE_UA.match("https://www.google.com/")
