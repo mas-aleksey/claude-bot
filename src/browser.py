@@ -203,6 +203,10 @@ def command(msg: dict) -> list[tuple[str, dict]]:
         metrics = {"width": w, "height": h, "deviceScaleFactor": 1, "mobile": mobile}
         if mobile:
             metrics.update(screenWidth=w, screenHeight=max(h, round(w * 915 / 412)))
+        else:
+            # Без этого screen на время просмотра сжимался до размера шторки, а
+            # browser.sh держит его 1920x1080 — как у обычного монитора.
+            metrics.update(screenWidth=max(w, 1920), screenHeight=max(h, 1080))
         return [("Page.stopScreencast", {}),
                 ("Emulation.setDeviceMetricsOverride", metrics),
                 ("Page.startScreencast",

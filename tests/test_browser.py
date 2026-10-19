@@ -75,4 +75,4 @@ def test_phone_screen_is_phone_shaped():
     m = dict(browser.command({"t": "size", "w": 390, "h": 500, "mobile": True}))["Emulation.setDeviceMetricsOverride"]
     assert (m["screenWidth"], m["screenHeight"]) == (390, 866)
     desk = dict(browser.command({"t": "size", "w": 900, "h": 500}))["Emulation.setDeviceMetricsOverride"]
-    assert "screenWidth" not in desk
+    assert (desk["screenWidth"], desk["screenHeight"]) == (1920, 1080)

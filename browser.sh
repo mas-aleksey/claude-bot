@@ -20,6 +20,16 @@ mkdir -p /data/browser
 # binary, so the agent never lags behind the engine after a rebuild.
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$("$B" --version | grep -o '[0-9]*\.' | head -1)0.0.0 Safari/537.36"
 
+# Screen and language: a bare headless window is 800x600 with en-US only, and next to a
+# Portuguese IP and a Lisbon timezone that combination is rare enough for bot checks to
+# notice (Temu and Yandex kept asking for captchas). --window-size sets the window only;
+# screen.width stays 800 without --screen-info. BROWSER_LANG comes from the instance's
+# .env (e.g. pt-PT) — the base has no business knowing where the instance lives. Headless
+# sends just "<lang>,<base>;q=0.9" and navigator.languages = [<lang>] however it is set
+# (flag or intl.accept_languages in Preferences, both tried) — plausible enough to stop.
+SIZE="--window-size=1920,1080 --screen-info={1920x1080}"
+LANG_ARG=${BROWSER_LANG:+--lang=$BROWSER_LANG}
+
 while :; do
     socat UNIX-LISTEN:/data/cdp.sock,fork,mode=660,group=1000,unlink-early TCP:127.0.0.1:9222
     sleep 2
@@ -33,7 +43,7 @@ while :; do
     # AutomationControlled off — headless sets navigator.webdriver to true, the first thing a
     # bot check reads; with the feature disabled it is false (checked on this binary).
     "$B" --headless=new --no-sandbox --remote-debugging-port=9222 --user-data-dir=/data/browser \
-        --disable-blink-features=AutomationControlled --user-agent="$UA" \
+        --disable-blink-features=AutomationControlled --user-agent="$UA" $SIZE $LANG_ARG \
         about:blank > /tmp/browser.log 2>&1
     sleep 2
 done
