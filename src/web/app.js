@@ -2671,7 +2671,7 @@ const brOpen = async () => {
       // Подтверждение — после отрисовки: пока кадр не нарисован, следующий не нужен.
       bimg.onload = () => {
         brDraw();
-        brSend({t: 'ack', n: m.n});
+        if (m.n != null) brSend({t: 'ack', n: m.n});   // первый кадр-скриншот не подтверждают
       };
       bimg.src = 'data:image/jpeg;base64,' + m.data;
     } else if (m.t === 'url') {

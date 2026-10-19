@@ -132,17 +132,24 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
             await ws.close()
             return ws
         seq = 0
+        shots: dict[int, tuple[int, int]] = {}   # id запроса скриншота → css-размер кадра
 
-        async def send(method: str, params: dict) -> None:
+        async def send(method: str, params: dict) -> int:
             nonlocal seq
             seq += 1
             await cdp.send_json({"id": seq, "method": method, "params": params})
+            return seq
 
         async def from_cdp() -> None:
             async for m in cdp:
                 if m.type != aiohttp.WSMsgType.TEXT:
                     break
                 ev = json.loads(m.data)
+                if ev.get("id") in shots:
+                    w, h = shots.pop(ev["id"])
+                    if "data" in ev.get("result", {}):
+                        await ws.send_json({"t": "frame", "n": None, "data": ev["result"]["data"], "w": w, "h": h})
+                    continue
                 name, p = ev.get("method"), ev.get("params", {})
                 if name == "Page.screencastFrame":
                     await ws.send_json({"t": "frame", "n": p["sessionId"], "data": p["data"],
@@ -167,6 +174,13 @@ async def api_ws(req: web.Request) -> web.WebSocketResponse:
                     continue
                 for method, params in command(msg):
                     await send(method, params)
+                # Screencast шлёт кадр только на перерисовку: к неподвижной странице (главная
+                # Google) шторка подключалась и показывала серое поле — 0 кадров за 5 с.
+                # Первый кадр — скриншотом. Плотность всегда 1, поэтому снимок не сбивает
+                # размеры трансляции (сбивал при dpr 3, см. command("size")).
+                if msg.get("t") == "size":
+                    shots[await send("Page.captureScreenshot", {"format": "jpeg", "quality": QUALITY})] = (
+                        _clamp(msg.get("w"), 200, MAX_SIDE), _clamp(msg.get("h"), 150, MAX_SIDE))
         except (aiohttp.ClientError, ConnectionResetError, json.JSONDecodeError) as e:
             log.info("browser ws: %s", e)
         finally:
