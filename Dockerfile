@@ -89,10 +89,14 @@ RUN chmod +x /usr/local/bin/ttyd && ttyd --version | grep -q "${TTYD_VERSION}"
 # through chrome://inspect. browser.sh starts it from the entrypoint; the MCP server is
 # registered in /opt/claude/mcp.json, which runner.py passes with --mcp-config.
 #
-# headless-shell only, but the system libraries of full chromium: projects that bring their
-# own playwright (a revision pinned by their lock file, downloaded into ~/.cache, which lives
-# on the /root volume) find the apt side already here. apt packages do not survive a
-# recreate, so this is the only place for them.
+# Full chromium in --headless=new, not chrome-headless-shell. The shell is the old headless
+# engine with its own tells: navigator.webdriver true, `HeadlessChrome` in userAgentData (the
+# --user-agent override does not reach it), no window.chrome, no plugins. Google answered it
+# with /sorry, mail.ru with a captcha; full chromium got real results on the same IP
+# (checked 2026-10-19). --no-shell: the shell is not needed next to it.
+# --with-deps brings the system libraries of full chromium, so projects that bring their own
+# playwright (a revision pinned by their lock file, downloaded into ~/.cache on the /root
+# volume) find the apt side already here — apt packages do not survive a recreate.
 #
 # PLAYWRIGHT_BROWSERS_PATH is set for this step only, NOT as an ENV: an inherited value
 # would send a project's `npx playwright install` into the image layer under /opt/pw — gone
@@ -105,11 +109,10 @@ RUN chmod +x /usr/local/bin/ttyd && ttyd --version | grep -q "${TTYD_VERSION}"
 ARG PLAYWRIGHT_VERSION=1.64.1
 ARG PLAYWRIGHT_MCP_VERSION=0.0.83
 RUN apt-get update && apt-get install -y --no-install-recommends socat \
- && PLAYWRIGHT_BROWSERS_PATH=/opt/pw npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps --only-shell chromium \
- && npx -y playwright@${PLAYWRIGHT_VERSION} install-deps chromium \
+ && PLAYWRIGHT_BROWSERS_PATH=/opt/pw npx -y playwright@${PLAYWRIGHT_VERSION} install --with-deps --no-shell chromium \
  && npm install -g @playwright/mcp@${PLAYWRIGHT_MCP_VERSION} \
  && rm -rf /var/lib/apt/lists/* /root/.npm \
- && ls /opt/pw/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell \
+ && ls /opt/pw/chromium-*/chrome-linux64/chrome \
  && playwright-mcp --version
 
 # /run/sshd — without it sshd dies with "Missing privilege separation directory".

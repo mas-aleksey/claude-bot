@@ -11,11 +11,11 @@
 #
 # Loops instead of a restart policy: the processes live next to the bot, not in a container
 # of their own, so a crashed browser comes back here.
-B=$(ls -d /opt/pw/chromium_headless_shell-*/chrome-headless-shell-linux64/chrome-headless-shell 2>/dev/null | head -1)
-[ -x "$B" ] || { echo "browser.sh: no chrome-headless-shell in /opt/pw" >&2; exit 0; }
+B=$(ls -d /opt/pw/chromium-*/chrome-linux64/chrome 2>/dev/null | head -1)
+[ -x "$B" ] || { echo "browser.sh: no chromium in /opt/pw" >&2; exit 0; }
 mkdir -p /data/browser
 
-# headless-shell introduces itself as `HeadlessChrome/…`, and some sites turn that word
+# Headless chromium introduces itself as `HeadlessChrome/…`, and some sites turn that word
 # away — WhatsApp Web answers "works with Google Chrome 100+". The major is taken from the
 # binary, so the agent never lags behind the engine after a rebuild.
 UA="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/$("$B" --version | grep -o '[0-9]*\.' | head -1)0.0.0 Safari/537.36"
@@ -30,7 +30,10 @@ while :; do
     # takes a stale lock for a live browser on another machine. There is never a second
     # browser on this profile, so clearing it is safe.
     rm -f /data/browser/Singleton*
-    "$B" --no-sandbox --remote-debugging-port=9222 --user-data-dir=/data/browser \
-        --user-agent="$UA" about:blank > /tmp/browser.log 2>&1
+    # AutomationControlled off — headless sets navigator.webdriver to true, the first thing a
+    # bot check reads; with the feature disabled it is false (checked on this binary).
+    "$B" --headless=new --no-sandbox --remote-debugging-port=9222 --user-data-dir=/data/browser \
+        --disable-blink-features=AutomationControlled --user-agent="$UA" \
+        about:blank > /tmp/browser.log 2>&1
     sleep 2
 done
