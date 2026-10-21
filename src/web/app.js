@@ -890,7 +890,6 @@ function drawPane(p) {
     </div>
     <div class=queue hidden></div>
     <form>
-      <div class=hgrab title="потянуть — высота поля, двойной клик — по тексту"></div>
       <div class=menu hidden></div>
       <div class=clips hidden></div>
       <!-- Поле и подложка подсветки — в своей обёртке, а не прямо в форме. Подложка
@@ -997,7 +996,6 @@ function drawPane(p) {
   drawClips(p);   // после F5 список пуст, но панель могла быть перерисована на лету
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
   wireSlash(p, el, ta);
-  wireHgrab(el, ta);
 
   const model = el.querySelector('.model');
   fillModels(p, model);
@@ -1098,7 +1096,7 @@ function drawFile(p) {
       <button class=ren title="копировать путь">\u2750\ufe0e</button>
       <span class=who></span>
       <a class=dl title="скачать файл" download>\u2913</a>`, '', `
-    <textarea class=edit spellcheck=false wrap=off></textarea>
+    <div class=srcbox><pre class=gut aria-hidden=true></pre><textarea class=edit spellcheck=false wrap=off></textarea></div>
     <img class=view hidden alt="">
     <div class="look body" hidden></div>
     <div class=filebar>
@@ -1109,6 +1107,20 @@ function drawFile(p) {
     </div>`, () => copyPath());
   const who = el.querySelector('.who');
   const ta = el.querySelector('.edit');
+  // Номера строк: перенос выключен (`wrap=off`), поэтому строка текста — это строка
+  // колонки. Пересчёт только при смене числа строк, прокрутка повторяет поле.
+  const gut = el.querySelector('.gut');
+  let rows = 0;
+  const nums = () => {
+    const n = ta.value.split('\n').length;
+    if (n !== rows) {
+      rows = n;
+      gut.textContent = Array.from({ length: n }, (_, i) => i + 1).join('\n');
+      gut.style.minWidth = String(n).length + 'ch';
+    }
+    gut.scrollTop = ta.scrollTop;
+  };
+  ta.onscroll = () => { gut.scrollTop = ta.scrollTop; };
   const state = el.querySelector('.state');
   const save_ = el.querySelector('.save');
   who.textContent = p.file.split('/').pop();
@@ -1173,6 +1185,7 @@ function drawFile(p) {
     }
     dropDoc();
     ta.value = f.text ?? '';
+    nums();
     // Кнопка вёрстки только у markdown: у остального её нечем наполнить, а пустая кнопка
     // в строке рядом с «сохранить» читалась бы как сломанная.
     lookBtn.hidden = !/\.(md|markdown)$/i.test(p.file);
@@ -1198,7 +1211,7 @@ function drawFile(p) {
     say('сохранено ' + new Date().toLocaleTimeString());
   };
 
-  ta.oninput = () => { dirty = true; say('не сохранено'); };
+  ta.oninput = () => { dirty = true; say('не сохранено'); nums(); };
   save_.onclick = () => put().catch(e => say(String(e.message || e), true));
   el.querySelector('.reread').onclick = () => {
     if (dirty && !confirm('Правки не сохранены. Перечитать с диска?')) return;
@@ -1346,7 +1359,7 @@ function setWho(p, el) {
 
 // Поле растёт под текст до потолка из CSS (`max-height`, шесть строк): сбрасываем
 // высоту, чтобы scrollHeight пересчитался, и ставим по содержимому — потолок срежет
-// CSS. Дальше поле скроллится само. Растянутое ручкой (`maxHeight` снят) не трогаем.
+// CSS. Дальше поле скроллится само.
 // Высота поля — по набранному, а не по подсказке. У пустого поля `scrollHeight` считает
 // и placeholder, и длинная подсказка растягивала композер до потолка в 240px. Дальше
 // браузер подкручивал секцию, чтобы показать поле с фокусом, и шапка уезжала за верхний
@@ -1358,31 +1371,12 @@ function setWho(p, el) {
 const AUTOSIZE = CSS.supports('field-sizing', 'content');
 
 function grow(ta) {
-  if (AUTOSIZE || ta.style.maxHeight) return;
+  if (AUTOSIZE) return;
   const hold = ta.placeholder;
   ta.placeholder = '';
   ta.style.height = 'auto';
   ta.style.height = ta.scrollHeight + 'px';
   ta.placeholder = hold;
-}
-
-// Ручка над полем: тянут вверх — поле выше потолка самороста. Высоту ставим на само
-// поле и снимаем с него `max-height` — по нему же `grow` понимает, что поле держат
-// руками. Предел — 70% окна: выше лог сжимается в ничто. Живёт до перезагрузки.
-function wireHgrab(el, ta) {
-  const bar = el.querySelector('.hgrab');
-  bar.onpointerdown = (e) => {
-    if (e.button) return;
-    e.preventDefault();
-    bar.setPointerCapture(e.pointerId);
-    const y0 = e.clientY, h0 = ta.offsetHeight;
-    bar.onpointermove = (ev) => {
-      ta.style.maxHeight = 'none';
-      ta.style.height = Math.min(el.clientHeight * 0.7, Math.max(24, h0 + y0 - ev.clientY)) + 'px';
-    };
-    bar.onpointerup = bar.onpointercancel = () => { bar.onpointermove = null; };
-  };
-  bar.ondblclick = () => { ta.style.maxHeight = ta.style.height = ''; grow(ta); };
 }
 
 // --- slash:begin ---
@@ -1732,6 +1726,12 @@ async function doLogin() {
   code.focus();
 }
 
+// Ключ один на контейнер: выход из панели — это выход и для Telegram-бота.
+async function doLogout() {
+  if (!confirm('Выйти из аккаунта claude? Идущие прогоны оборвутся, бот тоже останется без входа.')) return;
+  await ask('api/logout', {}, 'не выйти');
+}
+
 $('authno').onclick = () => $('auth').close();
 $('authok').onclick = async () => {
   const code = $('authcode').value.trim();
@@ -1788,8 +1788,9 @@ function setPlan(lim, auth) {
   const hint = need ? 'обновить ключ нечем — нужен новый вход'
              : left ? `новый вход понадобится через ${left}` : 'ключ активен';
   box.innerHTML =
-    (who ? `<div class=who title="${esc(label ? 'обновлено ' + label : who)}">` +
-           `${esc(who)}</div>` : '') +
+    `<div class=top><div class=who title="${esc(label ? 'обновлено ' + label : who)}">` +
+    `${esc(who)}</div>` + (auth ? '<button id=logout title="выйти из аккаунта"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>' : '') +
+    '</div>' +
     (auth ? `<div class="auth${need ? ' hot' : warn ? ' warn' : ''}"` +
             ` title="${esc(hint)}"><em>${esc(state)}</em>` +
             (need || warn ? '<button id=login>войти</button>' : '') + '</div>' : '') +
@@ -1810,6 +1811,7 @@ function setPlan(lim, auth) {
   }).join('');
   const btn = box.querySelector('#login');
   if (btn) btn.onclick = doLogin;
+  box.querySelector('#logout')?.addEventListener('click', doLogout);
 }
 // --- plan:end ---
 

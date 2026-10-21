@@ -183,7 +183,12 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #list button.ok .meta, #list button.bad .meta, #list button.done .meta,
 #list button.ok .ago, #list button.bad .ago, #list button.done .ago { opacity:1 }
 #plan { flex:none; padding:8px 10px; border-top:1px solid #8884; font-size:12px }
-#plan .who { opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+#plan .top { display:flex; align-items:center; gap:8px }
+#plan .who { flex:1; min-width:0; opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
+/* Выход — значком в углу верхней строки: в строке ключа место нужно кнопке «войти». */
+#plan #logout { flex:none; display:grid; padding:0 4px; border:0;
+  background:none; color:inherit; opacity:.5; cursor:pointer }
+#plan #logout:hover { opacity:1; color:#e55 }
 /* Строка ключа: слева состояние, справа кнопка входа. Кнопка стоит тут всегда, а не
    только при мёртвом ключе: узнать, что ключ не работает, можно лишь провалившимся
    прогоном, и в этот момент искать, чем войти, поздно. */
@@ -528,9 +533,10 @@ section.zoomed header .max::before { content:'\2921' }
   overflow:hidden }
 .user.open .txt { display:block; -webkit-line-clamp:none; cursor:text }
 /* Обрезанный низ гаснет, как у diff (`.dv`): маска гасит сам текст, фон под ней любой.
-   Стоп на 40%, а не 70%: на трёх строках при 70% гасла бы лишь нижняя кромка. */
-.user.more:not(.open) .txt { -webkit-mask-image:linear-gradient(#000 40%, transparent);
-  mask-image:linear-gradient(#000 40%, transparent) }
+   Стоп на 40%, а не 70%: на трёх строках при 70% гасла бы лишь нижняя кромка.
+   Гаснет до серого, а не в ноль: последняя строка остаётся читаемой. */
+.user.more:not(.open) .txt { -webkit-mask-image:linear-gradient(#000 40%, #0005);
+  mask-image:linear-gradient(#000 40%, #0005) }
 .user.more, .user.open { cursor:pointer }
 .user.more::after { content:'\25BE'; display:block; font-size:11px; opacity:.5 }
 .user.open::after { content:'\25B4' }
@@ -678,12 +684,6 @@ form { position:relative; display:flex; flex-direction:column; gap:4px;
   border:1px solid #8886; border-radius:12px;
   background:oklch(0.62 0.16 var(--hue,250) / .05) }
 form:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
-/* Ручка высоты поля — полоска на верхней кромке композера, поверх неё, места в потоке
-   не занимает. Тянут вверх — поле выше, двойной клик возвращает рост по тексту. */
-.hgrab { position:absolute; top:-5px; left:12px; right:12px; height:10px;
-  cursor:ns-resize; touch-action:none; z-index:1 }
-.hgrab:hover::before { content:''; position:absolute; left:40%; right:40%; top:3px;
-  height:3px; border-radius:2px; background:#8888 }
 /* Сворачивание в заголовок — мобильное, правила лежат в медиаблоке внизу. На большом
    экране оно бессмысленно: окна стоят в явных клетках сетки, освободившиеся ряды никто
    не занимает, и свёрнутое оставляло бы под собой дыру. Кнопка спрятана здесь, а не
@@ -694,10 +694,17 @@ header .foldbar { display:none }
    не нужен — окно тянется само, и файл должен занимать его целиком.
    `white-space:pre` и `wrap=off`: перенос длинной строки сдвинул бы нумерацию строк в
    голове у читающего, а код чаще смотрят по строкам, чем читают сплошняком. */
-.edit { flex:1; min-height:0; max-height:none; margin:8px; padding:6px;
-  border:1px solid #8886; border-radius:8px; font:12px/1.45 ui-monospace,monospace;
-  white-space:pre; overflow:auto }
-.edit:focus { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+.srcbox { flex:1; min-height:0; display:flex; margin:8px; overflow:hidden;
+  border:1px solid #8886; border-radius:8px }
+.srcbox:has(> .edit[hidden]) { display:none }
+.srcbox:focus-within { border-color:oklch(0.62 0.20 var(--hue,250) / .7) }
+.edit { flex:1; min-width:0; min-height:0; max-height:none; margin:0; padding:6px;
+  border:0; font:12px/1.45 ui-monospace,monospace; white-space:pre; overflow:auto }
+/* Колонка номеров. Низ с запасом: у поля внизу полоса горизонтальной прокрутки, и без
+   запаса последние строки колонки не доезжали бы до конца вместе с текстом. */
+.gut { flex:none; margin:0; padding:6px 6px 24px 8px; text-align:right; overflow:hidden;
+  font:12px/1.45 ui-monospace,monospace; opacity:.4; user-select:none; pointer-events:none;
+  border-right:1px solid #8884 }
 /* Картинка на месте редактора: вписывается целиком, зума нет. Клетчатый фон нужен
    прозрачным png — иначе белый логотип на тёмной теме выглядит пустым окном. */
 /* PDF и вёрстка markdown занимают место редактора и живут по его правилам: растут на
@@ -722,8 +729,7 @@ div.look { flex:1; min-height:0; overflow:auto; margin:8px; padding:4px 10px;
    Где не понимает (сейчас это Safari и Firefox), свойство игнорируется, и высоту
    по-прежнему ставит скрипт. */
 /* Потолок самороста — шесть строк (было 240px, около десяти): лог в четырёх панелях
-   теснился полем, которое ещё набирают. Выше тянут ручкой `.hgrab`, тогда скрипт
-   снимает потолок на самом поле. Низ — одна строка, а не 40px: пустое поле не держит
+   теснился полем, которое ещё набирают. Дальше поле скроллится. Низ — одна строка, а не 40px: пустое поле не держит
    пустую вторую. */
 textarea { position:relative; resize:none; min-height:calc(1lh + 4px); max-height:calc(6lh + 4px);
   field-sizing:content;
@@ -735,7 +741,7 @@ textarea { position:relative; resize:none; min-height:calc(1lh + 4px); max-heigh
 /* Обёртка поля: подложка подсветки меряется от неё, а не от формы. Иначе строка
    карточек сдвигала бы поле вниз, а метку команды оставляла на прежнем месте. */
 .field { position:relative; display:flex; flex-direction:column }
-/* Высота по обёртке, а не своим потолком: поле бывает растянуто ручкой выше него. */
+/* Высота по обёртке, а не своим потолком: так подложка всегда совпадает с полем. */
 .ghost { position:absolute; inset:0;
   overflow:hidden; padding:4px 4px 0; font:inherit; color:transparent;
   white-space:pre-wrap; pointer-events:none }
@@ -869,7 +875,7 @@ body:not(.folded) #empty .list { display:none }
   header .foldbar { display:revert }
   section.rolled { height:auto }
   section.rolled .logbox, section.rolled form { display:none }
-  section.rolled .edit, section.rolled .view, section.rolled .doc,
+  section.rolled .srcbox, section.rolled .view, section.rolled .doc,
   section.rolled div.look, section.rolled .filebar { display:none }
   /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
      раньше просто ничего не делала. Развёрнутое окно занимает всю область окон: соседи
@@ -912,5 +918,5 @@ body:not(.folded) #empty .list { display:none }
      16px, и лечится он размером шрифта, а не `maximum-scale` в viewport: тот отнял бы у
      страницы и ручной зум. `.ghost` в списке обязателен — слой подсветки слеш-команды
      обязан совпадать с полем по геометрии, иначе метка съедет. */
-  textarea, input, select, .edit, .ghost { font-size:16px }
+  textarea, input, select, .edit, .gut, .ghost { font-size:16px }
 }

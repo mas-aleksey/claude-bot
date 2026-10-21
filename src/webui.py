@@ -523,6 +523,13 @@ async def api_login(_: web.Request) -> web.Response:
     return web.json_response({"url": url})
 
 
+async def api_logout(_: web.Request) -> web.Response:
+    """Выйти из аккаунта: `claude auth logout`, как `/logout` в Telegram. Ключ один на инстанс."""
+    rc, out = await runner.cli("auth", "logout")
+    log.info("logout из панели: rc=%s", rc)
+    return web.json_response({"ok": rc == 0, "detail": out}, status=200 if rc == 0 else 502)
+
+
 async def api_login_code(req: web.Request) -> web.Response:
     """Код из браузера. Успех определяет сам `Login` — по появлению файла с ключом."""
     if not runner.login_owner():
@@ -575,6 +582,7 @@ def build() -> web.Application:
         web.post("/api/cancel", api_cancel),
         web.post("/api/login", api_login),
         web.post("/api/login/code", api_login_code),
+        web.post("/api/logout", api_logout),
         web.get("/api/browser/tabs", browser.api_tabs),
         web.get("/api/browser/ws", browser.api_ws),
         web.post("/api/browser/new", browser.api_new),
