@@ -1083,7 +1083,7 @@ def test_field_height_ignores_the_hint(tmp_path):
     js = tmp_path / "grow.js"
     # Проверяем ручной путь: `AUTOSIZE` — это ветка для браузера с `field-sizing`,
     # там высоту ставит CSS и ставить её скрипту нечем.
-    assert "if (AUTOSIZE || ta.style.maxHeight) return;" in js_src, "ручной расчёт обязан уступать нативному"
+    assert "if (AUTOSIZE) return;" in js_src, "ручной расчёт обязан уступать нативному"
     js.write_text("const AUTOSIZE = false;\n" + body + """
 // Подставное поле: высота растёт и от значения, и от подсказки — как в браузере.
 const field = (value, placeholder) => ({
