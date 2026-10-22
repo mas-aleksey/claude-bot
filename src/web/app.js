@@ -1716,8 +1716,15 @@ async function finishHandoff(p) {
   } catch (e) { /* ниже — та же строка, что и при пустом ответе */ }
   if (!path) return log(p, '<div class="msg err">handoff не записал файл — окно осталось в этой сессии</div>');
   // Новая сессия — как у `/clear`: без id сервер заведёт её сам, а `send` переключит окно.
+  // Лог старой стираем: иначе новая дописывается под ней, и окно листает всю историю.
+  // Имя переносим на сервер: локальное `p.title` перетёр бы `syncTitles` названием
+  // из первого промпта «прочитай … и продолжи».
+  const title = p.title;
   p.session = null;
-  sendText(p, `прочитай ${path} и продолжи`);
+  const box = document.querySelector('#pane-' + p.pane + ' .log');
+  if (box) box.innerHTML = '';
+  await sendText(p, `прочитай ${path} и продолжи`);
+  if (title && p.session) post('api/name', { session: p.session, name: title }).catch(() => {});
 }
 
 // Лимиты подписки. Место — низ списка, а не шапка панели: лимит общий на аккаунт,
