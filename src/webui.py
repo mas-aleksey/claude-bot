@@ -315,6 +315,21 @@ async def api_skills(req: web.Request) -> web.Response:
     return web.json_response(skills(_project(project) if project else ""))
 
 
+# Файлы скилла `handoff`: `<проект>--<задача>.md`, том переживает рестарт контейнера.
+HANDOFF = Path("/root/.claude/handoff")
+
+
+async def api_handoff(req: web.Request) -> web.Response:
+    """Свежий handoff проекта, записанный не раньше `since`. Кнопке передачи нужен путь,
+    а не текст ответа: имя файла придумывает модель, и из ответа его пришлось бы выуживать.
+    """
+    project = Path(_project(req.query.get("project") or "")).name
+    since = float(req.query.get("since") or 0)
+    files = [f for f in HANDOFF.glob(f"{project}--*.md") if f.stat().st_mtime >= since]
+    newest = max(files, key=lambda f: f.stat().st_mtime, default=None)
+    return web.json_response({"path": str(newest) if newest else None})
+
+
 def _row(sid: str, title: str, age: float, **extra) -> dict:
     """Строка списка сессий. Общая и для списка, и для поиска — в панели это один
     и тот же элемент, отличается только четвёртое поле."""
@@ -583,6 +598,7 @@ def build() -> web.Application:
         web.post("/api/login", api_login),
         web.post("/api/login/code", api_login_code),
         web.post("/api/logout", api_logout),
+        web.get("/api/handoff", api_handoff),
         web.get("/api/browser/tabs", browser.api_tabs),
         web.get("/api/browser/ws", browser.api_ws),
         web.post("/api/browser/new", browser.api_new),

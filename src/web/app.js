@@ -882,7 +882,8 @@ function drawPane(p) {
   const el = paneShell(p, `
       <button class=ren title="переименовать сессию">\u270e\ufe0e</button>
       <span class=who></span>
-      <span class=timer></span>`, '<i class=ctx></i>', `
+      <span class=timer></span>
+      <button class=handoff hidden title="передать в новую сессию: записать handoff и продолжить с него">\u21e2\ufe0e</button>`, '<i class=ctx></i>', `
     <div class=logbox>
       <div class=pin hidden></div>
       <div class=log></div>
@@ -916,6 +917,7 @@ function drawPane(p) {
     </form>`, () => rename());
   setWho(p, el);
   el.querySelector('.close').onclick = () => closePane(p);
+  el.querySelector('.handoff').onclick = () => startHandoff(p);
   // Заголовок окна — то же переименование, что карандаш в списке слева: имя сессии
   // чаще всего хочется поправить, глядя на её ответы, а не на строку списка.
   const rename = async () => {
@@ -1676,6 +1678,46 @@ function setCtx(p, ctx) {
   // бы читать транскрипты всего списка ради полоски, на которую никто не смотрит.
   p.ctx = share;
   markList();
+  // Кнопка передачи — когда контекст разросся: меньшее из 300k и 60% окна. И только там,
+  // где есть сам скилл: у бота Алеси его нет, и кнопка ушла бы в пустоту.
+  const btn = document.getElementById('pane-' + p.pane)?.querySelector('.handoff');
+  if (btn) skillsFor(p.project).then((list) => {
+    btn.hidden = !(ctx.used >= Math.min(300000, ctx.window * 0.6)
+                   && list.some((s) => s.name === 'handoff'));
+  });
+}
+
+// Передача в новую сессию. Старая пишет handoff, по концу её прогона окно переходит в
+// новую сессию, и та первым делом читает файл. Путь берём с сервера — самый свежий
+// handoff проекта после нажатия, а не из текста ответа.
+// ponytail: состояние в памяти вкладки — F5 посреди передачи оставит её на шаге
+// «handoff записан», второй шаг тогда руками: «прочитай <путь> и продолжи».
+function sendText(p, text) {
+  const ta = document.querySelector('#pane-' + p.pane + ' form textarea');
+  if (!ta) return;
+  const keep = ta.value;
+  ta.value = text;
+  return send(p, ta).finally(() => { if (keep && !ta.value) { ta.value = keep; ta.oninput(); } });
+}
+
+function startHandoff(p) {
+  if (!p.session || p.handoff) return;
+  if (!confirm('Записать handoff и продолжить в новой сессии? Старая останется в списке.')) return;
+  p.handoff = { since: Date.now() / 1000, seen: false };
+  sendText(p, '/handoff');
+}
+
+async function finishHandoff(p) {
+  const h = p.handoff;
+  p.handoff = null;
+  let path = null;
+  try {
+    path = (await get('api/handoff?' + new URLSearchParams({ project: p.project, since: h.since - 5 }))).path;
+  } catch (e) { /* ниже — та же строка, что и при пустом ответе */ }
+  if (!path) return log(p, '<div class="msg err">handoff не записал файл — окно осталось в этой сессии</div>');
+  // Новая сессия — как у `/clear`: без id сервер заведёт её сам, а `send` переключит окно.
+  p.session = null;
+  sendText(p, `прочитай ${path} и продолжи`);
 }
 
 // Лимиты подписки. Место — низ списка, а не шапка панели: лимит общий на аккаунт,
@@ -2444,6 +2486,12 @@ function tickPane(p, st) {
   if (p.session && !dead && (!es || es.readyState === EventSource.CLOSED)) watch(p);
 
   el?.classList.toggle('busy', busy);
+  // Передача ждёт конца прогона `/handoff`. Начала прогона тик может не застать, если
+  // он упал сразу, — тогда через минуту всё равно идём проверять файл.
+  if (p.handoff) {
+    if (busy) p.handoff.seen = true;
+    else if (!queued.length && (p.handoff.seen || Date.now() / 1000 - p.handoff.since > 60)) finishHandoff(p);
+  }
   // Прогон кончился — «стоп» снова живая. Снимаем здесь, а не по ответу на отмену:
   // сервер отвечает раньше, чем процесс успевает умереть, и кнопка вернулась бы в
   // рабочий вид при всё ещё мигающем окне.

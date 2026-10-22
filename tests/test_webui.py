@@ -519,3 +519,22 @@ def test_step_carries_a_short_caption(tmp_path):
 
     assert by == {"Bash": "Show working tree status", "Edit": "/p/a.py",
                   "Write": "/p/b.md", "Read": None, "Grep": None}
+
+
+async def test_handoff_returns_newest_own_file_after_click(tmp_path, monkeypatch):
+    """Кнопка передачи берёт путь отсюда: свежий файл своего проекта, не старше нажатия."""
+    import os
+    from aiohttp.test_utils import make_mocked_request
+
+    monkeypatch.setattr(webui, "HANDOFF", tmp_path)
+    monkeypatch.setattr(webui, "_project", lambda raw: raw)
+    for name, mtime in (("web--old.md", 100), ("web--new.md", 300), ("other--x.md", 400)):
+        (tmp_path / name).touch()
+        os.utime(tmp_path / name, (mtime, mtime))
+
+    async def ask(since):
+        req = make_mocked_request("GET", f"/api/handoff?project=/projects/web&since={since}")
+        return json.loads((await webui.api_handoff(req)).text)["path"]
+
+    assert await ask(200) == str(tmp_path / "web--new.md")
+    assert await ask(350) is None
