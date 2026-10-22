@@ -1,4 +1,28 @@
 {
   "outputStyle": "conclusion-first",
-  "model": "claude-opus-5"
+  "model": "claude-opus-5",
+  "autoCompactWindow": 400000,
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 /opt/claude/hooks/after-compact.py"
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "cat /opt/claude/hooks/compact-instructions.md"
+          }
+        ]
+      }
+    ]
+  }
 }

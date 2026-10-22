@@ -131,6 +131,9 @@ COPY browser.sh /usr/local/bin/browser.sh
 COPY claude/settings.json /opt/claude/settings.json
 COPY claude/mcp.json /opt/claude/mcp.json
 COPY claude/output-styles /opt/claude/output-styles
+# Хуки сжатия: PreCompact задаёт пересказу форму handoff, SessionStart(compact) после
+# сжатия говорит модели, где полная история и файлы handoff.
+COPY claude/hooks /opt/claude/hooks
 
 WORKDIR /src
 
