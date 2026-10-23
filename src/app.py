@@ -82,9 +82,11 @@ def scope(msg: Message) -> str:
 
 def cwd(scope: str) -> str:
     """Текущий проект скоупа. Дефолт — первый в /projects; пусто — сам PROJECTS_DIR."""
-    if saved := store.get(f"{scope}:cwd"):
-        return saved
     found = sessions.projects()
+    # Сохранённый проект мог пропасть из списка: снят mount или включён `ROOT_ONLY`.
+    # Без проверки чат так и работал бы в каталоге, которого в списке уже нет.
+    if (saved := store.get(f"{scope}:cwd")) and Path(saved) in found:
+        return saved
     return str(found[0] if found else PROJECTS_DIR)
 
 

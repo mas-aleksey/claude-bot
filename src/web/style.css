@@ -922,3 +922,6 @@ body:not(.folded) #empty .list { display:none }
      обязан совпадать с полем по геометрии, иначе метка съедет. */
   textarea, input, select, .edit, .gut, .ghost { font-size:16px }
 }
+/* Плоский список (`ROOT_ONLY`): заголовков проектов нет, «новая сессия» — первой строкой. */
+#list .newsess { font-weight:600; opacity:.75 }
+#list .newsess:hover { opacity:1 }

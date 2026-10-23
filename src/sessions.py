@@ -24,9 +24,16 @@ def projects() -> list[Path]:
 
     Живёт здесь, а не в app.py: читают и бот, и читалка, а тащить в читалку aiogram
     с обязательным TG_BOT_TOKEN только за эту функцию не стоит.
+
+    С `ROOT_ONLY` проект один — сам `/projects`. Каталоги внутри остаются папками, их
+    CLAUDE.md claude подгружает сам, когда трогает файлы там. Выбирать проект перед
+    каждой новой сессией незачем там, где проекты — не отдельные репо, а разделы одной
+    жизни: так у ассистента.
     """
     if not PROJECTS_DIR.is_dir():
         return []
+    if os.environ.get("ROOT_ONLY"):
+        return [PROJECTS_DIR]
     return sorted(p for p in PROJECTS_DIR.iterdir() if p.is_dir())
 
 

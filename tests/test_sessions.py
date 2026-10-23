@@ -106,3 +106,12 @@ def test_last_message_empty_session(transcripts, tmp_path):
     d = transcripts / "p"
     write(d, "s", {"type": "user", "message": {"content": "привет"}})
     assert sessions.last_message(d / "s.jsonl") == ""
+
+
+def test_root_only_lists_projects_dir_itself(tmp_path, monkeypatch):
+    # У ассистента проект один — сам корень, подкаталоги в список не попадают.
+    (tmp_path / "careers").mkdir()
+    monkeypatch.setattr(sessions, "PROJECTS_DIR", tmp_path)
+    assert sessions.projects() == [tmp_path / "careers"]
+    monkeypatch.setenv("ROOT_ONLY", "1")
+    assert sessions.projects() == [tmp_path]

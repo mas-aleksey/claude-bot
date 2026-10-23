@@ -83,3 +83,11 @@ def test_migrates_pre_topic_state(tmp_path, monkeypatch):
     # Повторный коннект не должен приписать второй префикс.
     monkeypatch.setattr(store, "_local", threading.local())
     assert store.get("0:cwd") == "/projects/rp-ai"
+
+
+def test_saved_cwd_outside_projects_falls_back(db, tmp_path, monkeypatch):
+    # Чат помнит /projects/portugal, а с ROOT_ONLY проект один — корень.
+    monkeypatch.setattr(app.sessions, "PROJECTS_DIR", tmp_path)
+    monkeypatch.setenv("ROOT_ONLY", "1")
+    db.put("0:cwd", str(tmp_path / "portugal"))
+    assert app.cwd("0") == str(tmp_path)

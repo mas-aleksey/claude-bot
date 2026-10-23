@@ -326,6 +326,7 @@ const saveOpen = () => localStorage.setItem('open', JSON.stringify([...open]));
 // Последний ответ сервера: по нему перерисовываем дерево на раскрытии и сворачивании,
 // не дёргая сервер. Данные те же, меняется только что показано.
 let TREE = { projects: [], lists: [] };
+let SOLO = false;
 
 // Списки сессий тянем только у раскрытых проектов: на каждую строку сервер читает
 // транскрипт ради заголовка (12–18 мс на проект, замер 2026-09-25), а дерево
@@ -340,6 +341,17 @@ async function loadTree() {
     const saved = localStorage.getItem('proj');
     const first = ps.some(x => x.path === saved) ? saved : ps[0]?.path;
     if (first) { open.add(first); saveOpen(); }
+  }
+  // Один проект (`ROOT_ONLY` у ассистента) — дерево без веток: плоский список сессий
+  // корня, всегда раскрытый. Окна, открытые до перехода, смотрят в старые проекты,
+  // а их транскрипты переехали в корень: переводим окна туда же, иначе промпт в них
+  // получил бы 400 «нет такого проекта».
+  SOLO = ps.length === 1;
+  if (SOLO) {
+    open.add(ps[0].path);
+    const moved = panes.filter(p => p.project !== ps[0].path);
+    moved.forEach(p => { p.project = ps[0].path; });
+    if (moved.length) save();
   }
   const want = ps.filter(x => open.has(x.path));
   const lists = await Promise.all(want.map(
@@ -366,6 +378,7 @@ const rowHTML = (s, project, withName) =>
 
 function drawProjects() {
   const { projects: ps, lists } = TREE;
+  if (SOLO) return drawFlat(ps[0].path, lists[ps[0].path]);
   $('list').innerHTML = ps.map((x) => {
     const on = open.has(x.path);
     // Число у свёрнутого — с сервера, у раскрытого — длина списка: он показывает
@@ -400,6 +413,15 @@ function drawProjects() {
       addPane({ pane: uid(), project: path, session: null, next: 0 });
     };
   }
+  wireRows();
+}
+// Плоский список: строка «+ новая сессия» сверху вместо «+» в заголовке проекта.
+function drawFlat(path, rows) {
+  $('list').innerHTML = `<button class=newsess>+ новая сессия</button>` +
+    ((rows || []).map(s => rowHTML(s, path)).join('') ||
+     `<div class=none>${rows ? 'сессий нет' : '\u2026'}</div>`);
+  $('list').querySelector('.newsess').onclick = () =>
+    addPane({ pane: uid(), project: path, session: null, next: 0 });
   wireRows();
 }
 // --- tree:end ---
@@ -571,7 +593,7 @@ async function runFind() {
     const found = await get('api/search?q=' + encodeURIComponent(q));
     // Результаты плоским списком, у каждой строки подпись проекта: раскладывать их
     // обратно по веткам значит прятать половину найденного под свёрнутыми узлами.
-    $('list').innerHTML = found.map(s => rowHTML(s, s.project, true)).join('') ||
+    $('list').innerHTML = found.map(s => rowHTML(s, s.project, !SOLO)).join('') ||
       '<div class=none>ничего не нашлось</div>';
     wireRows();   // сам зовёт markList и syncTitles
   } catch (e) { /* следующий ввод попробует снова */ }
@@ -1355,7 +1377,7 @@ function setWho(p, el) {
   if (!who) return;
   const label = p.title ? p.title.slice(0, 48)
                         : (p.session ? p.session.slice(0, 8) : 'новая');
-  who.textContent = p.project.split('/').pop() + ' · ' + label;
+  who.textContent = SOLO ? label : p.project.split('/').pop() + ' · ' + label;
   who.title = p.title || p.session || '';
 }
 
@@ -2443,8 +2465,8 @@ const lastElapsed = new Map();
 function notifyDone(p, seconds) {
   if (!canNotify()) return;
   if (!document.hidden) return;
-  const where = p.project.split('/').pop();
-  new Notification(`claude · ${where}`,
+  const where = SOLO ? '' : ' · ' + p.project.split('/').pop();
+  new Notification(`claude${where}`,
     { body: seconds ? `ответ готов за ${fmt(seconds)}` : 'ответ готов', tag: p.pane });
 }
 
