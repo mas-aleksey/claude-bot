@@ -207,6 +207,22 @@ container.
 It is not meant to face the public internet. There is no inbound HTTP at all — the bot
 polls Telegram.
 
+## Troubleshooting
+
+**In a forum group, commands work but prompts vanish.** The bot must be an admin of the
+group. Without that, Telegram privacy mode delivers only commands: `/status` and
+`/sessions` answer, plain text never arrives, and the logs show nothing. Tell-tale sign:
+updates are handled in under a second, yet `/data/audit.log` gets no new lines — the
+prompt is logged before claude starts, so it never got that far. Private chats are not
+affected. Fix it in the client: group → members → the bot → make admin. The "manage
+topics" right is only needed for creating topics. Group commands need their own scope in
+`set_my_commands`, otherwise autocomplete on "/" in topics is empty.
+
+**The web panel shows a blank page while the server is fine.** The saved window layout in
+`localStorage.panes` is the culprit; server, route and SSO will all look healthy. Open
+`/?reset` to drop the layout. If it happens again, first save `copy(localStorage.panes)`
+and `innerHeight` from the console: the trigger is still unknown.
+
 ## Development
 
 ```bash
