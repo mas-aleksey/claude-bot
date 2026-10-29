@@ -186,9 +186,10 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .top { display:flex; align-items:center; gap:8px }
 #plan .who { flex:1; min-width:0; opacity:.6; white-space:nowrap; overflow:hidden; text-overflow:ellipsis }
 /* Выход — значком в углу верхней строки: в строке ключа место нужно кнопке «войти». */
-#plan #logout { flex:none; display:grid; padding:0 4px; border:0;
+#plan :is(#logout, #keybtn) { flex:none; display:grid; padding:0 4px; border:0;
   background:none; color:inherit; opacity:.5; cursor:pointer }
 #plan #logout:hover { opacity:1; color:#e55 }
+#plan #keybtn:hover { opacity:1 }
 /* Строка ключа: слева состояние, справа кнопка входа. Кнопка стоит тут всегда, а не
    только при мёртвом ключе: узнать, что ключ не работает, можно лишь провалившимся
    прогоном, и в этот момент искать, чем войти, поздно. */
@@ -206,18 +207,20 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
 #plan .auth.warn button { border-color:#e90; color:#e90 }
 /* Окно входа: узкое, по центру, с живой ссылкой. Ширина ограничена — адрес авторизации
    длиной в три сотни символов иначе растягивает окно на весь экран. */
-#auth { width:min(420px, 92vw); border:1px solid #8884; border-radius:10px; padding:16px;
+:is(#auth, #keydlg) { width:min(420px, 92vw); border:1px solid #8884; border-radius:10px; padding:16px;
   background:Canvas; color:inherit; font:inherit }
-#auth::backdrop { background:#0008 }
-#auth p { margin:0 0 10px }
-#auth a { display:block; margin-bottom:10px; overflow-wrap:anywhere }
-#auth input { width:100%; box-sizing:border-box; padding:6px; border:1px solid #8884;
+:is(#auth, #keydlg)::backdrop { background:#0008 }
+:is(#auth, #keydlg) p { margin:0 0 10px }
+:is(#auth, #keydlg) a { display:block; margin-bottom:10px; overflow-wrap:anywhere }
+:is(#auth, #keydlg) :is(input, textarea) { width:100%; box-sizing:border-box; padding:6px; border:1px solid #8884;
   border-radius:6px; background:none; color:inherit; font:inherit }
-#auth .row { display:flex; align-items:center; gap:8px; margin-top:10px }
-#auth .row span { flex:1; font-size:12px; opacity:.7 }
-#auth button { padding:4px 10px; border:1px solid #8884; border-radius:6px;
+:is(#auth, #keydlg) :is(input, textarea) + :is(input, textarea) { margin-top:6px }
+:is(#auth, #keydlg) textarea { resize:vertical }
+:is(#auth, #keydlg) .row { display:flex; align-items:center; gap:8px; margin-top:10px }
+:is(#auth, #keydlg) .row span { flex:1; font-size:12px; opacity:.7 }
+:is(#auth, #keydlg) button { padding:4px 10px; border:1px solid #8884; border-radius:6px;
   background:none; color:inherit; font:inherit; cursor:pointer }
-#auth button:hover { background:#8882 }
+:is(#auth, #keydlg) button:hover { background:#8882 }
 #plan .lim { margin-top:6px }
 #plan .lim em { font-style:normal; opacity:.75 }
 #plan .lim span { float:right; opacity:.6 }

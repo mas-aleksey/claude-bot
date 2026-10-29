@@ -545,6 +545,33 @@ async def api_logout(_: web.Request) -> web.Response:
     return web.json_response({"ok": rc == 0, "detail": out}, status=200 if rc == 0 else 502)
 
 
+async def api_key(req: web.Request) -> web.Response:
+    """Вход по ключу API: адрес прокси, ключ и заголовки. Пустой ключ — снять ключ.
+
+    Ключ ложится в `settings.json` claude (см. `account.SETTINGS`) и действует со
+    следующего прогона, без рестарта. Ключ из `.env` контейнера отсюда не снять — он
+    не наш, — об этом и говорим, а не делаем вид, что вышли.
+    """
+    data = await req.json()
+    url = (data.get("url") or "").strip()
+    api_key = (data.get("key") or "").strip()
+    headers = (data.get("headers") or "").strip()
+    if not api_key:
+        account.save_key("", "", "")
+        left = account.key()
+        log.info("ключ API снят из панели, остался: %s", left.get("source") or "нет")
+        return web.json_response({"ok": True, "env": left.get("source") == "env"})
+    if url and urlsplit(url).scheme not in ("http", "https"):
+        return web.json_response({"error": "адрес — http(s)://…"}, status=400)
+    if any(c.isspace() for c in api_key):
+        return web.json_response({"error": "в ключе пробелы или переносы"}, status=400)
+    if err := await account.check_key(url, api_key, headers):
+        return web.json_response({"error": err}, status=400)
+    account.save_key(url, api_key, headers)
+    log.info("ключ API подключён из панели: %s", account.key().get("host"))
+    return web.json_response({"ok": True})
+
+
 async def api_login_code(req: web.Request) -> web.Response:
     """Код из браузера. Успех определяет сам `Login` — по появлению файла с ключом."""
     if not runner.login_owner():
@@ -598,6 +625,7 @@ def build() -> web.Application:
         web.post("/api/login", api_login),
         web.post("/api/login/code", api_login_code),
         web.post("/api/logout", api_logout),
+        web.post("/api/key", api_key),
         web.get("/api/handoff", api_handoff),
         web.get("/api/browser/tabs", browser.api_tabs),
         web.get("/api/browser/ws", browser.api_ws),

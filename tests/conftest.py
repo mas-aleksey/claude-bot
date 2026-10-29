@@ -17,3 +17,13 @@ import store
 def _tmp_store(tmp_path, monkeypatch):
     monkeypatch.setattr(store, "DB_PATH", str(tmp_path / "store.db"))
     monkeypatch.setattr(store, "_local", threading.local())
+
+
+@pytest.fixture(autouse=True)
+def _no_api_key(tmp_path, monkeypatch):
+    """Ключ API из окружения или живого settings.json перевёл бы тесты подписки в режим
+    ключа: бот в песочнице и сам ходит по ключу."""
+    import account
+    monkeypatch.setattr(account, "SETTINGS", str(tmp_path / "settings.json"))
+    for k in account.KEY_VARS:
+        monkeypatch.delenv(k, raising=False)

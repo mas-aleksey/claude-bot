@@ -57,3 +57,16 @@
     <button id=authok>войти</button>
   </div>
 </dialog>
+<!-- Вход по ключу API: любой прокси с API Anthropic — свой пул, TeamClaude, сам
+     api.anthropic.com. Ключ проверяется сервером до записи. -->
+<dialog id=keydlg>
+  <p>Ключ API вместо подписки. Действует со следующего запроса, и для бота тоже.</p>
+  <input id=keyurl placeholder="адрес, пусто — https://api.anthropic.com" autocomplete=off>
+  <input id=keyval type=password placeholder="ключ" autocomplete=off>
+  <textarea id=keyhdr rows=2 placeholder="заголовки, если нужны: Имя: значение"></textarea>
+  <div class=row>
+    <span id=keysay></span>
+    <button id=keyno>отмена</button>
+    <button id=keyok>подключить</button>
+  </div>
+</dialog>

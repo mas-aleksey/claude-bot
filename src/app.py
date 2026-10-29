@@ -165,6 +165,9 @@ def _plan_lines(lim: dict) -> str:
     who = " · ".join(x for x in (lim.get("email"), lim.get("plan")) if x)
     bars = " · ".join(
         f"{b['name']} {b['percent']}%{_until(b['resets'])}" for b in lim.get("bars", ()))
+    # По ключу API полосок может не быть вовсе (прокси без `/stats`), а хост есть всегда.
+    if k := account.key():
+        return f"вход: {who or 'ключ API · ' + k['host']}\nлимиты: {bars or '—'}"
     return f"подписка: {who or '—'}\nлимиты: {bars or '—'}"
 
 

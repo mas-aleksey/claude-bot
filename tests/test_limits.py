@@ -381,3 +381,79 @@ def test_suggestion_lives_in_the_base_and_dies_with_the_next_prompt(tmp_path, mo
 
     assert runner.suggestions() == {}
     assert store.get("suggest:s-3") is None, "протухший ключ обязан исчезнуть"
+
+
+def test_key_from_panel_beats_env(monkeypatch):
+    """Как у самого claude: переменная из settings.json перебивает такую же из `.env`.
+    Запись — все три переменные, даже пустые: иначе заголовок из `.env` уехал бы в чужой
+    прокси. Остальные настройки файла не трогаем."""
+    assert account.key() == {}
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "из-env")
+    monkeypatch.setenv("ANTHROPIC_CUSTOM_HEADERS", "x-teamclaude-usage: me|claude")
+    k = account.key()
+    assert (k["source"], k["host"], k["headers"]) == (
+        "env", "api.anthropic.com", {"x-teamclaude-usage": "me|claude"})
+
+    with open(account.SETTINGS, "w") as f:
+        json.dump({"model": "opus", "env": {"FOO": "1"}}, f)
+    account.save_key("http://claude-pool:8080/", "из-панели", "")
+    k = account.key()
+    assert (k["source"], k["key"], k["url"], k["headers"]) == (
+        "panel", "из-панели", "http://claude-pool:8080", {})
+    assert oct(os.stat(account.SETTINGS).st_mode & 0o777) == "0o600"
+
+    account.save_key("", "", "")
+    with open(account.SETTINGS) as f:
+        assert json.load(f) == {"model": "opus", "env": {"FOO": "1"}}
+    assert account.key()["source"] == "env"   # из панели снят, `.env` остался
+
+
+def test_stats_bars_pick_own_account():
+    stats = {"client": "client-b", "accounts": [
+        {"name": "main", "clients": ["assistant"],
+         "windows": {"5h": {"used": 0.9, "resets": "r1"}}},
+        {"name": "reserve", "clients": ["client-b"],
+         "windows": {"7d": {"used": 0.3, "resets": "r2"}, "5h": {"used": 0.126, "resets": "r3"}}},
+    ]}
+    name, bars = account._stats_bars(stats)
+    assert name == "reserve"
+    assert [(b["name"], b["percent"], b["resets"]) for b in bars] == [
+        ("сессия", 13, "r3"), ("неделя", 30, "r2")]
+    # Свой аккаунт не нашёлся — худшее окно по всем, а не самое свободное.
+    stats["client"] = "новый"
+    assert account._stats_bars(stats)[1][0]["percent"] == 90
+    # Чужой формат — без полосок, без исключений.
+    assert account._stats_bars({"type": "error"}) == ("", [])
+    assert account._stats_bars({"accounts": [{"windows": {"5h": {"used": "x"}}}]}) == ("", [])
+
+
+async def test_limits_by_key_ask_the_proxy_and_forget_the_subscription(monkeypatch):
+    """Ключ API: полоски — из `/stats` прокси с ключом в заголовке. Запомненные цифры
+    подписки чужие и не показываются; без `/stats` блок пуст, это не сбой."""
+    store.put(account.LIMITS_KEY, json.dumps({"email": "старый@акк", "bars": [{"percent": 50}]}))
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+    monkeypatch.setattr(account, "_limits_mode", None)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "к")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "http://pool:8080")
+    seen = {}
+
+    async def fake_get(*urls, extra=None, k=None):
+        seen["urls"], seen["k"] = urls, k
+        return [{"client": "a", "accounts": [
+            {"name": "main", "clients": ["a"], "windows": {"5h": {"used": 0.5, "resets": ""}}}]}]
+
+    monkeypatch.setattr(account, "_api_get", fake_get)
+    lim = await account.limits()
+    assert seen["urls"] == ("http://pool:8080/stats",) and seen["k"]["key"] == "к"
+    assert (lim["email"], lim["plan"], lim["bars"][0]["percent"]) == ("ключ API · pool", "main", 50)
+    assert app._plan_lines(lim).startswith("вход: ключ API · pool · main\n")
+
+    async def no_stats(*a, **kw):
+        raise ValueError("404")
+
+    monkeypatch.setattr(account, "_api_get", no_stats)
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://ai-hub.example")   # другой вход — кеш сброшен
+    assert await account.limits() == {}
+    assert app._plan_lines({}) == "вход: ключ API · ai-hub.example\nлимиты: —"
+    assert account.auth() == {"ok": True, "fresh": True, "renewable": True, "kind": "key",
+                              "host": "ai-hub.example", "source": "env"}

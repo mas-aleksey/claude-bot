@@ -1798,10 +1798,39 @@ async function doLogin() {
 }
 
 // Ключ один на контейнер: выход из панели — это выход и для Telegram-бота.
-async function doLogout() {
+// По ключу API выход — это снять ключ: под ним вернётся подписка, если вход по ней был.
+async function doLogout(auth) {
+  if (auth?.kind === 'key') {
+    if (auth.source === 'env') return alert('Ключ задан в .env инстанса — из панели его не снять.');
+    if (!confirm('Отключить ключ API? Вернётся вход по подписке, если он был.')) return;
+    const r = await ask('api/key', { key: '' }, 'не снять ключ');
+    if (r?.env) alert('Ключ из панели снят, но в .env инстанса задан свой — работает он.');
+    return;
+  }
   if (!confirm('Выйти из аккаунта claude? Идущие прогоны оборвутся, бот тоже останется без входа.')) return;
   await ask('api/logout', {}, 'не выйти');
 }
+
+// Вход по ключу API — любой прокси с API Anthropic. Сервер сперва проверяет ключ
+// запросом к прокси и только потом пишет его, поэтому отказ показываем в самом окне.
+function doKey() {
+  for (const id of ['keyurl', 'keyval', 'keyhdr']) $(id).value = '';
+  $('keysay').textContent = '';
+  $('keydlg').showModal();
+  $('keyurl').focus();
+}
+$('keyno').onclick = () => $('keydlg').close();
+$('keyok').onclick = async () => {
+  const key = $('keyval').value.trim();
+  if (!key) return $('keyval').focus();
+  $('keysay').textContent = 'проверяю…';
+  const r = await postJSON('api/key', { url: $('keyurl').value.trim(), key,
+                                        headers: $('keyhdr').value.trim() });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { $('keysay').textContent = 'не вышло: ' + (body.error || r.status); return; }
+  $('keysay').textContent = 'подключено';
+  setTimeout(() => $('keydlg').close(), 900);
+};
 
 $('authno').onclick = () => $('auth').close();
 $('authok').onclick = async () => {
@@ -1847,7 +1876,9 @@ function setPlan(lim, auth) {
   // сплошная лента цифр, а нужна из них в каждый момент одна: остальное — справка, за
   // которой человек наводит мышь. В строке остаётся только то, что меняет решение:
   // проценты у лимитов и состояние у ключа.
-  const who = [lim?.email, lim?.plan].filter(Boolean).join(' · ');
+  // По ключу API полосок может и не быть (прокси без `/stats`), а хост известен всегда.
+  const who = [lim?.email, lim?.plan].filter(Boolean).join(' · ') ||
+    (auth?.kind === 'key' ? 'ключ API · ' + auth.host : '');
   const raw = auth?.until ? until(auth.until * 1000) : '';
   const left = raw === GONE ? '' : raw;
   // Кнопка только там, где она нужна: на живом ключе жать её незачем, а без неё строка
@@ -1856,11 +1887,15 @@ function setPlan(lim, auth) {
               : warn ? 'ключ скоро кончится' : 'ключ активен';
   // Срок тут — дедлайн входа, а не обещание обновления. `рефреш через ...` стояло здесь
   // до 2026-10-02 и читалось наоборот: «скоро само продлится, можно не трогать».
-  const hint = need ? 'обновить ключ нечем — нужен новый вход'
+  const hint = auth?.kind === 'key'
+               ? (auth.source === 'env' ? 'ключ API из .env инстанса' : 'ключ API из панели')
+             : need ? 'обновить ключ нечем — нужен новый вход'
              : left ? `новый вход понадобится через ${left}` : 'ключ активен';
   box.innerHTML =
     `<div class=top><div class=who title="${esc(label ? 'обновлено ' + label : who)}">` +
-    `${esc(who)}</div>` + (auth ? '<button id=logout title="выйти из аккаунта"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>' : '') +
+    `${esc(who)}</div>` +
+    (auth ? '<button id=keybtn title="вход по ключу API"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><circle cx=7.5 cy=15.5 r=4.5 /><path d="M10.7 12.3 21 2M16 7l3 3M18 5l2 2"/></svg></button>' : '') +
+    (auth ? '<button id=logout title="выйти из аккаунта"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>' : '') +
     '</div>' +
     (auth ? `<div class="auth${need ? ' hot' : warn ? ' warn' : ''}"` +
             ` title="${esc(hint)}"><em>${esc(state)}</em>` +
@@ -1882,7 +1917,8 @@ function setPlan(lim, auth) {
   }).join('');
   const btn = box.querySelector('#login');
   if (btn) btn.onclick = doLogin;
-  box.querySelector('#logout')?.addEventListener('click', doLogout);
+  box.querySelector('#logout')?.addEventListener('click', () => doLogout(auth));
+  box.querySelector('#keybtn')?.addEventListener('click', doKey);
 }
 // --- plan:end ---
 

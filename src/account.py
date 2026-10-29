@@ -1,4 +1,4 @@
-"""Аккаунт подписки: ключ, лимиты и каталог моделей.
+"""Аккаунт: вход по подписке или по ключу API, лимиты и каталог моделей.
 
 Вынесено из `runner`: к запуску claude это не относится — тут только HTTP к API аккаунта
 токеном из CREDS. Занятость бота, от которой зависит срок кеша лимитов, приходит
@@ -7,9 +7,12 @@
 
 import json
 import logging
+import os
 import random
 import time
 from datetime import datetime
+from pathlib import Path
+from urllib.parse import urlparse
 
 import aiohttp
 
@@ -18,6 +21,14 @@ import store
 log = logging.getLogger("claude_bot.account")
 
 CREDS = "/root/.claude/.credentials.json"
+# Ключ API, введённый в панели, — в `env` пользовательских настроек claude. Файл на томе
+# `/root`: переживает пересоздание контейнера, его же читает claude из IDE по ssh, и
+# рестарт не нужен — каждый прогон поднимает claude заново. Переменные из этого `env`
+# перебивают одноимённые из `.env` контейнера: проверено 2026-10-29 на 2.1.x вместе с
+# `--settings /opt/claude/settings.json`, которым бот запускает прогоны.
+SETTINGS = "/root/.claude/settings.json"
+KEY_VARS = ("ANTHROPIC_BASE_URL", "ANTHROPIC_API_KEY", "ANTHROPIC_CUSTOM_HEADERS")
+API = "https://api.anthropic.com"
 
 # Лимиты подписки. В headless их не спросить — `/usage` и `/cost` отвечают только внутри
 # сессии и текстом, — зато CLI берёт их с этого эндпоинта, и токен для него уже лежит
@@ -52,15 +63,93 @@ def _remembered(key: str, default):
         return default
 
 
-async def _api_get(*urls: str, extra: dict | None = None) -> list:
+def _settings() -> dict:
+    """Пользовательские настройки claude. Нет файла или он битый — пустые."""
+    try:
+        got = json.loads(Path(SETTINGS).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    return got if isinstance(got, dict) else {}
+
+
+def _headers(raw: str) -> dict:
+    """`ANTHROPIC_CUSTOM_HEADERS` в словарь. Формат claude: строки `Имя: значение`."""
+    return dict((n.strip(), v.strip()) for n, _, v in
+                (line.partition(":") for line in raw.splitlines()) if n.strip() and v.strip())
+
+
+def key() -> dict:
+    """Вход по ключу API, если он есть: `{url, key, headers, host, source}`, иначе `{}`.
+
+    Источников два, и сливаются они так же, как у самого claude: переменная из
+    `settings.json` перебивает такую же из окружения контейнера. `source` — откуда ключ:
+    `panel` можно снять из панели, `env` — только правкой `.env` инстанса.
+
+    Прокси любой — свой пул, TeamClaude, сам api.anthropic.com: режим один на всех.
+    """
+    panel = {k: v for k, v in (_settings().get("env") or {}).items() if k in KEY_VARS}
+    env = {k: os.environ.get(k, "") for k in KEY_VARS} | panel
+    if not env["ANTHROPIC_API_KEY"]:
+        return {}
+    url = (env["ANTHROPIC_BASE_URL"] or API).rstrip("/")
+    return {"url": url, "key": env["ANTHROPIC_API_KEY"],
+            "headers": _headers(env["ANTHROPIC_CUSTOM_HEADERS"]),
+            "host": urlparse(url).hostname or url,
+            "source": "panel" if panel.get("ANTHROPIC_API_KEY") else "env"}
+
+
+def save_key(url: str, api_key: str, headers: str) -> None:
+    """Записать ключ в `settings.json`, пустой ключ — убрать. Остальные настройки целы.
+
+    Пишем все три переменные, даже пустые: иначе недостающая взялась бы из `.env`
+    контейнера, и заголовок TeamClaude уехал бы в чужой прокси.
+    """
+    data = _settings()
+    env = {k: v for k, v in (data.get("env") or {}).items() if k not in KEY_VARS}
+    if api_key:
+        env |= dict(zip(KEY_VARS, (url or API, api_key, headers), strict=True))
+    if env:
+        data["env"] = env
+    else:
+        data.pop("env", None)
+    os.makedirs(os.path.dirname(SETTINGS), exist_ok=True)
+    tmp = SETTINGS + ".tmp"
+    # 0600 с момента создания: в файле ключ, а у settings.json по умолчанию 0664.
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+    os.chmod(tmp, 0o600)   # O_CREAT не трогает права уже существующего файла
+    os.replace(tmp, SETTINGS)
+
+
+async def check_key(url: str, api_key: str, headers: str) -> str | None:
+    """Пустит ли прокси с этим ключом: `GET /v1/models`. Текст отказа или None.
+
+    Проверка до записи: с битым ключом каждый следующий прогон падал бы, а панель
+    честно рисовала бы «ключ активен» — сроков у ключа нет, судить больше не по чему.
+    """
+    try:
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=15)) as s, \
+                s.get(f"{(url or API).rstrip('/')}/v1/models?limit=1",
+                      headers={"x-api-key": api_key, **_headers(headers),
+                               "anthropic-version": "2023-06-01"}) as r:
+            if r.status == 200:
+                return None
+            return f"прокси ответил {r.status}: {(await r.text())[:200]}"
+    except Exception as e:
+        return f"прокси недоступен: {e}"
+
+
+async def _api_get(*urls: str, extra: dict | None = None, k: dict | None = None) -> list:
     """GET по адресам аккаунта токеном подписки. Несколько адресов — одной сессией.
 
     Заголовки и таймаут одни на всех: и лимиты, и каталог моделей ходят на тот же
     хост тем же OAuth-токеном, и собирать их по второму разу значило разъехаться в
     день, когда `anthropic-beta` сменится.
     """
-    headers = {"Authorization": f"Bearer {_oauth_token()}",
-               "anthropic-beta": "oauth-2025-04-20", **(extra or {})}
+    headers = ({"x-api-key": k["key"], **k["headers"]} if k else
+               {"Authorization": f"Bearer {_oauth_token()}",
+                "anthropic-beta": "oauth-2025-04-20"}) | (extra or {})
     out = []
     async with aiohttp.ClientSession(
             headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as s:
@@ -89,7 +178,13 @@ def auth() -> dict:
 
     Читаем без исключений: панель спрашивает это каждым тиком, и «нет ключа» для неё —
     обычный ответ, а не сбой.
+
+    Ключ API сроков не имеет: он есть — и вход есть. Он же перебивает подписку и у
+    самого claude, поэтому и тут проверяется первым.
     """
+    if k := key():
+        return {"ok": True, "fresh": True, "renewable": True, "kind": "key",
+                "host": k["host"], "source": k["source"]}
     try:
         oauth = _oauth()
     except (OSError, ValueError, KeyError, TypeError):
@@ -126,7 +221,12 @@ _limits: tuple[float, dict] = (float("-inf"), {})
 
 # Подписи известных лимитов. Неизвестный показываем его же ключом: спрятать лимит,
 # в который упрёшься, хуже, чем показать непонятную подпись.
-LIMIT_NAMES = {"session": "сессия", "weekly_all": "неделя", "weekly_scoped": "неделя"}
+LIMIT_NAMES = {"session": "сессия", "weekly_all": "неделя", "weekly_scoped": "неделя",
+               "5h": "сессия", "7d": "неделя"}   # последние два — окна из `/stats` пула
+# Чей вход сейчас: `None` — подписка, иначе (адрес, ключ). Сменился — кеши лимитов и
+# моделей прошлого входа не про нынешний.
+_limits_mode: tuple | None = None
+_models_mode: tuple | None = None
 
 # Каталог моделей. Кеш длинный, в отличие от минутного у лимитов: список меняется раз в
 # месяцы. Своего перечня у CLI нет — ни одна его команда моделей не печатает, поэтому
@@ -161,6 +261,30 @@ def _bars(usage: dict) -> list[dict]:
                     "resets": lim.get("resets_at") or "",
                     "severity": lim.get("severity") or "normal"})
     return out
+
+
+def _stats_bars(stats: dict) -> tuple[str, list[dict]]:
+    """Окна из `GET <прокси>/stats` в полоски панели: (имя аккаунта, полоски).
+
+    Формат — нашего пула (`services/claude_pool`): у каждого аккаунта `windows` с долей
+    и сбросом, `clients` — кто на нём сидит, `client` — чей ключ спросил. Свой аккаунт
+    по `client`; не нашёлся (клиент ещё ничего не спрашивал) — худшее окно по всем, чтобы
+    не обещать запас, которого может не быть. Прокси с другим ответом даёт пустой список.
+    """
+    accounts = [a for a in stats.get("accounts") or [] if isinstance(a, dict)]
+    me = next((a for a in accounts if stats.get("client") in (a.get("clients") or [])), None)
+    worst: dict[str, dict] = {}
+    for a in [me] if me else accounts:
+        for w, v in (a.get("windows") or {}).items():
+            try:
+                used = float(v["used"])
+            except (KeyError, TypeError, ValueError):
+                continue
+            if w not in worst or used > worst[w]["used"]:
+                worst[w] = {"used": used, "resets": v.get("resets") or ""}
+    return (me or {}).get("name") or "", [
+        {"name": LIMIT_NAMES.get(w, w), "percent": round(v["used"] * 100),
+         "resets": v["resets"], "severity": "normal"} for w, v in sorted(worst.items())]
 
 
 def _reset_passed(out: dict) -> bool:
@@ -203,27 +327,40 @@ async def limits(busy: bool = False) -> dict:
     проверки панель держала 100% ещё пять минут после сброса и говорила «время сброса
     неизвестно», потому что срок истёк.
     """
-    global _limits, _limits_wait
+    global _limits, _limits_wait, _limits_mode
+    k = key()
+    if (mode := (k["url"], k["key"]) if k else None) != _limits_mode:
+        _limits, _limits_wait, _limits_mode = (float("-inf"), {}), LIMITS_RETRY, mode
     now = time.monotonic()
     ttl = LIMITS_TTL_BUSY if busy else LIMITS_TTL_IDLE
     # Холодный старт: показываем запомненное сразу, а запрос уходит этим же вызовом.
-    # Числа с отметкой времени — панель сама решит, насколько они устарели.
-    if _limits[0] == float("-inf") and (was := _remembered(LIMITS_KEY, {})):
+    # Числа с отметкой времени — панель сама решит, насколько они устарели. Только у
+    # подписки: запомненное в базе — её, а пул отвечает сразу и без лимита на опрос.
+    if not k and _limits[0] == float("-inf") and (was := _remembered(LIMITS_KEY, {})):
         _limits = (now - ttl - LIMITS_JITTER, was)
     fresh = now - _limits[0] < (ttl + LIMITS_JITTER if _limits[1] else _limits_wait)
     if fresh and not _reset_passed(_limits[1]):
         return _limits[1]
     out: dict = {}
     try:
-        usage, profile = await _api_get(f"{OAUTH_API}/usage", f"{OAUTH_API}/profile")
-        if bars := _bars(usage):
-            out = {"email": (profile.get("account") or {}).get("email") or "",
-                   "plan": _plan(profile), "bars": bars, "at": time.time()}
-            store.put(LIMITS_KEY, json.dumps(out))
+        if k:
+            # Полоски по ключу — только если прокси их отдаёт. Нет `/stats` (TeamClaude) —
+            # обычное дело, а не сбой: панель покажет хост без полосок.
+            stats, = await _api_get(f"{k['url']}/stats", k=k)
+            name, bars = _stats_bars(stats)
+            if bars:
+                out = {"email": f"ключ API · {k['host']}", "plan": name,
+                       "bars": bars, "at": time.time()}
         else:
-            log.warning("лимиты подписки: в ответе нет процентов, %s", str(usage)[:200])
+            usage, profile = await _api_get(f"{OAUTH_API}/usage", f"{OAUTH_API}/profile")
+            if bars := _bars(usage):
+                out = {"email": (profile.get("account") or {}).get("email") or "",
+                       "plan": _plan(profile), "bars": bars, "at": time.time()}
+                store.put(LIMITS_KEY, json.dumps(out))
+            else:
+                log.warning("лимиты подписки: в ответе нет процентов, %s", str(usage)[:200])
     except Exception as e:
-        log.warning("лимиты подписки не прочитались: %s", e)
+        log.log(logging.DEBUG if k else logging.WARNING, "лимиты не прочитались: %s", e)
     if out:
         _limits_wait = LIMITS_RETRY
     else:
@@ -247,7 +384,11 @@ async def models() -> list[dict]:
     Подпись — `display_name` без слова «Claude»: в списке из одиннадцати строк оно стоит
     в каждой и не различает ничего.
     """
-    global _models
+    global _models, _models_mode
+    k = key()
+    if (mode := (k["url"], k["key"]) if k else None) != _models_mode:
+        # Каталог прошлого входа показываем, пока не придёт свой, но спрашиваем сразу.
+        _models, _models_mode = (float("-inf"), _models[1]), mode
     now = time.monotonic()
     if _models[0] == float("-inf") and (was := _remembered(MODELS_KEY, [])):
         _models = (now - MODELS_TTL, was)   # показываем запомненное, запрос уйдёт сейчас
@@ -255,7 +396,8 @@ async def models() -> list[dict]:
         return _models[1]
     out: list[dict] = []
     try:
-        body, = await _api_get(MODELS_URL, extra={"anthropic-version": "2023-06-01"})
+        url = f"{k['url']}/v1/models?limit=50" if k else MODELS_URL
+        body, = await _api_get(url, extra={"anthropic-version": "2023-06-01"}, k=k)
         out = [{"id": m["id"], "name": (m.get("display_name") or m["id"]).removeprefix("Claude ")}
                for m in body.get("data") or [] if m.get("id")]
     except Exception as e:
