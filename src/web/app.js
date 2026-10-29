@@ -1871,10 +1871,12 @@ function setPlan(lim, auth) {
   // «только что» всё это время.
   const label = lim?.at ? since(Date.now() / 1000 - lim.at) : '';
   const j = JSON.stringify(lim || null) + '|' + label + '|' + JSON.stringify(auth || null) +
-    '|' + (lim?.bars || []).map(b => until(b.resets)).join();
+    '|' + [...(lim?.bars || []), ...(lim?.accounts || []).flatMap(a => a.bars)]
+      .map(b => until(b.resets)).join() + '|' + until(lim?.exhausted_until);
   if (box.dataset.j === j) return;
   box.dataset.j = j;
   const bars = (lim?.bars || []);
+  const accs = (lim?.accounts || []);
   // Строка ключа стоит всегда, пока про ключ вообще что-то известно. Прятать её, пока всё
   // хорошо, значило показывать кнопку входа ровно в тот момент, когда она впервые
   // понадобилась, — а искать незнакомую кнопку на сломанном ключе поздно. Под цену
@@ -1888,7 +1890,7 @@ function setPlan(lim, auth) {
   const warn = !!auth && auth.ok && auth.renewable && soon > 0 && soon < 86400e3;
   // Блок остаётся на экране и без полосок: без ключа лимитов не бывает вовсе, а кнопка
   // входа нужна ровно в этот момент. Раньше он просто прятался.
-  if (!bars.length && !auth) { box.hidden = true; return; }
+  if (!bars.length && !accs.length && !auth) { box.hidden = true; return; }
   box.hidden = false;
   // Сроки живут в подсказках, а не в строках. Четыре длительности подряд читались как
   // сплошная лента цифр, а нужна из них в каждый момент одна: остальное — справка, за
@@ -1917,7 +1919,26 @@ function setPlan(lim, auth) {
     (auth ? `<div class="auth${need ? ' hot' : warn ? ' warn' : ''}"` +
             ` title="${esc(hint)}"><em>${esc(state)}</em>` +
             (need || warn ? '<button id=login>войти</button>' : '') + '</div>' : '') +
-    bars.map((b) => {
+    // Все подписки пула упёрлись: строка красным над полосками. Без неё отказ выглядел
+    // как зависание, а полоска своего аккаунта не говорила, что соседний тоже пуст.
+    (lim?.exhausted ? `<div class="auth hot" title="${esc(lim.exhausted)}">` +
+      `<em>все подписки исчерпаны</em><span>${esc((l => l && l !== GONE ? '\u21bb ' + l : '')(until(lim.exhausted_until)))}</span></div>` : '') +
+    // Пул из нескольких аккаунтов — полоски по каждому, свой отмечен. Иначе по одной
+    // своей полоске не понять, есть ли куда переключиться.
+    (accs.length ? accs.map((a) => {
+      const left = a.blocked_until ? until(a.blocked_until) : '';
+      const st = a.blocked_until ? (a.reason === 'token' ? 'токен отклонён' : 'упёрся') +
+                 (left && left !== GONE ? ` \u21bb ${left}` : '')
+               : a.current ? 'сейчас' : '';
+      return `<div class="acc${a.current ? ' cur' : ''}${a.blocked_until ? ' hot' : ''}">` +
+        `<em>${esc(a.name)}</em><span>${esc(st)}</span></div>` + a.bars.map(bar).join('');
+    }).join('') : bars.map(bar).join(''));
+  const btn = box.querySelector('#login');
+  if (btn) btn.onclick = () => doLogin(auth);
+  box.querySelector('#logout')?.addEventListener('click', () => doLogout(auth));
+}
+
+function bar(b) {
     const p = Math.max(0, Math.min(100, b.percent));
     const cls = (b.severity && b.severity !== 'normal') || p >= 90 ? ' hot' : p >= 75 ? ' warn' : '';
     const left = until(b.resets);
@@ -1931,10 +1952,6 @@ function setPlan(lim, auth) {
     return `<div class=lim title="${esc(when)}"><em>${esc(b.name)}</em>` +
       `<span>${cls && left && left !== GONE ? `\u21bb ${esc(left)} · ` : ''}${p}%</span>
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
-  }).join('');
-  const btn = box.querySelector('#login');
-  if (btn) btn.onclick = () => doLogin(auth);
-  box.querySelector('#logout')?.addEventListener('click', () => doLogout(auth));
 }
 // --- plan:end ---
 

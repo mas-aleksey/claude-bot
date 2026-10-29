@@ -225,6 +225,12 @@ aside input { background:none; color:inherit; border:1px solid #8884; border-rad
   background:none; color:inherit; font:inherit; cursor:pointer }
 #auth button:hover { background:#8882 }
 #plan .lim { margin-top:6px }
+#plan .acc { display:flex; gap:8px; margin-top:8px; font-size:11px }
+#plan .acc em { flex:1; font-style:normal; opacity:.6 }
+#plan .acc.cur em { opacity:1; font-weight:600 }
+#plan .acc span { opacity:.6 }
+#plan .acc.hot span { color:#e55; opacity:1 }
+#plan .auth span { flex:none; color:#e55 }
 #plan .lim em { font-style:normal; opacity:.75 }
 #plan .lim span { float:right; opacity:.6 }
 #plan .track { height:4px; margin-top:3px; border-radius:2px; background:#8883 }

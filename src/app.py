@@ -167,7 +167,15 @@ def _plan_lines(lim: dict) -> str:
         f"{b['name']} {b['percent']}%{_until(b['resets'])}" for b in lim.get("bars", ()))
     # По ключу API полосок может не быть вовсе (прокси без `/stats`), а хост есть всегда.
     if k := account.key():
-        return f"вход: {who or 'ключ API · ' + k['host']}\nлимиты: {bars or '—'}"
+        head = f"вход: {who or 'ключ API · ' + k['host']}"
+        if lim.get("exhausted"):
+            head += f"\n⚠️ {lim['exhausted']}{_until(lim.get('exhausted_until', ''))}"
+        if accs := lim.get("accounts"):
+            return head + "".join(
+                f"\n{a['name']}{' (сейчас)' if a['current'] else ''}: " +
+                (" · ".join(f"{b['name']} {b['percent']}%{_until(b['resets'])}"
+                            for b in a["bars"]) or "—") for a in accs)
+        return f"{head}\nлимиты: {bars or '—'}"
     return f"подписка: {who or '—'}\nлимиты: {bars or '—'}"
 
 

@@ -287,6 +287,27 @@ def _stats_bars(stats: dict) -> tuple[str, list[dict]]:
          "resets": v["resets"], "severity": "normal"} for w, v in sorted(worst.items())]
 
 
+def _stats_accounts(stats: dict) -> list[dict]:
+    """Все аккаунты пула для панели: имя, свой ли, занят ли и до скольких, полоски.
+
+    Панель показывает их все, а не только свой: иначе «у меня 100%» не отличить от «у
+    всех 100%», и переключение пула на соседа выглядело как поломка (2026-10-29: оба
+    аккаунта упёрлись в окно 5h, а видно было только своё). Чужой формат — пустой список.
+    """
+    out = []
+    for a in stats.get("accounts") or []:
+        if not isinstance(a, dict):
+            continue
+        _, bars = _stats_bars({"client": stats.get("client"), "accounts": [
+            {**a, "clients": [stats.get("client")]}]})
+        out.append({"name": str(a.get("name") or ""),
+                    "current": stats.get("client") in (a.get("clients") or []),
+                    "blocked_until": a.get("blocked_until") or "",
+                    "reason": a.get("blocked_reason") or "",
+                    "bars": bars})
+    return out
+
+
 def _reset_passed(out: dict) -> bool:
     """Есть ли полоска, чей срок сброса уже позади.
 
@@ -295,7 +316,8 @@ def _reset_passed(out: dict) -> bool:
     запасом в минуту: часы сервера и наши расходятся, и секундная разница не повод
     ходить в API на каждый вызов.
     """
-    for bar in out.get("bars") or []:
+    for bar in [*(out.get("bars") or []),
+                *(b for a in out.get("accounts") or [] for b in a["bars"])]:
         try:
             gone = datetime.fromisoformat(bar["resets"]).timestamp() < time.time() - 60
         except (KeyError, TypeError, ValueError):
@@ -348,9 +370,14 @@ async def limits(busy: bool = False) -> dict:
             # обычное дело, а не сбой: панель покажет хост без полосок.
             stats, = await _api_get(f"{k['url']}/stats", k=k)
             name, bars = _stats_bars(stats)
-            if bars:
+            accounts = _stats_accounts(stats)
+            if bars or accounts:
                 out = {"email": f"ключ API · {k['host']}", "plan": name,
-                       "bars": bars, "at": time.time()}
+                       "bars": bars, "at": time.time(),
+                       # Один аккаунт — его полоски и есть `bars`, разбивка не нужна.
+                       "accounts": accounts if len(accounts) > 1 else [],
+                       "exhausted": stats.get("exhausted_text") or "",
+                       "exhausted_until": stats.get("exhausted_until") or ""}
         else:
             usage, profile = await _api_get(f"{OAUTH_API}/usage", f"{OAUTH_API}/profile")
             if bars := _bars(usage):

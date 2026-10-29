@@ -457,3 +457,41 @@ async def test_limits_by_key_ask_the_proxy_and_forget_the_subscription(monkeypat
     assert app._plan_lines({}) == "вход: ключ API · ai-hub.example\nлимиты: —"
     assert account.auth() == {"ok": True, "fresh": True, "renewable": True, "kind": "key",
                               "host": "ai-hub.example", "source": "env"}
+
+
+def test_stats_accounts_show_every_account_and_who_is_blocked():
+    """Все аккаунты пула, свой отмечен: по одной своей полоске не понять, есть ли куда
+    переключиться (2026-10-29 оба упёрлись в 5h, а видно было только своё)."""
+    stats = {"client": "assistant", "accounts": [
+        {"name": "main", "clients": [], "blocked_until": "2026-10-29T17:20:00+00:00",
+         "blocked_reason": "limit", "windows": {"5h": {"used": 1.03, "resets": "r1"}}},
+        {"name": "reserve", "clients": ["assistant"], "blocked_until": None,
+         "windows": {"7d": {"used": 0.43, "resets": "r2"}}},
+    ]}
+    accs = account._stats_accounts(stats)
+    assert [(a["name"], a["current"], a["reason"]) for a in accs] == [
+        ("main", False, "limit"), ("reserve", True, "")]
+    assert accs[0]["bars"][0]["percent"] == 103 and accs[1]["bars"][0]["name"] == "неделя"
+    assert account._stats_accounts({"type": "error"}) == []
+
+
+async def test_limits_by_key_carry_the_exhausted_line(monkeypatch):
+    """Пул сказал «все исчерпаны» — фраза и срок доходят до панели и /status как есть."""
+    monkeypatch.setattr(account, "key", lambda: {"url": "http://pool", "key": "k",
+                                                 "headers": {}, "host": "pool"})
+    stats = {"client": "a", "exhausted_until": "2026-10-29T17:20:00+00:00",
+             "exhausted_text": "Все подписки пула исчерпаны: x — лимит до 29.10 17:20",
+             "accounts": [{"name": "x", "clients": ["a"], "blocked_until": "t",
+                           "windows": {"5h": {"used": 1.0, "resets": "r"}}},
+                          {"name": "y", "clients": [], "blocked_until": "t", "windows": {}}]}
+
+    async def get(*urls, **kw):
+        return [stats]
+    monkeypatch.setattr(account, "_api_get", get)
+    monkeypatch.setattr(account, "_limits", (float("-inf"), {}))
+    monkeypatch.setattr(account, "_limits_mode", None)
+    out = await account.limits()
+    assert out["exhausted"].startswith("Все подписки") and out["exhausted_until"]
+    assert [a["name"] for a in out["accounts"]] == ["x", "y"]
+    assert "⚠️ Все подписки" in app._plan_lines(out) and "x (сейчас): сессия 100%" in \
+        app._plan_lines(out)
