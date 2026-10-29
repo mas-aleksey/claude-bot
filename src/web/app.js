@@ -1777,62 +1777,69 @@ const since = (sec) =>
     : sec < 86400 ? `${Math.floor(sec / 3600)} ч назад`
     : `${Math.floor(sec / 86400)} дн назад`;
 
-// Вход по подписке из панели. Флоу тот же, что у `/login` в Telegram: сервер поднимает
-// `claude auth login` в pty, отдаёт ссылку, а код из браузера возвращается второй
-// ручкой. Ключ один на контейнер, поэтому вход из панели — это вход и для бота.
-async function doLogin() {
-  const dlg = $('auth'), say = $('authsay'), code = $('authcode');
+// Окно входа: две вкладки. Подписка — флоу как у `/login` в Telegram: сервер поднимает
+// `claude auth login` в pty, отдаёт ссылку, а код из браузера возвращается второй ручкой.
+// Ключ API — любой прокси с API Anthropic; сервер сперва проверяет ключ запросом к
+// прокси и только потом пишет его, поэтому отказ показываем в самом окне. Вход один на
+// контейнер, поэтому вход из панели — это вход и для бота.
+let subStarted = false;
+async function startSub() {
+  if (subStarted) return;
+  subStarted = true;
+  const say = $('authsay');
   say.textContent = 'поднимаю вход…';
-  code.value = '';
   $('authurl').removeAttribute('href');
-  dlg.showModal();
   let started;
   try { started = await post('api/login', {}); }
-  catch (e) { say.textContent = 'не начать вход: ' + e; return; }
+  catch (e) { subStarted = false; say.textContent = 'не начать вход: ' + e; return; }
   // Ссылка кликабельна и заодно уезжает в буфер: на телефоне вход часто открывают в
   // другом браузере, а не в той же вкладке.
   $('authurl').href = started.url;
   await copy(started.url);
   say.textContent = 'ссылка скопирована';
-  code.focus();
+  $('authcode').focus();
 }
+// Вход по подписке поднимаем, только когда вкладку показали: на вкладке ключа он никому
+// не нужен, а каждый старт отменяет идущий вход.
+function showTab(key) {
+  $('tabsub').classList.toggle('on', !key);
+  $('tabkey').classList.toggle('on', key);
+  $('pansub').hidden = key;
+  $('pankey').hidden = !key;
+  if (key) $('keyurl').focus(); else startSub();
+}
+// Открывается на том входе, что сейчас активен: по ключу — вкладка ключа.
+function doLogin(auth) {
+  subStarted = false;
+  $('authcode').value = '';
+  for (const id of ['keyurl', 'keyval', 'keyhdr']) $(id).value = '';
+  $('keysay').textContent = '';
+  $('auth').showModal();
+  showTab(auth?.kind === 'key');
+}
+$('tabsub').onclick = () => showTab(false);
+$('tabkey').onclick = () => showTab(true);
 
 // Ключ один на контейнер: выход из панели — это выход и для Telegram-бота.
 // По ключу API выход — это снять ключ: под ним вернётся подписка, если вход по ней был.
+// Вошли ли мы после этого, решает сервер; не вошли — сразу открываем окно входа.
 async function doLogout(auth) {
   if (auth?.kind === 'key') {
     if (auth.source === 'env') return alert('Ключ задан в .env инстанса — из панели его не снять.');
     if (!confirm('Отключить ключ API? Вернётся вход по подписке, если он был.')) return;
     const r = await ask('api/key', { key: '' }, 'не снять ключ');
-    if (r?.env) alert('Ключ из панели снят, но в .env инстанса задан свой — работает он.');
-    return;
+    if (!r) return;
+    if (r.env) return alert('Ключ из панели снят, но в .env инстанса задан свой — работает он.');
+  } else {
+    if (!confirm('Выйти из аккаунта claude? Идущие прогоны оборвутся, бот тоже останется без входа.')) return;
+    if (!await ask('api/logout', {}, 'не выйти')) return;
   }
-  if (!confirm('Выйти из аккаунта claude? Идущие прогоны оборвутся, бот тоже останется без входа.')) return;
-  await ask('api/logout', {}, 'не выйти');
+  const st = await fetch('api/status').then(r => r.json()).catch(() => null);
+  if (st && (!st.auth?.ok || !st.auth?.renewable)) doLogin(st.auth);
 }
-
-// Вход по ключу API — любой прокси с API Anthropic. Сервер сперва проверяет ключ
-// запросом к прокси и только потом пишет его, поэтому отказ показываем в самом окне.
-function doKey() {
-  for (const id of ['keyurl', 'keyval', 'keyhdr']) $(id).value = '';
-  $('keysay').textContent = '';
-  $('keydlg').showModal();
-  $('keyurl').focus();
-}
-$('keyno').onclick = () => $('keydlg').close();
-$('keyok').onclick = async () => {
-  const key = $('keyval').value.trim();
-  if (!key) return $('keyval').focus();
-  $('keysay').textContent = 'проверяю…';
-  const r = await postJSON('api/key', { url: $('keyurl').value.trim(), key,
-                                        headers: $('keyhdr').value.trim() });
-  const body = await r.json().catch(() => ({}));
-  if (!r.ok) { $('keysay').textContent = 'не вышло: ' + (body.error || r.status); return; }
-  $('keysay').textContent = 'подключено';
-  setTimeout(() => $('keydlg').close(), 900);
-};
 
 $('authno').onclick = () => $('auth').close();
+$('keyno').onclick = () => $('auth').close();
 $('authok').onclick = async () => {
   const code = $('authcode').value.trim();
   if (!code) return $('authcode').focus();
@@ -1844,6 +1851,17 @@ $('authok').onclick = async () => {
   if (r.ok) setTimeout(() => $('auth').close(), 900);
 };
 $('authcode').onkeydown = (e) => { if (e.key === 'Enter') $('authok').click(); };
+$('keyok').onclick = async () => {
+  const key = $('keyval').value.trim();
+  if (!key) return $('keyval').focus();
+  $('keysay').textContent = 'проверяю…';
+  const r = await postJSON('api/key', { url: $('keyurl').value.trim(), key,
+                                        headers: $('keyhdr').value.trim() });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) { $('keysay').textContent = 'не вышло: ' + (body.error || r.status); return; }
+  $('keysay').textContent = 'подключено';
+  setTimeout(() => $('auth').close(), 900);
+};
 
 // --- plan:begin ---
 function setPlan(lim, auth) {
@@ -1894,7 +1912,6 @@ function setPlan(lim, auth) {
   box.innerHTML =
     `<div class=top><div class=who title="${esc(label ? 'обновлено ' + label : who)}">` +
     `${esc(who)}</div>` +
-    (auth ? '<button id=keybtn title="вход по ключу API"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><circle cx=7.5 cy=15.5 r=4.5 /><path d="M10.7 12.3 21 2M16 7l3 3M18 5l2 2"/></svg></button>' : '') +
     (auth ? '<button id=logout title="выйти из аккаунта"><svg viewBox="0 0 24 24" width=14 height=14 fill=none stroke=currentColor stroke-width=2 stroke-linecap=round stroke-linejoin=round><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/></svg></button>' : '') +
     '</div>' +
     (auth ? `<div class="auth${need ? ' hot' : warn ? ' warn' : ''}"` +
@@ -1916,9 +1933,8 @@ function setPlan(lim, auth) {
       <div class=track><i class="fill${cls}" style="width:${p}%"></i></div></div>`;
   }).join('');
   const btn = box.querySelector('#login');
-  if (btn) btn.onclick = doLogin;
+  if (btn) btn.onclick = () => doLogin(auth);
   box.querySelector('#logout')?.addEventListener('click', () => doLogout(auth));
-  box.querySelector('#keybtn')?.addEventListener('click', doKey);
 }
 // --- plan:end ---
 
