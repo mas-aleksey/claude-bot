@@ -1,7 +1,7 @@
 {
   "outputStyle": "conclusion-first",
   "model": "claude-opus-5",
-  "autoCompactWindow": 400000,
+  "autoCompactWindow": 200000,
   "hooks": {
     "SessionStart": [
       {
