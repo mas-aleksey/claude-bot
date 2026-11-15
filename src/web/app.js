@@ -1573,32 +1573,28 @@ function wireCopy(box) {
     pre.replaceWith(box);
     box.append(pre, btn);
   }
-  // Ответ целиком — чтобы переслать в Telegram или скопировать. Где есть системное меню
-  // «поделиться» (телефон), открываем его: в нём и Telegram, и «Скопировать». Иначе в
-  // буфер. Текст — отрисованный, а не markdown: звёздочки Telegram при вставке не понимает.
-  for (const msg of box.querySelectorAll('.msg.assistant:not([data-share])')) {
-    msg.dataset.share = '1';
-    const btn = document.createElement('button');
-    btn.className = 'share';
-    btn.type = 'button';
-    const label = navigator.share ? 'поделиться' : 'копировать';
-    btn.textContent = label;
-    btn.onclick = async () => {
-      // Берём на клике: к этому моменту у кода уже стоят свои кнопки, и их подписи
-      // попали бы в текст. Спрятанное `innerText` пропускает.
-      const extra = [...msg.querySelectorAll('.body button')];
-      extra.forEach(b => { b.hidden = true; });
-      const text = msg.querySelector('.body').innerText.trim();
-      extra.forEach(b => { b.hidden = false; });
-      if (navigator.share) {
-        try { await navigator.share({ text }); } catch (e) { /* закрыли меню */ }
-        return;
-      }
-      btn.textContent = await copy(text) ? 'скопировано' : 'не вышло';
-      setTimeout(() => { btn.textContent = label; }, 1200);
-    };
-    msg.append(btn);
+}
+
+// Последний ответ прогона — чтобы переслать в Telegram или скопировать. Кнопка стоит в
+// строке итога, а ответ — ближайший над ней. Где есть системное меню «поделиться»
+// (телефон), открываем его: в нём и Telegram, и «Скопировать». Иначе в буфер. Текст —
+// отрисованный, а не markdown: звёздочки Telegram при вставке не понимает.
+async function shareAbove(row, btn) {
+  let msg = row.previousElementSibling;
+  while (msg && !msg.matches('.msg.assistant')) msg = msg.previousElementSibling;
+  if (!msg) return;
+  // Подписи кнопок у кода попали бы в текст, а спрятанное `innerText` пропускает.
+  const extra = [...msg.querySelectorAll('.body button')];
+  extra.forEach(b => { b.hidden = true; });
+  const text = msg.querySelector('.body').innerText.trim();
+  extra.forEach(b => { b.hidden = false; });
+  if (navigator.share) {
+    try { await navigator.share({ text }); } catch (e) { /* закрыли меню */ }
+    return;
   }
+  const was = btn.textContent;
+  btn.textContent = await copy(text) ? '✓' : '✗';
+  setTimeout(() => { btn.textContent = was; }, 1200);
 }
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
@@ -2495,7 +2491,11 @@ function watch(p) {
     const stat = JSON.parse(e.data);
     showOnce(shownStats, p, stat, stat?.at, () => {
       const at = new Date(stat.at * 1000).toTimeString().slice(0, 5);
-      log(p, `<div class="msg note">✓ ${fmt(stat.secs)} · ${at}</div>`);
+      const tip = navigator.share ? 'поделиться ответом' : 'скопировать ответ';
+      const row = log(p, `<div class="msg note">✓ ${fmt(stat.secs)} · ${at} ` +
+                         `<button class=share type=button title="${tip}">⤴</button></div>`);
+      const btn = row?.querySelector('.share');
+      if (btn) btn.onclick = () => shareAbove(row, btn);
     });
   });
   // Переподключение после обрыва браузер делает сам. Но у вкладки с истёкшей сессией
