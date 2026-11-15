@@ -74,30 +74,6 @@ def test_long_tool_argument_comes_with_its_full_text(tmp_path):
     assert len(got[1]["full"]) == min(len(long), transcript.FULL_ARG)
 
 
-def test_run_summary_keeps_only_what_is_known():
-    """Итог прогона собирается из `result`: модель, время, цена, токены. Пустые поля
-    пропускаются — у местной команды цены нет, и `$0.000` сказал бы неправду."""
-    import time as _time
-    now = _time.strftime("%H:%M")
-
-    full = transcript.stat_line({
-        "duration_ms": 72_000,
-        "total_cost_usd": 0.0837,
-        "usage": {"input_tokens": 1000, "cache_creation_input_tokens": 300,
-                  "cache_read_input_tokens": 11_000, "output_tokens": 1400},
-    }, "opus")
-    # Цена снята: по подписке она не расход, а пересчёт по прайсу API. Вместо неё — час
-    # окончания, потому что таймер к возвращению в панель уже погашен.
-    assert full == f"opus · 1:12 · ↓12.3k · ↑1.4k · {now}"
-
-    # Местная команда: ни токенов, ни модели, ни длительности — строки нет вовсе, и часа
-    # в ней тоже нет: одинокое время читалось бы как время ответа.
-    assert transcript.stat_line({"total_cost_usd": 0, "usage": {"output_tokens": 0}}, None) == ""
-
-    # Короткий прогон: секунды и вывод остаются, лишних разделителей нет.
-    assert transcript.stat_line({"duration_ms": 4200, "usage": {"output_tokens": 950}},
-                            "sonnet") == f"sonnet · 4с · ↑950 · {now}"
-
 
 def test_big_session_arrives_whole(tmp_path):
     """Панель открывает сессию с начала: обрезка по байтам была снята, потому что

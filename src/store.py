@@ -1,5 +1,6 @@
 """Состояние бота: SQLite в /data/bot.db. Две таблицы, схема через IF NOT EXISTS."""
 
+import json
 import os
 import sqlite3
 import threading
@@ -73,6 +74,23 @@ def set_name(sid: str, name: str | None) -> None:
     put(_name_key(sid), name or None)
 
 
+# Итог последнего прогона сессии: когда кончился и сколько шёл. Один ключ на сессию,
+# новый прогон его перезаписывает — панели нужна только строка под последним ответом,
+# и после F5 и рестарта бота она должна стоять на месте.
+def _stat_key(sid: str) -> str:
+    return f"stat:{sid}"
+
+
+def stat_of(sid: str) -> dict | None:
+    raw = get(_stat_key(sid))
+    return json.loads(raw) if raw else None
+
+
+def set_stat(sid: str, secs: float | None) -> None:
+    """Запомнить длительность прогона, который только что кончился. None стирает итог."""
+    put(_stat_key(sid), json.dumps({"at": time.time(), "secs": secs}) if secs else None)
+
+
 # Колонка `project` хранит составной ключ "<скоуп>:<путь>" — так топик форума помнит
 # свою сессию в каждом проекте, а схема остаётся прежней и миграция не нужна.
 def _key(scope: str, project: str) -> str:
@@ -108,8 +126,8 @@ def forget_sessions(ids: list[str]) -> int:
     cur = conn().execute(f"DELETE FROM sessions WHERE session_id IN ({marks})", tuple(ids))
     # Имя лежит в `state` и по транскрипту уже не находится: не снять его здесь — значит
     # копить ключи мёртвых сессий вечно, потому что искать их потом будет не по чему.
-    conn().execute(f"DELETE FROM state WHERE key IN ({marks})",
-                   tuple(_name_key(sid) for sid in ids))
+    conn().execute(f"DELETE FROM state WHERE key IN ({marks}, {marks})",
+                   tuple(k for sid in ids for k in (_name_key(sid), _stat_key(sid))))
     return cur.rowcount
 
 

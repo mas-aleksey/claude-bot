@@ -73,11 +73,6 @@ _errors: dict[str, str] = {}
 # всегда: он рендерит поток событий, а не файл.
 _local: dict[str, str] = {}
 
-# Итог последнего прогона по скоупу: `{"at": время, "text": строка}`. Живёт до начала
-# следующего запуска в той же панели, как и `_errors`. Время нужно панели, чтобы отличить
-# новый итог от уже показанного: два прогона подряд могут дать посимвольно равный текст.
-_stats: dict[str, dict] = {}
-
 
 def title() -> str:
     """Заголовок вкладки: имя инстанса, а без него — `claude`.
@@ -225,8 +220,6 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     _local.pop(scope, None)
-    _stats.pop(scope, None)
-    seen_model = None
     try:
         async with runner.slot(scope, prompt):
             if adopt:
@@ -241,17 +234,11 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                 # Внятная причина приходит в `result`, а не в стоп-коде: лимит подписки,
                 # отказ модели, недоступный проект — всё это claude пишет в stdout и
                 # выходит с rc=1 при пустом stderr. Поэтому текст result важнее кода.
-                # Модель берём из ответа, а не из того, что просили: панель с пустым
-                # выбором едет на общей модели бота, а сессия могла быть заведена на другой.
-                if ev.get("type") == "assistant":
-                    seen_model = (ev.get("message") or {}).get("model") or seen_model
                 if ev.get("type") == "result":
                     if ev.get("is_error"):
                         err = (ev.get("result") or "").strip()[:2000]
                     elif _answered_locally(ev) and (said := (ev.get("result") or "").strip()):
                         _local[scope] = said
-                    elif line := transcript.stat_line(ev, seen_model):
-                        _stats[scope] = {"at": time.time(), "text": line}
                 if ev.get("type") == "_bot" and ev.get("kind") == "error":
                     rc = ev.get("rc")
                     stderr = (ev.get("text") or "").strip()
@@ -381,6 +368,8 @@ async def api_stream(req: web.Request) -> web.StreamResponse:
     })
     await res.prepare(req)
     idle = 0
+    sid = req.query.get("id", "")
+    sent_stat = None
     try:
         while True:
             found: list[dict] = []
@@ -407,6 +396,12 @@ async def api_stream(req: web.Request) -> web.StreamResponse:
             if found:
                 idle = 0
                 continue  # кусок мог упереться в CHUNK — дочитываем без паузы
+            # Итог прогона — только когда транскрипт дочитан: строка встаёт под последним
+            # ответом, а не посреди истории. Чтение по ключу из базы на каждом тике стоит
+            # микросекунды; так итог доезжает и сразу после прогона, и после F5.
+            if (stat := store.stat_of(sid)) != sent_stat:
+                sent_stat = stat
+                await res.write(f"event: stat\ndata: {json.dumps(stat)}\n\n".encode())
             # Комментарий раз в ~20 секунд: молчащее соединение рвут и прокси, и
             # мобильная сеть, а браузер комментарий молча выбрасывает.
             if (idle := idle + 1) % PING_EVERY == 0:
@@ -477,7 +472,7 @@ async def api_status(_: web.Request) -> web.Response:
     запрос в API на минуту на все открытые вкладки.
     """
     return web.json_response({"runs": runner.active(), "errors": _errors,
-                              "local": _local, "stats": _stats,
+                              "local": _local,
                               "queued": runner.waiting(),
                               "suggest": runner.suggestions(),
                               "auth": account.auth(),

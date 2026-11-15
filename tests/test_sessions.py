@@ -83,6 +83,19 @@ def test_forget_sessions_drops_name():
     assert store.name_of("sid-1") is None
 
 
+def test_stat_is_last_run_only_and_forgotten_with_session():
+    # Панели нужен итог одного, последнего прогона: новый перезаписывает старый.
+    store.set_stat("sid-1", 72.0)
+    store.set_stat("sid-1", 4.2)
+    assert store.stat_of("sid-1")["secs"] == 4.2
+    store.set_stat("sid-1", None)  # новый промпт стирает итог прошлого
+    assert store.stat_of("sid-1") is None
+    store.save_session("0", "/projects/p", "sid-1")
+    store.set_stat("sid-1", 10.0)
+    store.forget_sessions(["sid-1"])
+    assert store.stat_of("sid-1") is None
+
+
 def msg(role, *blocks):
     return {"type": role, "message": {"content": list(blocks)}}
 

@@ -2457,9 +2457,21 @@ const streams = new Map();
 function watch(p) {
   unwatch(p);
   if (!p.session || dead) return;
+  // Поток с начала перерисует лог целиком — итог под ним надо нарисовать заново. При
+  // переподключении с места строка уже стоит, и второй раз её рисовать не надо.
+  if (!p.next) shownStats.delete(p.pane);
   const q = new URLSearchParams({ project: p.project, id: p.session, from: p.next });
   const es = new EventSource('api/stream?' + q);
   es.onmessage = (e) => absorb(p, JSON.parse(e.data));
+  // Итог последнего прогона сессии: сколько шёл и во сколько кончился. Сервер держит его
+  // в базе и шлёт, когда транскрипт дочитан, — поэтому после F5 строка встаёт на место.
+  es.addEventListener('stat', (e) => {
+    const stat = JSON.parse(e.data);
+    showOnce(shownStats, p, stat, stat?.at, () => {
+      const at = new Date(stat.at * 1000).toTimeString().slice(0, 5);
+      log(p, `<div class="msg note">✓ ${fmt(stat.secs)} · ${at}</div>`);
+    });
+  });
   // Переподключение после обрыва браузер делает сам. Но у вкладки с истёкшей сессией
   // SSO обрыв вечный: каждая попытка уходит редиректом на вход. Останавливает её тот же
   // счётчик отказов, что и опрос статуса — он ставит `dead`, а мы закрываем поток.
@@ -2670,18 +2682,17 @@ function tickPane(p, st) {
     wireCopy(document.querySelector('#pane-' + p.pane + ' .log'));
   });
 
-  // Итог прогона: модель, время, цена, токены. Панель до сих пор просто гасила таймер,
-  // хотя всё это лежит в том же `result`, из которого берётся текст ошибки.
-  const stat = (st.stats || {})[scope];
-  showOnce(shownStats, p, stat, stat?.at,
-    () => log(p, `<div class="msg note">✓ ${esc(stat.text)}</div>`));
   return busy;
 }
 
 async function tick() {
   if (dead) return;
-  let st = { runs: [], errors: {} };
-  try { st = await get('api/status'); } catch (e) { /* переживём до следующего тика */ }
+  // Неудачный опрос пропускаем целиком, а не рисуем по пустому статусу. Пустой статус
+  // значил «итога нет»: `showOnce` забывал показанное, и следующий удачный тик рисовал
+  // строку итога заново. Телефон со свёрнутым Safari копил так по строке на каждый
+  // провал. Заодно не гасли панели, которые на деле работают.
+  let st;
+  try { st = await get('api/status'); } catch (e) { return; }
   // Модель бота сменили командой `/model` — панели без своего выбора идут за ней.
   if (st.model && st.model.id !== botModel?.id) {
     botModel = st.model;

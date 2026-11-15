@@ -367,6 +367,7 @@ async def run(
     # стирать нечего: её id ещё никто не знает.
     if session_id:
         suggest(session_id, None)
+        store.set_stat(session_id, None)
     proc.stdin.write(json.dumps(
         {"type": "user", "message": {"role": "user", "content": prompt}}).encode() + b"\n")
     await proc.stdin.drain()
@@ -405,6 +406,11 @@ async def run(
                 for name, info in (ev.get("modelUsage") or {}).items():
                     if window := info.get("contextWindow"):
                         store.put(f"ctxwin:{name}", str(window))
+                # Итог под ответом в панели. Местная команда (`/cost`) до модели не
+                # доходит и токенов не тратит — у неё итога нет.
+                out = (ev.get("usage") or {}).get("output_tokens")
+                if session_id and out and not ev.get("is_error"):
+                    store.set_stat(session_id, (ev.get("duration_ms") or 0) / 1000)
             # Предсказанный следующий промпт. В базу, а не в память процесса: панель
             # читает его из `/api/status`, и так он переживает и F5, и рестарт бота —
             # а тот случается по десять раз на дню.
