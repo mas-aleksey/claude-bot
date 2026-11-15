@@ -2336,11 +2336,13 @@ function renderItem(it) {
   // Промпт человека остаётся текстом: он набирал его руками, и случайная звёздочка не
   // должна оказаться курсивом. Разметку рисуем только у ответа.
   if (it.role === 'user') {
-    return `<div class="msg user"><div class=txt>${linkify(esc(it.text))}</div></div>`;
+    const ts = it.ts ? ` data-ts="${it.ts}"` : '';
+    return `<div class="msg user"${ts}><div class=txt>${linkify(esc(it.text))}</div></div>`;
   }
   // Подписей «ты» и «claude» нет с 2026-10-16, полосы слева у ответа тоже: промпт
   // обведён контуром в цвет окна, всё вне контура — ответ.
-  return `<div class="msg assistant">` +
+  const ts = it.ts ? ` data-ts="${it.ts}"` : '';
+  return `<div class="msg assistant"${ts}>` +
          `<div class=body>${md(it.text)}</div></div>`;
 }
 
@@ -2473,6 +2475,37 @@ function pour(box, items) {
 }
 // --- tools:end ---
 
+// Строка итога под каждым прошлым ходом: сколько шёл и во сколько кончился, и значок
+// «поделиться». У последнего хода её рисует событие `stat` потока, а у прошлых — новый
+// промпт: он и есть знак, что ход кончился. Время — из меток транскрипта, хранить
+// ничего не нужно. Ход с итогом от `stat` не трогаем, второй строки ему не надо.
+function markTurns(box) {
+  for (const u of box.querySelectorAll('.msg.user[data-ts]:not([data-turn])')) {
+    u.dataset.turn = '1';
+    let el = u.previousElementSibling, last = null;
+    while (el && !el.matches('.msg.user, .stat')) {
+      if (!last && el.matches('.msg.assistant[data-ts]')) last = el;
+      el = el.previousElementSibling;
+    }
+    if (!last || el?.matches('.stat')) continue;
+    const start = Number(el?.dataset.ts);
+    const end = Number(last.dataset.ts);
+    u.insertAdjacentHTML('beforebegin', turnRow(start ? (end - start) / 1000 : null, end));
+  }
+}
+
+function turnRow(secs, endMs) {
+  const at = new Date(endMs).toTimeString().slice(0, 5);
+  const tip = navigator.share ? 'поделиться ответом' : 'скопировать ответ';
+  return `<div class="msg note stat">✓ ${secs != null ? fmt(secs) + ' · ' : ''}${at} ` +
+         `<button class=share type=button title="${tip}">${SHARE_ICON}</button></div>`;
+}
+// Одним обработчиком на всю страницу: строки рисуются строкой HTML в трёх местах.
+document.addEventListener('click', (e) => {
+  const btn = e.target.closest('.stat .share');
+  if (btn) shareAbove(btn.closest('.stat'), btn);
+});
+
 // Поток на панель: один EventSource — один транскрипт, и сервер помнит по нему свой
 // оффсет сам. Открывается вместе с панелью, закрывается вместе с ней; переоткрывать
 // приходится только когда панель меняет сессию, потому что адрес потока задан при
@@ -2493,12 +2526,7 @@ function watch(p) {
   es.addEventListener('stat', (e) => {
     const stat = JSON.parse(e.data);
     showOnce(shownStats, p, stat, stat?.at, () => {
-      const at = new Date(stat.at * 1000).toTimeString().slice(0, 5);
-      const tip = navigator.share ? 'поделиться ответом' : 'скопировать ответ';
-      const row = log(p, `<div class="msg note">✓ ${fmt(stat.secs)} · ${at} ` +
-                         `<button class=share type=button title="${tip}">${SHARE_ICON}</button></div>`);
-      const btn = row?.querySelector('.share');
-      if (btn) btn.onclick = () => shareAbove(row, btn);
+      log(p, turnRow(stat.secs, stat.at * 1000));
     });
   });
   // Переподключение после обрыва браузер делает сам. Но у вкладки с истёкшей сессией
@@ -2538,6 +2566,7 @@ function absorb(p, data) {
   for (const e of dropEcho(data.items, queue)) e.nodes.forEach(n => n?.remove());
   if (!queue.length) echoes.delete(p.pane);
   pour(box, data.items);
+  markTurns(box);
   trim(box);
   wireCopy(box);
   markMore(box);
