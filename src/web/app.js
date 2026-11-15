@@ -2341,7 +2341,8 @@ function renderItem(it) {
   }
   // Подписей «ты» и «claude» нет с 2026-10-16, полосы слева у ответа тоже: промпт
   // обведён контуром в цвет окна, всё вне контура — ответ.
-  return `<div class="msg assistant">` +
+  const ts = it.ts ? ` data-ts="${it.ts}"` : '';
+  return `<div class="msg assistant"${ts}>` +
          `<div class=body>${md(it.text)}</div></div>`;
 }
 
@@ -2474,19 +2475,24 @@ function pour(box, items) {
 }
 // --- tools:end ---
 
-// Значок «поделиться» под каждым прошлым ходом. У последнего хода его вместе со временем
-// рисует событие `stat` потока, у прошлых — новый промпт: он и есть знак, что ход
-// кончился. Время прошлым не пишем: оно нужно, только чтобы понять, когда готов ответ,
-// которого ждёшь. Ход, где строка от `stat` уже стоит, не трогаем.
+// Строка итога под каждым прошлым ходом: сколько шёл, во сколько кончился, и значок
+// «поделиться». У последнего хода её рисует событие `stat` потока, у прошлых — новый
+// промпт: он и есть знак, что ход кончился. Время — из меток транскрипта, хранить
+// ничего не нужно. Ход, где строка от `stat` уже стоит, не трогаем.
 function markTurns(box) {
   for (const u of box.querySelectorAll('.msg.user[data-ts]:not([data-turn])')) {
     u.dataset.turn = '1';
-    let el = u.previousElementSibling, answered = false;
+    let el = u.previousElementSibling, last = null, answered = false;
     while (el && !el.matches('.msg.user, .stat')) {
       answered ||= el.matches('.msg.assistant');
+      if (!last && el.matches('.msg.assistant[data-ts]')) last = el;
       el = el.previousElementSibling;
     }
-    if (answered && !el?.matches('.stat')) u.insertAdjacentHTML('beforebegin', turnRow());
+    if (!answered || el?.matches('.stat')) continue;
+    // Начало хода срезал `LOG_MAX` — тогда остаётся только значок.
+    const start = Number(el?.dataset.ts), end = Number(last?.dataset.ts);
+    u.insertAdjacentHTML('beforebegin',
+      start && end ? turnRow((end - start) / 1000, end) : turnRow());
   }
 }
 
