@@ -583,7 +583,7 @@ section.zoomed header .max::before { content:'\2921' }
   background:Canvas; border:1px solid #8884; border-radius:3px }
 .codebox:hover .copy, .codebox .copy:focus { opacity:.9 }
 /* Значок в строке итога, виден всегда: наведения на телефоне нет, а там он и нужен. */
-.msg .share { font:inherit; padding:0 4px; margin-left:4px; cursor:pointer; color:inherit;
+.msg .share { font:inherit; padding:0 4px; vertical-align:-1px; margin-left:4px; cursor:pointer; color:inherit;
   background:none; border:none; opacity:.7 }
 .msg .share:hover { opacity:1 }
 .body code { font-family:ui-monospace,monospace; font-size:.92em }

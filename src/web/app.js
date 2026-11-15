@@ -1592,10 +1592,13 @@ async function shareAbove(row, btn) {
     try { await navigator.share({ text }); } catch (e) { /* закрыли меню */ }
     return;
   }
-  const was = btn.textContent;
   btn.textContent = await copy(text) ? '✓' : '✗';
-  setTimeout(() => { btn.textContent = was; }, 1200);
+  setTimeout(() => { btn.innerHTML = SHARE_ICON; }, 1200);
 }
+// Значок как в iOS: открытый сверху квадрат и стрелка вверх. Глифа такого в шрифтах нет.
+const SHARE_ICON = '<svg width="13" height="15" viewBox="0 0 12 14" fill="none" ' +
+  'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+  '<path d="M4 5H1.5v7.5h9V5H8M6 9V1M3.5 3.5 6 1l2.5 2.5"/></svg>';
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
 // поле ввода. Отдельной строкой, чтобы промпт остался читаемым.
@@ -2493,7 +2496,7 @@ function watch(p) {
       const at = new Date(stat.at * 1000).toTimeString().slice(0, 5);
       const tip = navigator.share ? 'поделиться ответом' : 'скопировать ответ';
       const row = log(p, `<div class="msg note">✓ ${fmt(stat.secs)} · ${at} ` +
-                         `<button class=share type=button title="${tip}">⤴</button></div>`);
+                         `<button class=share type=button title="${tip}">${SHARE_ICON}</button></div>`);
       const btn = row?.querySelector('.share');
       if (btn) btn.onclick = () => shareAbove(row, btn);
     });
