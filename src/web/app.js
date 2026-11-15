@@ -1597,7 +1597,7 @@ async function shareAbove(row, btn) {
 }
 // Значок как в iOS: открытый сверху квадрат и стрелка вверх. Глифа такого в шрифтах нет.
 const SHARE_ICON = '<svg width="13" height="15" viewBox="0 0 12 14" fill="none" ' +
-  'stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round">' +
+  'stroke="currentColor" stroke-width="1.1" stroke-linecap="round" stroke-linejoin="round">' +
   '<path d="M4 5H1.5v7.5h9V5H8M6 9V1M3.5 3.5 6 1l2.5 2.5"/></svg>';
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
@@ -2341,8 +2341,7 @@ function renderItem(it) {
   }
   // Подписей «ты» и «claude» нет с 2026-10-16, полосы слева у ответа тоже: промпт
   // обведён контуром в цвет окна, всё вне контура — ответ.
-  const ts = it.ts ? ` data-ts="${it.ts}"` : '';
-  return `<div class="msg assistant"${ts}>` +
+  return `<div class="msg assistant">` +
          `<div class=body>${md(it.text)}</div></div>`;
 }
 
@@ -2475,29 +2474,27 @@ function pour(box, items) {
 }
 // --- tools:end ---
 
-// Строка итога под каждым прошлым ходом: сколько шёл и во сколько кончился, и значок
-// «поделиться». У последнего хода её рисует событие `stat` потока, а у прошлых — новый
-// промпт: он и есть знак, что ход кончился. Время — из меток транскрипта, хранить
-// ничего не нужно. Ход с итогом от `stat` не трогаем, второй строки ему не надо.
+// Значок «поделиться» под каждым прошлым ходом. У последнего хода его вместе со временем
+// рисует событие `stat` потока, у прошлых — новый промпт: он и есть знак, что ход
+// кончился. Время прошлым не пишем: оно нужно, только чтобы понять, когда готов ответ,
+// которого ждёшь. Ход, где строка от `stat` уже стоит, не трогаем.
 function markTurns(box) {
   for (const u of box.querySelectorAll('.msg.user[data-ts]:not([data-turn])')) {
     u.dataset.turn = '1';
-    let el = u.previousElementSibling, last = null;
+    let el = u.previousElementSibling, answered = false;
     while (el && !el.matches('.msg.user, .stat')) {
-      if (!last && el.matches('.msg.assistant[data-ts]')) last = el;
+      answered ||= el.matches('.msg.assistant');
       el = el.previousElementSibling;
     }
-    if (!last || el?.matches('.stat')) continue;
-    const start = Number(el?.dataset.ts);
-    const end = Number(last.dataset.ts);
-    u.insertAdjacentHTML('beforebegin', turnRow(start ? (end - start) / 1000 : null, end));
+    if (answered && !el?.matches('.stat')) u.insertAdjacentHTML('beforebegin', turnRow());
   }
 }
 
+// Без аргументов — строка из одного значка, для прошлых ходов.
 function turnRow(secs, endMs) {
-  const at = new Date(endMs).toTimeString().slice(0, 5);
   const tip = navigator.share ? 'поделиться ответом' : 'скопировать ответ';
-  return `<div class="msg note stat">✓ ${secs != null ? fmt(secs) + ' · ' : ''}${at} ` +
+  const when = endMs ? `✓ ${fmt(secs)} · ${new Date(endMs).toTimeString().slice(0, 5)} ` : '';
+  return `<div class="msg note stat">${when}` +
          `<button class=share type=button title="${tip}">${SHARE_ICON}</button></div>`;
 }
 // Одним обработчиком на всю страницу: строки рисуются строкой HTML в трёх местах.

@@ -161,8 +161,8 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
             if isinstance(content, str):
                 if text := content.strip():
                     item = _prompt(text)
-                    # Время промпта и ответа — для строки итога под прошлыми ходами:
-                    # панель вычтет одно из другого.
+                    # Метка отличает промпт из транскрипта от локального эха: строку
+                    # со значком «поделиться» панель ставит только перед настоящим.
                     if item["role"] == "user" and (t := _ts(ev)):
                         item["ts"] = t
                     out.append(item)
@@ -205,10 +205,7 @@ def items(path: Path, start: int) -> tuple[int, list[dict], dict | None]:
                 kind = block.get("type")
                 if kind == "text":
                     if text := block.get("text", ""):
-                        item = {"role": "assistant", "text": text}
-                        if t := _ts(ev):
-                            item["ts"] = t
-                        out.append(item)
+                        out.append({"role": "assistant", "text": text})
                 elif kind == "tool_use":
                     name = block.get("name", "?")
                     inp = block.get("input") or {}
