@@ -582,6 +582,11 @@ section.zoomed header .max::before { content:'\2921' }
   font:inherit; font-size:11px; padding:1px 5px; cursor:pointer; color:inherit;
   background:Canvas; border:1px solid #8884; border-radius:3px }
 .codebox:hover .copy, .codebox .copy:focus { opacity:.9 }
+/* Под ответом и видна всегда: наведения на телефоне нет, а там она и нужна. */
+.msg .share { display:block; margin-top:4px; font:inherit; font-size:11px; padding:1px 5px;
+  cursor:pointer; color:inherit; opacity:.55; background:none; border:1px solid #8884;
+  border-radius:3px }
+.msg .share:hover { opacity:.9 }
 .body code { font-family:ui-monospace,monospace; font-size:.92em }
 .body :not(pre) > code { background:#8882; padding:.1em .3em; border-radius:3px }
 .body table { border-collapse:collapse; margin:.4em 0; font-size:.95em }

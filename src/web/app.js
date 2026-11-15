@@ -1573,6 +1573,32 @@ function wireCopy(box) {
     pre.replaceWith(box);
     box.append(pre, btn);
   }
+  // Ответ целиком — чтобы переслать в Telegram или скопировать. Где есть системное меню
+  // «поделиться» (телефон), открываем его: в нём и Telegram, и «Скопировать». Иначе в
+  // буфер. Текст — отрисованный, а не markdown: звёздочки Telegram при вставке не понимает.
+  for (const msg of box.querySelectorAll('.msg.assistant:not([data-share])')) {
+    msg.dataset.share = '1';
+    const btn = document.createElement('button');
+    btn.className = 'share';
+    btn.type = 'button';
+    const label = navigator.share ? 'поделиться' : 'копировать';
+    btn.textContent = label;
+    btn.onclick = async () => {
+      // Берём на клике: к этому моменту у кода уже стоят свои кнопки, и их подписи
+      // попали бы в текст. Спрятанное `innerText` пропускает.
+      const extra = [...msg.querySelectorAll('.body button')];
+      extra.forEach(b => { b.hidden = true; });
+      const text = msg.querySelector('.body').innerText.trim();
+      extra.forEach(b => { b.hidden = false; });
+      if (navigator.share) {
+        try { await navigator.share({ text }); } catch (e) { /* закрыли меню */ }
+        return;
+      }
+      btn.textContent = await copy(text) ? 'скопировано' : 'не вышло';
+      setTimeout(() => { btn.textContent = label; }, 1200);
+    };
+    msg.append(btn);
+  }
 }
 
 // Загрузка файлов по одному: ответ сервера — путь в песочнице, его и дописываем в
