@@ -1173,12 +1173,8 @@ def test_finished_pane_is_veiled_in_the_colour_of_its_outcome():
     assert "#list button.ok .ago::after" in css
 
     # Мигание исхода и занятости не вернулось: мигали и строка списка, и заголовок окна,
-    # и обе сразу. Единственная анимация в файле — бегущая штриховка внутри уже
-    # нарисованной заливки контекста, и она обязана выключаться по `prefers-reduced-motion`.
-    assert css.count("@keyframes") == 1 and "@keyframes ctxrun" in css
-    assert "animation:ctxrun" in css
-    assert "@media (prefers-reduced-motion: reduce)" in css
-    assert "animation:none" in css
+    # и обе сразу. Бегущую штриховку контекста тоже сняли — анимаций в файле нет вовсе.
+    assert "@keyframes" not in css
 
     assert "inset 4px 0 0" not in css      # цветная рельса исхода снята
     assert "inset 3px 0 0" in css          # полоса «это окно открыто» осталась

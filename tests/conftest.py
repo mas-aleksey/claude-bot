@@ -27,3 +27,10 @@ def _no_api_key(tmp_path, monkeypatch):
     monkeypatch.setattr(account, "SETTINGS", str(tmp_path / "settings.json"))
     for k in account.KEY_VARS:
         monkeypatch.delenv(k, raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _no_root_only(monkeypatch):
+    """У ассистента `ROOT_ONLY=1` в окружении: без этого тесты, запущенные в нём, видят
+    один проект вместо списка и валятся пачкой. Кому он нужен, ставит его сам."""
+    monkeypatch.delenv("ROOT_ONLY", raising=False)
