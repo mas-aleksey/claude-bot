@@ -263,6 +263,7 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
         err = f"{type(e).__name__}: {e}"
         log.exception("прогон из веба упал: scope=%s", scope)
     finally:
+        _stopping.discard(scope)  # иначе следующий из очереди тоже сочли бы остановленным
         if err:
             _errors[scope] = err
         # None — панель покажет ошибку. Ставим результат, а не исключение: ждать его
@@ -596,7 +597,7 @@ async def api_cancel(req: web.Request) -> web.Response:
     if not PANE_RE.match(pane):
         raise web.HTTPBadRequest(text="нужен pane")
     _stopping.add(f"web:{pane}")
-    stopped, dropped = await runner.cancel(f"web:{pane}")
+    stopped, dropped = await runner.cancel(f"web:{pane}", queue=False)
     return web.json_response({"stopped": stopped, "dropped": dropped})
 
 

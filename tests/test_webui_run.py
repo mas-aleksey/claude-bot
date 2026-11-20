@@ -152,15 +152,15 @@ async def test_status_lists_runs(client, monkeypatch):
 async def test_cancel_hits_own_scope(client, monkeypatch):
     seen = []
 
-    async def fake_cancel(scope):
-        seen.append(scope)
-        return True, 2
+    async def fake_cancel(scope, queue=True):
+        seen.append((scope, queue))
+        return True, 0
 
     monkeypatch.setattr(runner, "cancel", fake_cancel)
     r = await client.post("/api/cancel", json={"pane": "pane-1"})
-    # Отмена гасит и очередь — панель говорит человеку, сколько промптов отброшено.
-    assert await r.json() == {"stopped": True, "dropped": 2}
-    assert seen == ["web:pane-1"]
+    assert await r.json() == {"stopped": True, "dropped": 0}
+    # Очередь панели стоп не трогает: следующий промпт едет сам.
+    assert seen == [("web:pane-1", False)]
 
 
 def test_active_reports_live_runs_with_elapsed_and_session(monkeypatch):

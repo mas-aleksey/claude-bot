@@ -436,15 +436,16 @@ async def run(
             del _runs[scope]
 
 
-async def cancel(scope: str) -> tuple[bool, int]:
+async def cancel(scope: str, queue: bool = True) -> tuple[bool, int]:
     """SIGTERM группе, через 2 с — SIGKILL. proc.kill() оставил бы живых детей.
 
-    Отмена гасит и очередь: «стоп» — это про всё, что человек сюда накидал, иначе
-    следом сама собой поедет следующая задача. Возвращает (убит ли прогон, сколько
+    `/cancel` в Telegram гасит и очередь: там «стоп» — про всё, что накидали, а убрать
+    один ждущий промпт нечем. Панель зовёт с `queue=False`: стоп там снимает текущий
+    прогон, и следом едет следующий из очереди. Возвращает (убит ли прогон, сколько
     промптов отброшено).
     """
     q = _queues.get(scope)
-    dropped = q.waiting if q else 0
+    dropped = q.waiting if q and queue else 0
     if dropped:
         q.epoch += 1
     entry = _runs.get(scope)

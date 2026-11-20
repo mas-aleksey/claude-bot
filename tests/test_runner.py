@@ -112,6 +112,29 @@ async def test_cancel_drops_queue():
     assert runner.ahead("s") == 0
 
 
+async def test_cancel_keeps_queue_for_panel():
+    """Стоп в панели снимает только текущий прогон — следующий из очереди едет сам."""
+    started, release, ran = asyncio.Event(), asyncio.Event(), []
+
+    async def holder():
+        async with runner.slot("s"):
+            started.set()
+            await release.wait()
+
+    async def waiter():
+        async with runner.slot("s"):
+            ran.append(1)
+
+    first = asyncio.create_task(holder())
+    await started.wait()
+    second = asyncio.create_task(waiter())
+    await asyncio.sleep(0)
+    assert await runner.cancel("s", queue=False) == (False, 0)
+    release.set()
+    await asyncio.gather(first, second)
+    assert ran == [1]
+
+
 def drive(events: list[dict]) -> list[bool]:
     """Прогнать поток через Drain и вернуть решение на каждом событии."""
     drain = runner.Drain()

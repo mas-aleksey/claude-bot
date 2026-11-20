@@ -1005,9 +1005,7 @@ function drawPane(p) {
     if (stop.disabled) return;
     stop.disabled = true;
     el.classList.add('stopping');
-    post('api/cancel', { pane: p.pane })
-      .then(r => r.dropped && log(p, `<div class="msg note">из очереди отброшено: ${r.dropped}</div>`))
-      .catch(() => {});
+    post('api/cancel', { pane: p.pane }).catch(() => {});
   };
   const form = el.querySelector('form');
   const ta = el.querySelector('textarea');
