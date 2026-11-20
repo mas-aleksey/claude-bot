@@ -724,3 +724,21 @@ async def test_login_code_without_a_started_flow_is_409(client):
     assert r.status == 409
 
 
+
+
+async def test_manual_stop_is_not_an_error(client, tmp_path, monkeypatch):
+    """Стоп убивает claude с rc=143, и мусор из его stderr не должен выглядеть ошибкой."""
+    async def fake(prompt, cwd, session_id=None, model=None, scope="0", effort=None):
+        yield {"type": "system", "session_id": "11111111-2222-3333-4444-555555555555"}
+        webui._stopping.add(scope)  # нажали стоп посреди прогона
+        yield {"type": "_bot", "kind": "error", "rc": 143, "text": "⚠ claude.ai connectors"}
+
+    monkeypatch.setattr(runner, "run", fake)
+    monkeypatch.setattr(runner, "busy", lambda scope: False)
+    monkeypatch.setattr(webui, "_errors", {})
+    await client.post("/api/prompt", json={
+        "pane": "pane-1", "project": str(tmp_path / "proj"), "prompt": "x"})
+    await asyncio.sleep(0)
+
+    errors = (await (await client.get("/api/status")).json())["errors"]
+    assert errors["web:pane-1"] == "остановлено"

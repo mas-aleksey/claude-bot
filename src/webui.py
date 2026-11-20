@@ -73,6 +73,10 @@ _errors: dict[str, str] = {}
 # всегда: он рендерит поток событий, а не файл.
 _local: dict[str, str] = {}
 
+# Скоупы, где человек нажал стоп. Убитый claude выходит с rc=143 и выплёвывает в stderr
+# что попало (предупреждение о коннекторах) — панель показывала это красным как ошибку.
+_stopping: set[str] = set()
+
 
 def title() -> str:
     """Заголовок вкладки: имя инстанса, а без него — `claude`.
@@ -220,6 +224,7 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
     err = ""
     _errors.pop(scope, None)  # новый запуск — прошлая ошибка больше не про него
     _local.pop(scope, None)
+    _stopping.discard(scope)
     try:
         async with runner.slot(scope, prompt):
             if adopt:
@@ -245,6 +250,9 @@ async def _drive(scope: str, prompt: str, project: str, session_id: str | None,
                     # Текст вперёд, код в скобках: читают ошибку, а не номер. Если текста
                     # нет ни в result, ни в stderr — говорим это словами, потому что голое
                     # `rc=1` не подсказывает даже, куда смотреть.
+                    if scope in _stopping:
+                        err = "остановлено"
+                        continue
                     err = err or (f"{stderr[:2000]} (rc={rc})" if stderr else
                                   f"claude вышел с кодом {rc} и ничего не сообщил — "
                                   f"причина, если она есть, в последнем ответе выше")
@@ -587,6 +595,7 @@ async def api_cancel(req: web.Request) -> web.Response:
     pane = data.get("pane") or ""
     if not PANE_RE.match(pane):
         raise web.HTTPBadRequest(text="нужен pane")
+    _stopping.add(f"web:{pane}")
     stopped, dropped = await runner.cancel(f"web:{pane}")
     return web.json_response({"stopped": stopped, "dropped": dropped})
 
