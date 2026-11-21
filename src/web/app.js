@@ -727,13 +727,14 @@ function frontPane(list, saved) {
 // оставался на последней нарисованной — на телефоне это низ стопки. Свёрнутый в
 // заголовок сосед обрывал цепочку совсем: отдать ему разворот нельзя, а снять с
 // предыдущего уже успели.
-function raise(el) {
+function raise(el, keep) {
   document.querySelectorAll('#panes section.act').forEach(s => s.classList.remove('act'));
   el.classList.add('act');
   rememberFront(panes.find(x => 'pane-' + x.pane === el.id)?.pane);
   // Подняли окно — значит увидели его ответ. Снимаем здесь, а не по клику в лог: подъём
   // случается от любого касания окна, и другого определения «посмотрел» у нас нет.
-  el.classList.remove('ready', 'bad');
+  // Кроме касания пальцем (`keep`): там метку снимает click, см. `wirePane`.
+  if (!keep) el.classList.remove('ready', 'bad');
 }
 
 // Разворот переезжает на то окно, с которым работают: кликнул сессию в сайдбаре — она
@@ -742,7 +743,7 @@ function raise(el) {
 // сколько их под верхним окном — не узнать.
 // Само развёрнутое от касания не сворачивается: сравниваем элементы, а не панели.
 // Свёрнутому в заголовок разворот не отдаём — эти состояния взаимоисключающие.
-function focus(el) {
+function focus(el, keep) {
   let moved = false;
   for (const x of panes) {
     if (!x.prev) continue;
@@ -754,7 +755,7 @@ function focus(el) {
     if (to && !to.prev && !to.roll) zoom(to);
     save();
   }
-  raise(el);
+  raise(el, keep);
 }
 // --- raise:end ---
 
@@ -1089,7 +1090,12 @@ function wirePane(p, el) {
   el.style.setProperty('--hue', p.hue ?? HUE0);
   el.querySelector('header').classList.add('grip');
   wireHandles(p, el);
-  el.onpointerdown = () => focus(el);
+  // Пальцем метку «готово» снимаем по click, а не в момент касания. У свёрнутого окна
+  // она прячет карандаш, и Safari на iOS, увидев, что касание открыло скрытое, считает
+  // тап наведением и click не шлёт: «во весь экран» срабатывал только со второго тапа
+  // (2026-11-21). Click приходит и на прокрутку не срабатывает — метка ждёт тапа.
+  el.onpointerdown = (e) => focus(el, e.pointerType === 'touch');
+  el.addEventListener('click', () => el.classList.remove('ready', 'bad'));
   // Клик по окну ставит курсор в промпт — мышью. Пальцем нет: тап по логу там нужен
   // выделению, а не фокусу, и перехват ломал бы «выделить и скопировать» ровно в том
   // месте, где текст и читают. Поле промпта на телефоне и так под пальцем внизу.
