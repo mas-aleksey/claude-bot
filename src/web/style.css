@@ -926,7 +926,8 @@ body:not(.folded) #empty .list { display:none }
   body.rfolded:has(#panes > section.zoomed) #rfold { display:none }
   header .tile { display:none }   /* раскладка по клеткам, а клеток тут нет */
   .grip { touch-action:auto; cursor:default }   /* жест по заголовку — прокрутка, не перенос */
-  form { margin:8px }   /* правый отступ был под ручку, а её тут нет */
+  /* gap шире: кнопка отправки не должна лежать в зоне захвата курсора поля (iOS). */
+  form { margin:8px; gap:10px }   /* правый отступ был под ручку, а её тут нет */
   .h { display:none }
   /* Safari на iOS зумит страницу при фокусе в поле с текстом мельче 16px и обратно уже
      не отъезжает: композер уезжает вправо, кнопка отправки — за край экрана. Порог ровно

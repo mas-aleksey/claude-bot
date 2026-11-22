@@ -1018,6 +1018,14 @@ function drawPane(p) {
   wireClips(p, el);
   drawClips(p);   // после F5 список пуст, но панель могла быть перерисована на лету
   form.onsubmit = (e) => { e.preventDefault(); send(p, ta); };
+  // iOS: курсор в конце текста лежит прямо над кнопкой, а у курсора зона захвата шире
+  // его самого. Тап по кнопке Safari отдавал полю как перенос курсора, и click не
+  // приходил (2026-11-22). preventDefault на touchstart забирает касание у системных
+  // жестов, и click после этого не будет — шлём сами на touchend. Отправка на touchend,
+  // а не touchstart: только он даёт браузеру жест для запроса уведомлений в send().
+  const go = el.querySelector('.send');
+  go.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
+  go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) send(p, ta); });
   wireSlash(p, el, ta);
 
   const model = el.querySelector('.model');
