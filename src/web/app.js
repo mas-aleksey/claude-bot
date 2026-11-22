@@ -1027,6 +1027,7 @@ function drawPane(p) {
   go.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   // blur: preventDefault оставлял фокус в поле, и клавиатура после отправки не уходила.
   go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) { ta.blur(); send(p, ta); } });
+  if (location.search.includes('tap')) tapLog();
   wireSlash(p, el, ta);
 
   const model = el.querySelector('.model');
@@ -3159,3 +3160,27 @@ loadTree().then(() => {
   tick();
 });
 setInterval(tick, 3000);
+
+// ponytail: временная диагностика (2026-11-22) — «отправить» на iOS со второго тапа,
+// когда курсор рядом. Включается `?tap` в адресе, печатает события касания поверх
+// страницы. Убрать, как причина найдена.
+function tapLog() {
+  if (document.getElementById('taplog')) return;
+  const box = document.createElement('pre');
+  box.id = 'taplog';
+  box.style.cssText = 'position:fixed;top:0;left:0;right:0;z-index:99999;margin:0;' +
+    'font:11px monospace;background:#000c;color:#0f0;pointer-events:none;max-height:45vh;overflow:hidden';
+  document.body.append(box);
+  const t0 = Date.now();
+  const log = (s) => { box.textContent = (`${Date.now() - t0} ${s}\n` + box.textContent).slice(0, 3000); };
+  for (const ev of ['touchstart', 'touchend', 'touchcancel', 'pointerdown', 'pointerup',
+                    'pointercancel', 'click', 'focusout', 'selectionchange']) {
+    document.addEventListener(ev, (e) => {
+      const x = e.target, a = document.activeElement;
+      const t = e.changedTouches && e.changedTouches[0];
+      log(`${ev} ${x.tagName || '#doc'}.${x.className || ''}` +
+        (t ? ` @${t.clientX | 0},${t.clientY | 0}` : '') +
+        (a && a.tagName === 'TEXTAREA' ? ` caret=${a.selectionStart}` : ''));
+    }, true);
+  }
+}
