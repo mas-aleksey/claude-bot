@@ -1025,7 +1025,8 @@ function drawPane(p) {
   // а не touchstart: только он даёт браузеру жест для запроса уведомлений в send().
   const go = el.querySelector('.send');
   go.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
-  go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) send(p, ta); });
+  // blur: preventDefault оставлял фокус в поле, и клавиатура после отправки не уходила.
+  go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) { ta.blur(); send(p, ta); } });
   wireSlash(p, el, ta);
 
   const model = el.querySelector('.model');
