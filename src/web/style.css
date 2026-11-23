@@ -889,7 +889,8 @@ body:not(.folded) #empty .list { display:none }
      переживает F5. Ручки в списке скрытого нет — на этом экране её и так нет. */
   header .foldbar { display:revert }
   section.rolled { height:auto }
-  section.rolled .logbox, section.rolled form { display:none }
+  /* Очередь тоже: её счёт виден в заголовке как «+N». */
+  section.rolled .logbox, section.rolled form, section.rolled .queue { display:none }
   section.rolled .srcbox, section.rolled .view, section.rolled .doc,
   section.rolled div.look, section.rolled .filebar { display:none }
   /* «Во весь экран» тут не про клетки сетки — их перебивает `!important` выше, и кнопка
