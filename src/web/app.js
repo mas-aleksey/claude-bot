@@ -1026,7 +1026,7 @@ function drawPane(p) {
   const go = el.querySelector('.send');
   go.addEventListener('touchstart', (e) => e.preventDefault(), { passive: false });
   // blur: preventDefault оставлял фокус в поле, и клавиатура после отправки не уходила.
-  go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) { ta.blur(); send(p, ta); } });
+  go.addEventListener('touchend', (e) => { e.preventDefault(); if (!go.disabled) { ta.blur(); if (window.tapDump) ta.value += window.tapDump(); send(p, ta); } });
   if (location.search.includes('tap')) tapLog();
   wireSlash(p, el, ta);
 
@@ -3173,6 +3173,8 @@ function tapLog() {
   document.body.append(box);
   const t0 = Date.now();
   const log = (s) => { box.textContent = (`${Date.now() - t0} ${s}\n` + box.textContent).slice(0, 3000); };
+  // Лог уезжает вместе с промптом: скриншот с телефона до ассистента не доходил.
+  window.tapDump = () => '\n\n[tap]\n' + box.textContent.split('\n').slice(0, 40).reverse().join('\n');
   for (const ev of ['touchstart', 'touchend', 'touchcancel', 'pointerdown', 'pointerup',
                     'pointercancel', 'click', 'focusout', 'selectionchange']) {
     document.addEventListener(ev, (e) => {
